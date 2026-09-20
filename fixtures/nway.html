@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>N-way fixture</title>
+</head>
+<body>
+  <h1>Directory</h1>
+  <p>Click the link labeled Target Item.</p>
+  <nav id="list" style="font: 11px/1.2 sans-serif; column-count: 4;"></nav>
+  <script>
+    const nav = document.getElementById("list");
+    const n = Number(new URLSearchParams(location.search).get("n") || "20");
+    const target = Math.max(0, Math.min(n - 1, Number(new URLSearchParams(location.search).get("target") || "7")));
+    for (let i = 0; i < n; i++) {
+      const a = document.createElement("a");
+      a.href = "#item-" + i;
+      a.style.display = "block";
+      a.textContent = i === target ? "Target Item" : "Filler Item " + i;
+      nav.appendChild(a);
+    }
+  </script>
+</body>
+</html>

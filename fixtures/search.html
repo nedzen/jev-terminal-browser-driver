@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Search fixture</title>
+</head>
+<body>
+  <h1>Catalog</h1>
+  <label>Query <input id="q" name="q" type="text"></label>
+  <button id="go" type="button">Go</button>
+  <ul id="results" hidden>
+    <li><a id="hit" href="#widget-result">Widget result</a></li>
+  </ul>
+  <script>
+    document.getElementById("go").addEventListener("click", () => {
+      const q = document.getElementById("q").value.toLowerCase();
+      document.getElementById("results").hidden = !q.includes("widget");
+    });
+  </script>
+</body>
+</html>
