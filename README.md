@@ -33,63 +33,16 @@ filled both comboboxes, switched Round trip → One way, picked the date in the
 calendar, and hit Search — **14 ticks, 8.4 s, ~$0.0025 in Jev spend**, zero
 screenshots, zero snapshots in the agent's context.
 
-## How it works
+## How it works (summary)
 
-```
-scripts/drive.py
-  → set tab lease (new | explicit --target)     # safety, before anything
-  → Agent(url, goal)                            # jev-ultrafast agent.py, verbatim
-       Browser.observe   → snapshot.js run in-page via CDP Runtime.evaluate
-                           (element table + ≤6K visible text + freshness guards)
-       model.choose      → POST openrouter.ai/api/alpha/decisions
-                           {model: typesafe/jev-1.13, state, questions}
-                           one request, independent heads:
-                             operation ∈ CLICK|TYPE_TEXT|SELECT|SCROLL_UP|
-                                         SCROLL_DOWN|WAIT|DONE|BLOCKED
-                             click_target / type_text_target / select_target
-                           (only the selected operation's head can execute)
-       Browser.act       → Input.dispatchMouseEvent / insertText on the
-                           owned CDP session, hit-tested before input
-       TYPE_TEXT only    → small LLM (inception/mercury-2.5 via OpenRouter
-                           /chat/completions) writes the field value
-```
-
-### Execution chain in detail
-
-1. **Tab lease.** `drive.py` sets a module-level lease on `jev_driver.browser`
-   *before* constructing `Agent`. Default `--tab new` opens a TUI-visible tab
-   via `terminal-browser new-tab` and attaches by `targetId`. `--target <id>`
-   attaches to a tab you name explicitly. The driver never attaches to tabs it
-   didn't create.
-2. **Observation.** `jev_driver/snapshot.js` (upstream, verbatim) runs inside
-   the page: indexes visible interactive elements (buttons, links, inputs,
-   selects, ARIA roles), assigns stable IDs (`e1…e250`), records per-element
-   guards (value/checked/context) and a page marker, and reads at most 6,000
-   chars of visible text. Actions are capped at 250.
-3. **Decision.** `jev_driver/model.py` posts the state + goal to OpenRouter's
-   decisions endpoint. The response must be a full probability distribution
-   over the offered choices (sum ≈ 1, argmax == choice) or nothing executes.
-   Independent question heads are a safety property: a `CLICK` decision
-   physically cannot consume a `TYPE_TEXT` or `SELECT` target id.
-4. **Action.** `jev_driver/browser.py` re-validates the target immediately
-   before input (connected, visible, enabled, not covered, geometry on-screen)
-   and executes via raw CDP input events. Mutations are never retried; stale
-   pages raise and the loop re-observes instead.
-5. **Loop.** `jev_driver/agent.py` (upstream, verbatim) repeats
-   observe → choose → act until the model picks `DONE`/`BLOCKED` or
-   `--max-steps`. Model `DONE` is *not* treated as success — verify the
-   resulting URL or page content yourself.
-
-### CDP transport
-
-`jev_driver/cdp.py` is a minimal websocket CDP client. It discovers the port
-dynamically (`terminal-browser ls --all --json` → `cdpPort`; don't hardcode
-it), fetches `/json/version` → `webSocketDebuggerUrl` (a bare `ws://host:port`
-does not connect), and connects with **`suppress_origin=True`** (Electron
-returns 403 otherwise). It preserves the upstream helper's contract:
-unwrapped `result` payloads, `RuntimeError` on CDP errors, no `sessionId` on
-`Target.*` methods, session id only on `Runtime./Page./Input./Emulation.*`
-after a flatten attach.
+The pipeline: `drive.py` sets a tab lease → the verbatim upstream `Agent` loop
+runs `snapshot.js` in-page (element table + ≤6K visible text), asks Jev via
+OpenRouter's decisions API (operation + target in one request, independent
+heads, strict probability validation), acts via hit-tested raw CDP input, and
+repeats until `DONE`/`BLOCKED` or the tick budget. A small LLM writes text
+only for `TYPE_TEXT`. The full execution chain, the browser-discovery ladder,
+and the CDP transport contract live in
+[docs/architecture.md](docs/architecture.md).
 
 ## Install
 
@@ -154,9 +107,10 @@ agent-browser rejects the launch and in-Hermes auto-provision fails while
 bare `drive.py` still works. The driver strips unknown values for child
 processes (`discover._child_env`). Fix the `.env` line or leave it unset.
 
-Tool fields: `goal` (required), optional `url`, `target`, `max_steps` (cap 30),
-`cdp_url`, `timeout_s`, `watch` (reserved; ignored this round). Prefer
-`jev_drive` over pasting snapshots into chat.
+Tool fields: `goal` (required), optional `url` (omit = re-attach to the last
+driven page), `target`, `max_steps` (cap 30), `cdp_url`, `timeout_s`,
+`watch: true` for watchable TUI browsing. Prefer `jev_drive` over pasting
+snapshots into chat.
 
 On the desktop app the preview pane opens automatically with the driven URL;
 note it shows the page in the desktop's own browser session (cookies live
@@ -192,29 +146,27 @@ body with truncated criteria labels holds. (A two-call operation/target
 fallback exists in the design but is not shipped; it is only needed if a live
 overflow survives truncation.)
 
-## Safety model
+## Safety model (summary)
 
 The driver shares a Chromium with your other tabs. Enforced in code, not
-prompts:
+prompts: tab lease with denylist (`--tab new` default, `--target` opt-in),
+detach-only close, no focus stealing, no viewport override, target filtering
+(non-`page`/`chrome://`/`devtools://`/extensions/workers skipped), and never
+`terminal-browser shutdown`. Full list with the crash stories behind each rule:
+[docs/architecture.md](docs/architecture.md) § Safety model. Shared
+cookies/profile: don't point the driver at logged-in sessions you don't want
+automated.
 
-- **Tab lease**: default `--tab new` only; `--target` is an explicit opt-in.
-- **Detach-only close**: `Browser.close()` detaches the CDP session but never
-  calls `Target.closeTarget` — on terminal-browser's Electron runtime that
-  destroys `webContents` under the TUI's `ViewRegistry` and crashes
-  `PageHost.blurContent` with `TypeError: Object has been destroyed`.
-  (Discovered the hard way; upstream's `Target.createTarget` is also
-  unsupported there — tabs are opened via `terminal-browser new-tab`.)
-- **No focus stealing**: never `Target.activateTarget`; focus emulation is
-  enabled on the owned session only (keeps background rAF alive without
-  switching the visible tab).
-- **No viewport override**: `Emulation.setDeviceMetricsOverride` is skipped —
-  the pane's real viewport is used as-is.
-- **Target filtering**: non-`page` targets, `chrome://`, `devtools://`,
-  `chrome-extension://`, and workers are skipped. `target=_blank` pop-ups do
-  not join the session and are treated as `BLOCKED`.
-- **Never** run `terminal-browser shutdown` — it kills every pane's browser.
-- Shared cookies/profile: the driver sees the browser's profile. Don't point
-  it at logged-in sessions you don't want automated.
+## Docs index
+
+| Doc | Covers |
+|---|---|
+| [docs/architecture.md](docs/architecture.md) | Execution chain, decision protocol, discovery ladder, CDP transport, safety model, visibility surfaces |
+| [docs/README.md](docs/README.md) | Docs index |
+| [docs/research/](docs/research/) | Design-evidence research (desktop plugin surfaces, preview-bar feasibility, visibility verdicts) |
+| [docs/archive/iteration-1-cli/](docs/archive/iteration-1-cli/) | Pre-plugin iteration record (live-ops notes, N-way bench) |
+| [SKILL.md](SKILL.md) | Hermes skill contract (when to use, pitfalls) |
+| [HANDOFF.md](HANDOFF.md) | Session-continuation state (status, pitfalls, TODO) |
 
 ## Hermes skill
 
