@@ -26,6 +26,8 @@ LEASE = {
     "create_fallback": None,
 }
 
+LAST_PAGE_PATH = Path.home() / ".cache" / "jev-driver" / "last-page.json"
+
 
 def set_lease(*, tab="new", target_id=None, browser_key=None, navigate=True):
     LEASE.update(tab=tab, target_id=target_id, browser_key=browser_key, navigate=navigate, create_fallback=None)
@@ -57,6 +59,62 @@ def _target_ok(info, *, allow_denylist):
     if not allow_denylist and parsed.hostname in DENYLIST_HOSTS:
         return False
     return True
+
+
+def _is_ephemeral_url(url):
+    text = url or ""
+    if "jev-terminal-browser-driver/fixtures/" in text:
+        return True
+    if text.startswith(("about:", "chrome:", "devtools:", "chrome-untrusted:", "chrome-extension:")):
+        return True
+    return False
+
+
+def remember_page(target_id, url):
+    if not target_id or _is_ephemeral_url(url):
+        return
+    LAST_PAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    LAST_PAGE_PATH.write_text(json.dumps({"targetId": target_id, "url": url or ""}))
+
+
+def find_continuable_page():
+    """Re-attach to a previously driven page when the caller omitted --url."""
+    remembered = {}
+    if LAST_PAGE_PATH.is_file():
+        try:
+            remembered = json.loads(LAST_PAGE_PATH.read_text())
+        except (json.JSONDecodeError, OSError):
+            remembered = {}
+    try:
+        pages = _json_pages()
+    except (OSError, json.JSONDecodeError, TimeoutError):
+        pages = []
+    by_id = {p.get("id"): p for p in pages if p.get("type") == "page" and p.get("id")}
+    remembered_id = remembered.get("targetId")
+    if remembered_id and remembered_id in by_id:
+        info = by_id[remembered_id]
+        url = info.get("url") or ""
+        if not _is_ephemeral_url(url) and _target_ok({"type": "page", "url": url}, allow_denylist=False):
+            return remembered_id, url
+    live = []
+    for page in pages:
+        if page.get("type") != "page":
+            continue
+        url = page.get("url") or ""
+        if _is_ephemeral_url(url):
+            continue
+        if not _target_ok({"type": "page", "url": url}, allow_denylist=False):
+            continue
+        live.append(page)
+    if remembered.get("url"):
+        stem = remembered["url"].split("?")[0].split("#")[0]
+        for page in live:
+            if (page.get("url") or "").split("?")[0].split("#")[0] == stem:
+                return page["id"], page.get("url")
+    if live:
+        page = live[-1]
+        return page.get("id"), page.get("url")
+    return None, None
 
 
 def _get_targets():
@@ -188,6 +246,10 @@ class Browser:
             if self.evaluate("document.readyState") == "complete":
                 break
             time.sleep(0.02)
+        try:
+            remember_page(self.target, self.evaluate("location.href") or url)
+        except StalePage:
+            remember_page(self.target, url)
 
     def call(self, method, **params):
         return cdp(method, session_id=self.session, **params)
@@ -207,20 +269,31 @@ class Browser:
                     expression="""(action => new Promise(resolve => {
                       const field=window.__jevFast?.nodes.get(action.node);
                       const autocomplete=action.kind==='fill' && field?.getAttribute('role')==='combobox';
+                      const overlay=action.kind==='click' && !!(
+                        field?.getAttribute('role')==='combobox' ||
+                        field?.getAttribute('aria-haspopup') ||
+                        /date|depart|return|calendar|picker|check-in|check-out/i.test(String(action.label||''))
+                      );
                       let frames=0, stopped=false;
                       const finish=()=>{stopped=true;resolve()};
-                      setTimeout(finish,autocomplete ? 200 : 50);
+                      setTimeout(finish, overlay ? 450 : autocomplete ? 200 : 50);
+                      const visible=e=>{
+                        const r=e.getBoundingClientRect();
+                        return r.width && r.height && r.bottom>0 && r.top<innerHeight &&
+                          e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});
+                      };
                       const ready=()=>{
                         if (stopped) return;
                         const ids=(field?.getAttribute('aria-controls')||field?.getAttribute('aria-owns')||'')
                           .split(/\\s+/).filter(Boolean);
                         const roots=ids.length ? ids.map(id=>document.getElementById(id)).filter(Boolean) : [document];
                         const options=roots.flatMap(root=>[...root.querySelectorAll('[role="option"]')]);
-                        if (++frames>=2 && (!autocomplete || options.some(e=>{
-                          const r=e.getBoundingClientRect();
-                          return r.width && r.height && r.bottom>0 && r.top<innerHeight &&
-                            e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});
-                        }))) finish();
+                        const popups=[...document.querySelectorAll('[role="dialog"],[role="listbox"],[role="grid"]')];
+                        if (++frames>=2 && (
+                          (!autocomplete && !overlay) ||
+                          (autocomplete && options.some(visible)) ||
+                          (overlay && (popups.some(visible) || options.some(visible) || frames>=12))
+                        )) finish();
                         else requestAnimationFrame(ready);
                       };
                       requestAnimationFrame(ready);

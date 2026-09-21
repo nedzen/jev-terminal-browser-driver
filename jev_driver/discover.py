@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
-from .cdp import browser_websocket_url, list_browsers
+from .cdp import TB, browser_websocket_url, list_browsers
 
 SESSION = "jev-driver"
 BUNDLED_AGENT_BROWSER = (
@@ -26,6 +26,23 @@ POST_LAUNCH_TRIES = 5
 POST_LAUNCH_DELAY_S = 5
 
 
+WATCH_INSTALL = (
+    "watch requested but terminal-browser is not installed. Install it "
+    "(see https://terminal-browser.dev) or retry without watch. "
+    "terminal-browser needs an existing kitty-graphics terminal "
+    "(kitty, ghostty, wezterm, tmux, vscode, cmux, supacode, herdr — not iTerm2/Terminal.app). "
+    "Installing TB does not install a terminal."
+)
+WATCH_TERMINAL_NOTE = (
+    "terminal-browser needs an existing kitty-graphics terminal "
+    "(kitty, ghostty, wezterm, tmux, vscode, cmux, supacode, herdr — not iTerm2/Terminal.app)."
+)
+
+
+class WatchUnavailable(RuntimeError):
+    """watch=true could not open a visible terminal-browser pane."""
+
+
 @dataclass
 class Discovery:
     ws_url: str
@@ -33,6 +50,7 @@ class Discovery:
     source: str
     auto_launched: bool = False
     session: str | None = None
+    visibility: str = "headless"
 
 
 LAST: Discovery | None = None
@@ -89,6 +107,16 @@ def agent_browser_argv(binary: str) -> list[str]:
     if binary == "npx agent-browser" or binary.startswith("npx "):
         return ["npx", "--yes", "agent-browser"]
     return [binary]
+
+
+def resolve_terminal_browser() -> str | None:
+    found = shutil.which("terminal-browser")
+    if found:
+        return found
+    path = Path(TB)
+    if path.is_file() and os.access(path, os.X_OK):
+        return str(path)
+    return None
 
 
 def resolve_agent_browser() -> str | None:
@@ -223,9 +251,60 @@ def _launch_headless(binary: str, url: str) -> None:
         print(f"jev-driver: agent-browser open stderr: {completed.stderr.strip()[-500:]}", file=sys.stderr)
 
 
-def discover(*, explicit: str | None = None, launch_url: str = "about:blank", auto_provision: bool = True) -> Discovery:
+def _watch_open_split(url: str) -> Discovery:
+    binary = resolve_terminal_browser()
+    if not binary:
+        raise WatchUnavailable(WATCH_INSTALL)
+    proc = subprocess.Popen(
+        [binary, "open", url, "--split", "right"],
+        env=os.environ.copy(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        found = _terminal_browser_discovery()
+        if found:
+            found.visibility = "terminal-browser-pane"
+            found.auto_launched = True
+            return found
+        code = proc.poll()
+        if code is not None:
+            err = (proc.stderr.read() if proc.stderr else "") or ""
+            out = (proc.stdout.read() if proc.stdout else "") or ""
+            detail = (err or out).strip()
+            extra = f" terminal-browser said: {detail}" if detail else ""
+            raise WatchUnavailable(
+                "watch requested but terminal-browser could not open a visible pane."
+                f"{extra} {WATCH_TERMINAL_NOTE} Retry without watch, or open TB in a supported terminal."
+            )
+        time.sleep(0.2)
+    raise WatchUnavailable(
+        "watch requested but terminal-browser did not become ready within 30s. "
+        f"{WATCH_TERMINAL_NOTE}"
+    )
+
+
+def discover(
+    *,
+    explicit: str | None = None,
+    launch_url: str = "about:blank",
+    auto_provision: bool = True,
+    watch: bool = False,
+) -> Discovery:
     """Walk the HQ ladder. Stores the result on LAST for cdp_port / tab-open."""
     global LAST
+    if watch:
+        found = _terminal_browser_discovery()
+        if found:
+            found.visibility = "terminal-browser-pane"
+            LAST = found
+            return LAST
+        if resolve_terminal_browser():
+            LAST = _watch_open_split(launch_url)
+            return LAST
+        raise WatchUnavailable(WATCH_INSTALL)
     raw = (explicit or os.environ.get("JEV_CDP_URL") or os.environ.get("BROWSER_CDP_URL") or "").strip()
     if raw:
         ws = normalize_cdp_url(raw)
@@ -233,6 +312,7 @@ def discover(*, explicit: str | None = None, launch_url: str = "about:blank", au
         return LAST
     found = _terminal_browser_discovery()
     if found:
+        found.visibility = "terminal-browser-pane"
         LAST = found
         return LAST
     binary = resolve_agent_browser()

@@ -6,7 +6,9 @@ from .handler import check_jev_drive, handle_jev_drive
 
 DESCRIPTION = (
     "Run a goal in a real browser: observe visible elements, let Jev pick "
-    "operation+target, act. Prefer this over dumping snapshots into chat."
+    "operation+target, act. Prefer this over dumping snapshots into chat. "
+    "Pass watch=true when the user asks to see the browser (TUI opens "
+    "terminal-browser). Omit url to continue the last driven page."
 )
 
 PARAMETERS = {
@@ -27,7 +29,10 @@ PARAMETERS = {
         "cdp_url": {"type": "string", "description": "Explicit CDP websocket or http://host:port discovery URL."},
         "watch": {
             "type": "boolean",
-            "description": "Reserved. Round 1 ignores this; TUI watchable browsing is the next round. Default false.",
+            "description": (
+                "If true, drive a visible terminal-browser pane (needs a kitty-graphics "
+                "terminal: kitty/ghostty/wezterm/tmux/vscode/cmux/supacode/herdr). Default false."
+            ),
             "default": False,
         },
         "timeout_s": {

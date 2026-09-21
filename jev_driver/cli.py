@@ -8,10 +8,11 @@ import sys
 from pathlib import Path
 
 from .agent import Agent
-from .browser import set_lease
+from .browser import find_continuable_page, set_lease
 from .cdp import connect
-from .discover import discover
+from .discover import WatchUnavailable, discover
 from .questions import MAX_STEPS
+from .takeover import TAKEOVER_REASON, WatchAgent
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_FIXTURE = (ROOT / "fixtures" / "click.html").resolve()
@@ -38,13 +39,15 @@ def tick_record(snap: dict) -> dict:
     }
     if rec["status"] in {"done", "blocked"}:
         rec["page_text"] = (page.get("text") or "")[:2000]
+    if snap.get("takeover"):
+        rec["error"] = TAKEOVER_REASON
     return rec
 
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Drive a terminal-browser tab with Jev decisions.")
     parser.add_argument("--goal", required=True)
-    parser.add_argument("--url", default=DEFAULT_FIXTURE.as_uri())
+    parser.add_argument("--url", default=None, help="Page to open. Omit to re-attach to the last driven page.")
     parser.add_argument("--tab", choices=("new",), default="new")
     parser.add_argument("--target", dest="target_id", default=None, help="Attach to this CDP target id (explicit).")
     parser.add_argument("--browser", dest="browser_key", default=None)
@@ -52,6 +55,7 @@ def parse_args(argv=None):
     parser.add_argument("--navigate", action="store_true", help="With --target, also Page.navigate to --url.")
     parser.add_argument("--cdp", dest="cdp_url", default=None, help="Explicit CDP websocket or http discovery URL.")
     parser.add_argument("--json", action="store_true", help="Plugin contract: browser meta line, then JSON ticks.")
+    parser.add_argument("--watch", action="store_true", help="Drive a visible terminal-browser pane.")
     return parser.parse_args(argv)
 
 
@@ -60,8 +64,15 @@ def main(argv=None) -> int:
     if args.max_steps < 1 or args.max_steps > MAX_STEPS:
         print(json.dumps({"status": "blocked", "error": f"--max-steps must be 1..{MAX_STEPS}"}), file=sys.stderr)
         return 1
-    found = discover(explicit=args.cdp_url, launch_url=args.url)
+    url = args.url
+    launch = url or DEFAULT_FIXTURE.as_uri()
+    try:
+        found = discover(explicit=args.cdp_url, launch_url=launch, watch=args.watch)
+    except WatchUnavailable as exc:
+        print(json.dumps({"status": "blocked", "error": str(exc)}), flush=True)
+        return 1
     connect(found.ws_url)
+    visibility = found.visibility or ("terminal-browser-pane" if found.source == "terminal-browser" else "headless")
     if args.json:
         print(
             json.dumps(
@@ -70,15 +81,27 @@ def main(argv=None) -> int:
                     "source": found.source,
                     "cdp_url": found.ws_url,
                     "auto_launched": found.auto_launched,
+                    "visibility": visibility,
                 }
             ),
             flush=True,
         )
     if args.target_id:
         set_lease(tab="target", target_id=args.target_id, browser_key=args.browser_key, navigate=args.navigate)
+        agent_url = url or launch
+    elif url is None:
+        existing_id, existing_url = find_continuable_page()
+        if existing_id:
+            set_lease(tab="target", target_id=existing_id, browser_key=args.browser_key, navigate=False)
+            agent_url = existing_url or launch
+        else:
+            set_lease(tab="new", browser_key=args.browser_key, navigate=True)
+            agent_url = DEFAULT_FIXTURE.as_uri()
     else:
         set_lease(tab="new", browser_key=args.browser_key, navigate=True)
-    agent = Agent(args.url, args.goal, screenshots=False)
+        agent_url = url
+    agent_cls = WatchAgent if args.watch else Agent
+    agent = agent_cls(agent_url, args.goal, screenshots=False)
     code = 1
     try:
         steps = 0

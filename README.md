@@ -160,9 +160,17 @@ Tool fields: `goal` (required), optional `url`, `target`, `max_steps` (cap 30),
 
 On the desktop app the preview pane opens automatically with the driven URL;
 note it shows the page in the desktop's own browser session (cookies live
-there) — pages behind logins look logged-out. Watchable TUI browsing comes in
-the next round. The final tool result includes `page_text` (visible snapshot
-text, max 2000 chars) on `done`/`blocked`.
+there) — pages behind logins look logged-out.
+
+Pass `watch: true` (or `--watch`) to drive a **visible** terminal-browser pane.
+TB needs an existing kitty-graphics terminal (kitty, ghostty, wezterm, tmux,
+vscode, cmux, supacode, herdr — not iTerm2/Terminal.app). Installing TB does
+not install a terminal. If watch fails, the error includes TB's own
+diagnostics.
+
+Omit `--url` / `url` to re-attach to the last driven page. The final tool
+result includes `page_text` (visible snapshot text, max 2000 chars) on
+`done`/`blocked`.
 
 ### Offline tests
 

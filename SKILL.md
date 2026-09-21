@@ -12,7 +12,9 @@ Run the jev-ultrafast loop against an **owned** tab on the shared terminal-brows
 - A goal on a live page should be executed with cheap typed decisions, not a11y dumps in context.
 - You already have terminal-browser open and need observe → choose → act → re-observe.
 - **Preferred when the Hermes plugin is installed:** call the native `jev_drive` tool (do not paste snapshots into chat, do not shell out to `drive.py` yourself).
-- On the desktop app the preview pane opens automatically with the driven URL; note it shows the page in the desktop's own browser session (cookies live there) — pages behind logins look logged-out. Watchable TUI browsing comes in the next round. `watch` is reserved and ignored this round.
+- If the user verbatim asks to watch/see the browser while you drive (e.g. 'let me see', 'show me what you click', 'open it visibly'), pass `watch: true`. Otherwise omit it (headless is cheaper and fine for cron/background). If watch fails because terminal-browser is missing, tell the user the dependency and offer non-watch retry.
+- On the desktop app the preview pane opens automatically with the driven URL; note it shows the page in the desktop's own browser session (cookies live there) — pages behind logins look logged-out.
+- Omit `url` to continue the last driven page. Pass a url only to open a new one.
 
 Don't use for:
 

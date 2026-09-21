@@ -141,6 +141,7 @@ def compact_result(rows: list[dict], exit_code: int, error: str | None = None) -
         "source": meta.get("source"),
         "cdp_url": meta.get("cdp_url"),
         "auto_launched": bool(meta.get("auto_launched")),
+        "visibility": meta.get("visibility") or "headless",
     }
     success = exit_code == 0 and status == "done" and not error
     out = {
@@ -180,14 +181,12 @@ def _kill_group(proc: subprocess.Popen) -> None:
 
 
 def build_argv(args: dict) -> list[str]:
-    home = driver_home()
     max_steps = args.get("max_steps", DEFAULT_MAX_STEPS)
     try:
         max_steps = int(max_steps)
     except (TypeError, ValueError):
         max_steps = DEFAULT_MAX_STEPS
     max_steps = max(1, min(max_steps, MAX_STEPS_CAP))
-    url = args.get("url") or str((home / "fixtures" / "click.html").resolve().as_uri())
     argv = [
         "uv",
         "run",
@@ -198,13 +197,15 @@ def build_argv(args: dict) -> list[str]:
         str(args["goal"]),
         "--max-steps",
         str(max_steps),
-        "--url",
-        str(url),
     ]
+    if args.get("url"):
+        argv.extend(["--url", str(args["url"])])
     if args.get("target"):
         argv.extend(["--target", str(args["target"])])
     if args.get("cdp_url"):
         argv.extend(["--cdp", str(args["cdp_url"])])
+    if args.get("watch") in {True, "true", "True", 1, "1"}:
+        argv.append("--watch")
     return argv
 
 
@@ -223,7 +224,8 @@ def run_drive(args: dict, *, popen=subprocess.Popen, kill_group=_kill_group) -> 
     if not (home / "scripts" / "drive.py").is_file():
         return compact_result([], 1, error=f"drive.py missing under {home}")
     timeout_s = clamp_timeout(args.get("timeout_s", DEFAULT_TIMEOUT))
-    maybe_open_preview(args.get("url") or str((home / "fixtures" / "click.html").resolve().as_uri()))
+    if args.get("url"):
+        maybe_open_preview(str(args["url"]))
     proc = popen(
         build_argv(args),
         cwd=str(home),

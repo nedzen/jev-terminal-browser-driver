@@ -123,7 +123,7 @@ def test_schema_is_openai_function_shape():
     assert "goal" in schema["parameters"]["properties"]
 
 
-def test_schema_accepts_watch_without_passing_argv(home):
+def test_schema_accepts_watch_and_passes_argv(home):
     assert plugin.SCHEMA["parameters"]["properties"]["watch"]["type"] == "boolean"
     captured = {}
 
@@ -132,7 +132,8 @@ def test_schema_accepts_watch_without_passing_argv(home):
         return FakeProc(stdout=json.dumps({"status": "done", "url": "x"}), returncode=0)
 
     handler.run_drive({"goal": "g", "watch": True}, popen=popen)
-    assert "--watch" not in captured["argv"]
+    assert "--watch" in captured["argv"]
+    assert "--url" not in captured["argv"]
 
 
 def test_page_text_truncated_on_final_tick_only():
