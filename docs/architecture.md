@@ -46,11 +46,29 @@ scripts/drive.py
 4. **Action.** `jev_driver/browser.py` re-validates the target immediately
    before input (connected, visible, enabled, not covered, geometry on-screen)
    and executes via raw CDP input events. Mutations are never retried; stale
-   pages raise and the loop re-observes instead.
+   pages raise and the loop re-observes instead. After date/combobox-class
+   clicks, a bounded overlay wait stabilizes the observed element set (the
+   date-picker/autocomplete stall class) before the next predict.
 5. **Loop.** `jev_driver/agent.py` (upstream, verbatim) repeats
    observe → choose → act until the model picks `DONE`/`BLOCKED` or
    `--max-steps`. Model `DONE` is *not* treated as success — verify the
    resulting URL or page content yourself.
+
+### Session continuity
+
+Omitting `--url` / `url` re-attaches to the previously driven page in the
+daemon browser instead of opening a fresh default-fixture tab; with no
+existing driven page, the default fixture applies. Follow-up calls on the
+same task should omit the URL.
+
+### Takeover (watch mode)
+
+`jev_driver/takeover.py` defines `WatchAgent` — a thin subclass that keeps
+`agent.py` verbatim and changes only the tick policy: `browser.fresh()` is
+checked before predict, after predict, and on `StalePage`; any mismatch while
+watching yields `blocked` with reason "user took over the browser" instead of
+re-observing and continuing. The user's mouse wins; the driver never
+force-navigates a surface the user moved.
 
 ## Discovery ladder (which browser gets driven)
 
@@ -64,6 +82,16 @@ scripts/drive.py
 4. Loopback probe `127.0.0.1:9222–9330` (`/json/version`).
 5. Auto-provision: launch a headless `agent-browser --session jev-driver`
    session (system Chrome) and re-discover.
+
+**Watch branch** (`watch=true` / `--watch`): terminal-browser is the
+environment authority (there is NO herdr/cmux assumption — herdr is one of
+eight supported terminals). If a TB instance is running → attach. Else if the
+TB binary is on PATH → `terminal-browser open <url> --split right` (TB splits
+herdr/cmux/kitty/ghostty/wezterm/tmux/vscode/supacode panes natively via
+inherited `HERDR_*` env) and poll for its port (~30s). Else raise
+`WatchUnavailable` with the install pointer, and surface TB's own diagnostics
+(unsupported terminal, missing kitty graphics, etc.). Never fall through to
+headless when watch was requested.
 
 Env hygiene: `discover._child_env()` strips `AGENT_BROWSER_ENGINE` unless it
 names `chrome` / `lightpanda` — Hermes injects `~/.hermes/.env` into session
