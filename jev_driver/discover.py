@@ -103,14 +103,17 @@ def resolve_agent_browser() -> str | None:
 
 
 def _child_env() -> dict:
-    """agent-browser treats an empty AGENT_BROWSER_ENGINE as an invalid engine name.
+    """agent-browser accepts only engine names (chrome, lightpanda).
 
-    Hermes loads ~/.hermes/.env into its process env, and users commonly carry
-    `AGENT_BROWSER_ENGINE=` (empty) there — scrub it so the daemon default (chrome)
-    applies instead of failing every auto-launch under the Hermes process.
+    Hermes loads ~/.hermes/.env into its process env; a user .env commonly
+    carries AGENT_BROWSER_ENGINE set to an engine *hash* (or empty) — both are
+    rejected by agent-browser ("Unknown engine: ... chrome, lightpanda") and
+    poison every auto-launch under the Hermes process. Keep the var only if it
+    names a supported engine; otherwise drop it so the daemon default applies.
     """
     env = os.environ.copy()
-    if not str(env.get("AGENT_BROWSER_ENGINE", "")).strip():
+    engine = str(env.get("AGENT_BROWSER_ENGINE", "")).strip().lower()
+    if engine not in {"chrome", "lightpanda"}:
         env.pop("AGENT_BROWSER_ENGINE", None)
     return env
 

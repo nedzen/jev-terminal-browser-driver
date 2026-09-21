@@ -230,7 +230,7 @@ def run_drive(args: dict, *, popen=subprocess.Popen, kill_group=_kill_group) -> 
     if proc.returncode not in (0, 1) and not rows:
         error = f"driver exited {proc.returncode}"
     elif proc.returncode != 0 and not rows:
-        tail = (stderr or "").strip().splitlines()[-3:]
+        tail = (stderr or "").strip().splitlines()[-15:]
         error = "driver failed with no output" + (": " + " | ".join(tail) if tail else "")
     return compact_result(rows, proc.returncode or 0, error=error)
 
