@@ -89,6 +89,17 @@ No 32k overflow at N=120 (~11k input). Two-call fallback not used.
 
 `snapshot.js` only indexes on-screen nodes. A 120-link single column overflowed the pane (**N≈51**). Compact `column-count` + attaching to an **existing** leftover tab (no `new-tab`, no `closeTarget`) produced **N=120** clicks at 575×1058. See `bench_nway.md`.
 
+## Hermes plugin (feature/hermes-plugin)
+
+- Symlink: `~/.hermes/plugins/jev-driver` → repo `plugin/`.
+- `plugins.enabled` includes `jev-driver` in default `~/.hermes/config.yaml` (left installed).
+- Offline tests: 45 passed (`uv run pytest`). Auto-provision ladder covered by `tests/test_discover.py`.
+- `hermes plugins list` was started; it spun up local llama-server and dumped the full catalog (truncated before user plugins in the captured head). Discovery of the symlink is filesystem-confirmed. A full `hermes chat -q` jev_drive round-trip was not recorded here (llama-server startup noise); HQ can run:
+
+  `hermes chat -q 'Use jev_drive to click the Widget link on the click fixture.'`
+
+- Headless auto-provision: unit-tested (`--session jev-driver`). Not re-launched in this session (avoid extra Chromium after the PageHost crash).
+
 ## What we will not do
 
 - `terminal-browser shutdown`

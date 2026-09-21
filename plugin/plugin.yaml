@@ -1,0 +1,11 @@
+name: jev-driver
+version: 0.1.0
+description: "Native jev_drive tool: Jev-chosen browser actions via the local driver CLI."
+author: Marius
+kind: standalone
+license: MIT
+python_runtime: external
+pip_dependencies: []
+requires_env: []
+provides_tools:
+  - jev_drive

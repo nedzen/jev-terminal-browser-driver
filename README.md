@@ -127,10 +127,34 @@ Each tick prints `{"status", "url", "last_action", "elapsed_ms", "usage"}`.
 Exit `0` on `done`, `1` on `blocked`/error/budget. **Model `DONE` is not
 success** — check the URL or page text independently.
 
+## Hermes plugin
+
+The same loop is a native Hermes tool `jev_drive` (toolset `jev`). The plugin
+process never imports `jev_driver`; it shells out to `uv run python
+scripts/drive.py --json`. TUI and Desktop share this path (`hermes serve` on
+localhost).
+
+```bash
+./scripts/install_plugin.sh            # ~/.hermes/plugins/jev-driver
+./scripts/install_plugin.sh work       # also ~/.hermes/profiles/work/plugins/
+hermes plugins enable jev-driver
+```
+
+Named profiles do **not** inherit the default-home plugin dir — symlink each
+profile you care about. `plugins.enabled` is per home.
+
+If no terminal-browser is running, the driver walks a discovery ladder and
+will auto-provision a **headless** `agent-browser --session jev-driver`
+instance. It never launches terminal-browser and never calls
+`Target.closeTarget` on a TUI tab.
+
+Tool fields: `goal` (required), optional `url`, `target`, `max_steps` (cap 30),
+`cdp_url`, `timeout_s`. Prefer `jev_drive` over pasting snapshots into chat.
+
 ### Offline tests
 
 ```bash
-uv run pytest        # 36 tests, no network, no live browser
+uv run pytest        # offline; no network, no live browser
 ```
 
 ## Measured performance

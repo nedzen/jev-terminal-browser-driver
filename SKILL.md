@@ -11,6 +11,7 @@ Run the jev-ultrafast loop against an **owned** tab on the shared terminal-brows
 
 - A goal on a live page should be executed with cheap typed decisions, not a11y dumps in context.
 - You already have terminal-browser open and need observe → choose → act → re-observe.
+- **Preferred when the Hermes plugin is installed:** call the native `jev_drive` tool (do not paste snapshots into chat, do not shell out to `drive.py` yourself).
 
 Don't use for:
 
