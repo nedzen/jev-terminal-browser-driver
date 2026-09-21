@@ -148,6 +148,12 @@ will auto-provision a **headless** `agent-browser --session jev-driver`
 instance. It never launches terminal-browser and never calls
 `Target.closeTarget` on a TUI tab.
 
+Hermes loads `~/.hermes/.env` into the session. If `AGENT_BROWSER_ENGINE` is
+set to an engine **hash** (or anything other than `chrome` / `lightpanda`),
+agent-browser rejects the launch and in-Hermes auto-provision fails while
+bare `drive.py` still works. The driver strips unknown values for child
+processes (`discover._child_env`). Fix the `.env` line or leave it unset.
+
 Tool fields: `goal` (required), optional `url`, `target`, `max_steps` (cap 30),
 `cdp_url`, `timeout_s`. Prefer `jev_drive` over pasting snapshots into chat.
 
