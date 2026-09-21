@@ -155,7 +155,14 @@ bare `drive.py` still works. The driver strips unknown values for child
 processes (`discover._child_env`). Fix the `.env` line or leave it unset.
 
 Tool fields: `goal` (required), optional `url`, `target`, `max_steps` (cap 30),
-`cdp_url`, `timeout_s`. Prefer `jev_drive` over pasting snapshots into chat.
+`cdp_url`, `timeout_s`, `watch` (reserved; ignored this round). Prefer
+`jev_drive` over pasting snapshots into chat.
+
+On the desktop app the preview pane opens automatically with the driven URL;
+note it shows the page in the desktop's own browser session (cookies live
+there) — pages behind logins look logged-out. Watchable TUI browsing comes in
+the next round. The final tool result includes `page_text` (visible snapshot
+text, max 2000 chars) on `done`/`blocked`.
 
 ### Offline tests
 

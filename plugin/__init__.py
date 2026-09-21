@@ -25,6 +25,11 @@ PARAMETERS = {
             "maximum": 30,
         },
         "cdp_url": {"type": "string", "description": "Explicit CDP websocket or http://host:port discovery URL."},
+        "watch": {
+            "type": "boolean",
+            "description": "Reserved. Round 1 ignores this; TUI watchable browsing is the next round. Default false.",
+            "default": False,
+        },
         "timeout_s": {
             "type": "integer",
             "description": "Subprocess timeout in seconds (default 300, hard cap 900).",

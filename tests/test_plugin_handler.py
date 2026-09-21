@@ -2,11 +2,14 @@
 
 import json
 import subprocess
+import sys
+import types
 from unittest.mock import Mock
 
 import pytest
 
 import plugin
+from jev_driver.cli import tick_record
 from plugin import handler
 
 
@@ -118,6 +121,76 @@ def test_schema_is_openai_function_shape():
     assert schema["parameters"]["type"] == "object"
     assert "goal" in schema["parameters"]["required"]
     assert "goal" in schema["parameters"]["properties"]
+
+
+def test_schema_accepts_watch_without_passing_argv(home):
+    assert plugin.SCHEMA["parameters"]["properties"]["watch"]["type"] == "boolean"
+    captured = {}
+
+    def popen(argv, **kwargs):
+        captured["argv"] = argv
+        return FakeProc(stdout=json.dumps({"status": "done", "url": "x"}), returncode=0)
+
+    handler.run_drive({"goal": "g", "watch": True}, popen=popen)
+    assert "--watch" not in captured["argv"]
+
+
+def test_page_text_truncated_on_final_tick_only():
+    snap = {
+        "status": "ready",
+        "page": {"url": "https://example.test/", "text": "x" * 3000},
+        "history": [],
+        "decisions": [],
+    }
+    ready = tick_record(snap)
+    assert "page_text" not in ready
+    snap["status"] = "done"
+    done = tick_record(snap)
+    assert done["page_text"] == "x" * 2000
+
+
+def test_compact_result_passes_page_text():
+    rows = [
+        {"status": "done", "url": "file:///x", "page_text": "hello widget"},
+    ]
+    out = handler.compact_result(rows, 0)
+    assert out["page_text"] == "hello widget"
+
+
+def test_preview_emit_called_with_url(monkeypatch, home):
+    calls = []
+    dui = types.ModuleType("tools.desktop_ui")
+    tools = types.ModuleType("tools")
+
+    def emit_or_error(event, payload, fail_prefix, desktop_only, result):
+        calls.append((event, payload, result))
+        return json.dumps(result)
+
+    dui.emit_or_error = emit_or_error
+    tools.desktop_ui = dui
+    monkeypatch.setitem(sys.modules, "tools", tools)
+    monkeypatch.setitem(sys.modules, "tools.desktop_ui", dui)
+    proc = FakeProc(stdout=json.dumps({"status": "done", "url": "x"}), returncode=0)
+    handler.run_drive({"goal": "g", "url": "https://example.test/widget"}, popen=lambda *a, **k: proc)
+    assert calls[0][0] == "preview.open"
+    assert calls[0][1] == {"url": "https://example.test/widget", "label": "Jev"}
+
+
+def test_preview_import_failure_is_silent(monkeypatch, home):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "tools" or name.startswith("tools."):
+            raise ImportError("missing")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    handler.maybe_open_preview("https://example.test/")
+    proc = FakeProc(stdout=json.dumps({"status": "done", "url": "x"}), returncode=0)
+    result = handler.run_drive({"goal": "g"}, popen=lambda *a, **k: proc)
+    assert result["success"] is True
 
 
 def test_max_steps_and_timeout_clamped(home):

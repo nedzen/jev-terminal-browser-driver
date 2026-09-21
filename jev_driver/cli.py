@@ -29,13 +29,16 @@ def tick_record(snap: dict) -> dict:
     elif snap.get("status") in {"done", "blocked"}:
         last_action = snap["status"].upper()
     usage = (last or {}).get("usage") or (decision or {}).get("usage") or {}
-    return {
+    rec = {
         "status": snap.get("status"),
         "url": page.get("url"),
         "last_action": last_action,
         "elapsed_ms": snap.get("elapsed_ms"),
         "usage": usage,
     }
+    if rec["status"] in {"done", "blocked"}:
+        rec["page_text"] = (page.get("text") or "")[:2000]
+    return rec
 
 
 def parse_args(argv=None):
@@ -82,7 +85,9 @@ def main(argv=None) -> int:
         snap = agent.snapshot()
         while agent.state["status"] not in {"done", "blocked"}:
             if steps >= args.max_steps:
-                print(json.dumps({**tick_record(snap), "status": "blocked", "error": "max-steps"}))
+                rec = {**tick_record(snap), "status": "blocked", "error": "max-steps"}
+                rec["page_text"] = ((snap.get("page") or {}).get("text") or "")[:2000]
+                print(json.dumps(rec))
                 return 1
             snap = agent.command("tick")
             steps += 1

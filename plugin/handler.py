@@ -111,6 +111,24 @@ def _sum_usage(rows: list[dict]) -> dict:
     return total
 
 
+def maybe_open_preview(url: str) -> None:
+    """Best-effort desktop preview.open. TUI/gateway/cron: emitter is None → no-op."""
+    if not url:
+        return
+    try:
+        from tools import desktop_ui
+
+        desktop_ui.emit_or_error(
+            "preview.open",
+            {"url": url, "label": "Jev"},
+            "Failed to open the preview pane: ",
+            "The preview pane is only available in the Hermes desktop app.",
+            {"success": True, "url": url, "label": "Jev"},
+        )
+    except Exception:
+        return
+
+
 def compact_result(rows: list[dict], exit_code: int, error: str | None = None) -> dict:
     meta = next((r for r in rows if r.get("event") == "browser"), {})
     ticks = [r for r in rows if r.get("status")]
@@ -125,7 +143,7 @@ def compact_result(rows: list[dict], exit_code: int, error: str | None = None) -
         "auto_launched": bool(meta.get("auto_launched")),
     }
     success = exit_code == 0 and status == "done" and not error
-    return {
+    out = {
         "success": success,
         "status": "error" if error and status != "blocked" else status,
         "final_url": last.get("url"),
@@ -135,6 +153,9 @@ def compact_result(rows: list[dict], exit_code: int, error: str | None = None) -
         "browser": browser,
         "error": error,
     }
+    if last.get("page_text") is not None:
+        out["page_text"] = last["page_text"]
+    return out
 
 
 def _kill_group(proc: subprocess.Popen) -> None:
@@ -202,6 +223,7 @@ def run_drive(args: dict, *, popen=subprocess.Popen, kill_group=_kill_group) -> 
     if not (home / "scripts" / "drive.py").is_file():
         return compact_result([], 1, error=f"drive.py missing under {home}")
     timeout_s = clamp_timeout(args.get("timeout_s", DEFAULT_TIMEOUT))
+    maybe_open_preview(args.get("url") or str((home / "fixtures" / "click.html").resolve().as_uri()))
     proc = popen(
         build_argv(args),
         cwd=str(home),

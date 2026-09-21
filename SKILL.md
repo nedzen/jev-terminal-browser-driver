@@ -12,6 +12,7 @@ Run the jev-ultrafast loop against an **owned** tab on the shared terminal-brows
 - A goal on a live page should be executed with cheap typed decisions, not a11y dumps in context.
 - You already have terminal-browser open and need observe → choose → act → re-observe.
 - **Preferred when the Hermes plugin is installed:** call the native `jev_drive` tool (do not paste snapshots into chat, do not shell out to `drive.py` yourself).
+- On the desktop app the preview pane opens automatically with the driven URL; note it shows the page in the desktop's own browser session (cookies live there) — pages behind logins look logged-out. Watchable TUI browsing comes in the next round. `watch` is reserved and ignored this round.
 
 Don't use for:
 
