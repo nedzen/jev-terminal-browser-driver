@@ -9,8 +9,8 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
+from . import discover as _discover
 from .cdp import TB, cdp, cdp_port, connect, list_browsers
-from .discover import LAST, SESSION, agent_browser_argv, resolve_agent_browser
 
 READ_STATE = Path(__file__).with_name("snapshot.js").read_text()
 MARKER = f"(() => {{ const state={READ_STATE}; return state?.marker ?? null; }})()"
@@ -124,11 +124,12 @@ def _open_via_chrome(url):
         created = cdp("Target.createTarget", url=url, background=True)["targetId"]
         return created, True
     except RuntimeError:
-        binary = resolve_agent_browser()
+        binary = _discover.resolve_agent_browser()
         if not binary:
             raise
+        session = (_discover.LAST.session if _discover.LAST else None) or _discover.SESSION
         subprocess.run(
-            agent_browser_argv(binary) + ["--session", LAST.session or SESSION, "open", url],
+            _discover.agent_browser_argv(binary) + ["--session", session, "open", url],
             check=False,
             timeout=60,
             capture_output=True,
@@ -141,7 +142,8 @@ def _open_via_chrome(url):
 
 
 def _open_owned_tab(url):
-    source = LAST.source if LAST else "terminal-browser"
+    last = _discover.LAST
+    source = last.source if last else "terminal-browser"
     if source == "terminal-browser":
         return _open_via_new_tab(url)
     return _open_via_chrome(url)

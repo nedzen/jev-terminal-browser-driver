@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from .handler import check_jev_drive, handle_jev_drive
 
-SCHEMA = {
+DESCRIPTION = (
+    "Run a goal in a real browser: observe visible elements, let Jev pick "
+    "operation+target, act. Prefer this over dumping snapshots into chat."
+)
+
+PARAMETERS = {
     "type": "object",
     "additionalProperties": False,
     "required": ["goal"],
@@ -30,6 +35,15 @@ SCHEMA = {
     },
 }
 
+# Hermes registry.get_definitions wraps entry.schema as the OpenAI `function` block.
+# tool_search reads function.description and function.parameters — not ToolEntry.description
+# and not a bare JSON Schema. Match google_meet/spotify: {name, description, parameters}.
+SCHEMA = {
+    "name": "jev_drive",
+    "description": DESCRIPTION,
+    "parameters": PARAMETERS,
+}
+
 
 def register(ctx) -> None:
     ctx.register_tool(
@@ -38,9 +52,6 @@ def register(ctx) -> None:
         schema=SCHEMA,
         handler=handle_jev_drive,
         check_fn=check_jev_drive,
-        description=(
-            "Run a goal in a real browser: observe visible elements, let Jev pick "
-            "operation+target, act. Prefer this over dumping snapshots into chat."
-        ),
+        description=DESCRIPTION,
         emoji="⚡",
     )

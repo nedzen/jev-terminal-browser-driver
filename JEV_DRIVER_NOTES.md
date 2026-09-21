@@ -89,6 +89,23 @@ No 32k overflow at N=120 (~11k input). Two-call fallback not used.
 
 `snapshot.js` only indexes on-screen nodes. A 120-link single column overflowed the pane (**N≈51**). Compact `column-count` + attaching to an **existing** leftover tab (no `new-tab`, no `closeTarget`) produced **N=120** clicks at 575×1058. See `bench_nway.md`.
 
+## Hermes plugin schema (deferred catalog)
+
+Live `tool_search` for `jev_drive` returned
+`{description:'', parameters:{type:object, properties:{}, required:[]}}` even after
+load. Cause is **registration shape**, not a dropped `register_tool` kwarg.
+
+`tools/registry.py:829-856` `get_definitions()` emits
+`{"type":"function","function": {**entry.schema, "name": entry.name}}`.
+It never copies `ToolEntry.description` into that block.
+`tools/tool_search_catalog.py:90-115` then reads `function.description` and
+`function.parameters` (not the JSON Schema we originally passed as `schema`).
+
+Bundled plugins (google_meet, spotify) pass
+`{name, description, parameters: {type, properties, required}}`. We now do the
+same. The extra `description=` kwarg on `register_tool` is still set (used by
+banners) but is **not** what tool_search serves.
+
 ## Hermes plugin (feature/hermes-plugin)
 
 - Symlink: `~/.hermes/plugins/jev-driver` → repo `plugin/`.

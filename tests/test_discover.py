@@ -63,6 +63,7 @@ def test_auto_provision_uses_jev_driver_session(monkeypatch):
 
     monkeypatch.setattr(disc, "agent_browser_cdp_url", cdp_url)
     monkeypatch.setattr(disc, "_loopback_discovery", lambda: None)
+    monkeypatch.setattr(disc.time, "sleep", lambda _s: None)
 
     def launch(binary, url):
         launches.append((binary, url))
@@ -72,6 +73,28 @@ def test_auto_provision_uses_jev_driver_session(monkeypatch):
     assert found.source == "headless-launched"
     assert found.auto_launched is True
     assert launches == [("/bin/agent-browser", "https://example.test/")]
+
+
+def test_auto_provision_polls_cdp_url_after_launch(monkeypatch):
+    monkeypatch.setattr(disc, "_terminal_browser_discovery", lambda: None)
+    monkeypatch.setattr(disc, "resolve_agent_browser", lambda: "/bin/agent-browser")
+    monkeypatch.setattr(disc, "_loopback_discovery", lambda: None)
+    monkeypatch.setattr(disc, "_launch_headless", lambda binary, url: None)
+    sleeps = []
+    monkeypatch.setattr(disc.time, "sleep", lambda s: sleeps.append(s))
+    calls = {"n": 0}
+
+    def cdp_url(binary, session=disc.SESSION):
+        calls["n"] += 1
+        if calls["n"] < 4:
+            return None
+        return "ws://127.0.0.1:9333/devtools/browser/h"
+
+    monkeypatch.setattr(disc, "agent_browser_cdp_url", cdp_url)
+    found = disc.discover(launch_url="about:blank")
+    assert found.source == "headless-launched"
+    assert calls["n"] == 4
+    assert sleeps == [disc.POST_LAUNCH_DELAY_S, disc.POST_LAUNCH_DELAY_S]
 
 
 def test_resolve_agent_browser_prefers_path_then_bundled(monkeypatch, tmp_path):

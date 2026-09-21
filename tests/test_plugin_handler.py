@@ -6,6 +6,7 @@ from unittest.mock import Mock
 
 import pytest
 
+import plugin
 from plugin import handler
 
 
@@ -108,6 +109,15 @@ def test_timeout_kills_process_group(home):
     assert result["error"] == "timeout"
     assert result["success"] is False
     assert kills == [4242]
+
+
+def test_schema_is_openai_function_shape():
+    schema = plugin.SCHEMA
+    assert schema["name"] == "jev_drive"
+    assert schema["description"]
+    assert schema["parameters"]["type"] == "object"
+    assert "goal" in schema["parameters"]["required"]
+    assert "goal" in schema["parameters"]["properties"]
 
 
 def test_max_steps_and_timeout_clamped(home):

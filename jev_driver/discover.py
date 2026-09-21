@@ -6,6 +6,8 @@ import json
 import os
 import shutil
 import subprocess
+import sys
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -19,6 +21,9 @@ BUNDLED_AGENT_BROWSER = (
     Path.home() / ".local" / "share" / "terminal-browser" / "app" / "agent-browser" / "bin" / "agent-browser"
 )
 LOOPBACK_PORTS = range(9222, 9331)
+CDP_PROBE_TIMEOUT = 20
+POST_LAUNCH_TRIES = 5
+POST_LAUNCH_DELAY_S = 5
 
 
 @dataclass
@@ -102,14 +107,26 @@ def _run_agent_browser(binary: str, extra: list[str], timeout: float = 15) -> st
         agent_browser_argv(binary) + extra,
         text=True,
         timeout=timeout,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
     )
 
 
 def agent_browser_cdp_url(binary: str, session: str = SESSION) -> str | None:
     try:
-        out = _run_agent_browser(binary, ["--session", session, "get", "cdp-url"], timeout=8).strip()
-    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+        out = _run_agent_browser(
+            binary, ["--session", session, "get", "cdp-url"], timeout=CDP_PROBE_TIMEOUT
+        ).strip()
+    except subprocess.TimeoutExpired:
+        print(
+            f"jev-driver: agent-browser get cdp-url timed out after {CDP_PROBE_TIMEOUT}s "
+            f"(session={session})",
+            file=sys.stderr,
+        )
+        return None
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        detail = getattr(exc, "stderr", None) or str(exc)
+        if str(detail).strip():
+            print(f"jev-driver: agent-browser get cdp-url failed: {str(detail).strip()[-500:]}", file=sys.stderr)
         return None
     if not out:
         return None
@@ -157,14 +174,35 @@ def _loopback_discovery() -> Discovery | None:
     return None
 
 
+def _wait_for_agent_browser_cdp(
+    binary: str, *, tries: int = POST_LAUNCH_TRIES, delay: float = POST_LAUNCH_DELAY_S
+) -> str | None:
+    for attempt in range(1, tries + 1):
+        ws = agent_browser_cdp_url(binary)
+        if ws:
+            return ws
+        if attempt < tries:
+            time.sleep(delay)
+    return None
+
+
 def _launch_headless(binary: str, url: str) -> None:
-    subprocess.run(
+    completed = subprocess.run(
         agent_browser_argv(binary) + ["--session", SESSION, "open", url],
         check=False,
         timeout=60,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
     )
+    if completed.returncode != 0:
+        tail = (completed.stderr or completed.stdout or "").strip()[-800:]
+        print(
+            f"jev-driver: agent-browser open --session {SESSION} exited {completed.returncode}"
+            + (f": {tail}" if tail else ""),
+            file=sys.stderr,
+        )
+    elif (completed.stderr or "").strip():
+        print(f"jev-driver: agent-browser open stderr: {completed.stderr.strip()[-500:]}", file=sys.stderr)
 
 
 def discover(*, explicit: str | None = None, launch_url: str = "about:blank", auto_provision: bool = True) -> Discovery:
@@ -193,7 +231,7 @@ def discover(*, explicit: str | None = None, launch_url: str = "about:blank", au
         return LAST
     if auto_provision and binary:
         _launch_headless(binary, launch_url)
-        ws = agent_browser_cdp_url(binary)
+        ws = _wait_for_agent_browser_cdp(binary)
         if ws:
             LAST = Discovery(
                 ws_url=ws,
