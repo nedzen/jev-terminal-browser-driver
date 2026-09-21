@@ -102,12 +102,26 @@ def resolve_agent_browser() -> str | None:
     return None
 
 
+def _child_env() -> dict:
+    """agent-browser treats an empty AGENT_BROWSER_ENGINE as an invalid engine name.
+
+    Hermes loads ~/.hermes/.env into its process env, and users commonly carry
+    `AGENT_BROWSER_ENGINE=` (empty) there — scrub it so the daemon default (chrome)
+    applies instead of failing every auto-launch under the Hermes process.
+    """
+    env = os.environ.copy()
+    if not str(env.get("AGENT_BROWSER_ENGINE", "")).strip():
+        env.pop("AGENT_BROWSER_ENGINE", None)
+    return env
+
+
 def _run_agent_browser(binary: str, extra: list[str], timeout: float = 15) -> str:
     return subprocess.check_output(
         agent_browser_argv(binary) + extra,
         text=True,
         timeout=timeout,
         stderr=subprocess.PIPE,
+        env=_child_env(),
     )
 
 
@@ -193,6 +207,7 @@ def _launch_headless(binary: str, url: str) -> None:
         timeout=60,
         capture_output=True,
         text=True,
+        env=_child_env(),
     )
     if completed.returncode != 0:
         tail = (completed.stderr or completed.stdout or "").strip()[-800:]
