@@ -4,6 +4,15 @@ How `jev_drive` / `drive.py` works: the execution chain, the decision
 protocol, the CDP transport, and the safety model. Paths relative to the repo
 root unless noted.
 
+## Envelope
+
+`jev_drive` is a **one-viewport click-path actor**: forms, wizards, filters,
+logins, in-view navigation. Verified successes (click fixture, Google Flights
+form flow) are all single-viewport. Aggregation/extraction over long
+multi-viewport pages ("scan, collect, rank" — e.g. artificialanalysis.ai
+leaderboards) is out of envelope; use fetch/HTML/API. Findings:
+`docs/research/JEV_DRIVE_BLOCKED_DEBUG_20260921.md`.
+
 ## Pipeline
 
 ```
@@ -63,6 +72,24 @@ same browser** (`~/.cache/jev-driver/last-page.json` holds
 URL-stem match on this `/json/list`), and a pointer younger than 30 minutes.
 Legacy files and cross-daemon ids fail closed: a new tab / default fixture,
 never an arbitrary live tab. Pass a non-empty `url` when switching sites.
+
+### Hydration, scroll, repeat-guard
+
+After navigate (and after click/select/fill), `Browser.observe` may re-read
+the page up to 3 times if the action count is still low or visible text is
+still growing (`HYDRATE_*` class attributes; tests inject a zero sleep).
+Scroll wheel delta is `innerHeight * 0.8` at CDP dispatch; `snapshot.js`
+still reports 560. `DriveAgent` exempts advancing `SCROLL_*` from the
+upstream 3-repeat hard-block (`agent.py` stays verbatim). Tick JSON may
+include `degenerate: true` when the top operation probability is &lt; 0.6
+with a &lt; 0.1 gap to the runner-up.
+
+### Debug HUD
+
+`--debug` / `debug: true` injects `jev_driver/hud.js` into the **owned** tab
+only: red outlines on `__jevFast` nodes, a top bar (goal → operation), and
+a ranking console from `operation_probabilities` / `target_probabilities`.
+The HUD root is `aria-hidden` + `inert` so snapshot.js does not index it.
 
 ### Takeover (watch mode)
 

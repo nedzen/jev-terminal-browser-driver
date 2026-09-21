@@ -2,13 +2,13 @@
 
 import time
 
-from .agent import Agent
 from .browser import StalePage
+from .drive_agent import DriveAgent
 
 TAKEOVER_REASON = "user took over the browser"
 
 
-class WatchAgent(Agent):
+class WatchAgent(DriveAgent):
     """Same loop as Agent, but a stale page means the user took over — do not re-observe and continue."""
 
     def command(self, name, body=None):

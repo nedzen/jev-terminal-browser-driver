@@ -7,10 +7,10 @@ import json
 import sys
 from pathlib import Path
 
-from .agent import Agent
 from .browser import LAST_CONTINUITY, _log_continuity, find_continuable_page, set_lease
 from .cdp import connect
 from .discover import WatchUnavailable, discover
+from .drive_agent import DriveAgent
 from .questions import MAX_STEPS
 from .takeover import TAKEOVER_REASON, WatchAgent
 
@@ -41,7 +41,21 @@ def tick_record(snap: dict) -> dict:
         rec["page_text"] = (page.get("text") or "")[:2000]
     if snap.get("takeover"):
         rec["error"] = TAKEOVER_REASON
+    if degenerate(decision):
+        rec["degenerate"] = True
     return rec
+
+
+def degenerate(decision) -> bool:
+    if not decision:
+        return False
+    probs = decision.get("operation_probabilities") or {}
+    if not probs:
+        return False
+    ranked = sorted(probs.values(), reverse=True)
+    top = ranked[0]
+    gap = top - (ranked[1] if len(ranked) > 1 else 0)
+    return top < 0.6 and gap < 0.1
 
 
 def parse_args(argv=None):
@@ -56,6 +70,7 @@ def parse_args(argv=None):
     parser.add_argument("--cdp", dest="cdp_url", default=None, help="Explicit CDP websocket or http discovery URL.")
     parser.add_argument("--json", action="store_true", help="Plugin contract: browser meta line, then JSON ticks.")
     parser.add_argument("--watch", action="store_true", help="Drive a visible terminal-browser pane.")
+    parser.add_argument("--debug", action="store_true", help="Inject a debug HUD in the owned tab.")
     return parser.parse_args(argv)
 
 
@@ -102,8 +117,8 @@ def main(argv=None) -> int:
         if continuity:
             meta["continuity"] = continuity
         print(json.dumps(meta), flush=True)
-    agent_cls = WatchAgent if args.watch else Agent
-    agent = agent_cls(agent_url, args.goal, screenshots=False)
+    agent_cls = WatchAgent if args.watch else DriveAgent
+    agent = agent_cls(agent_url, args.goal, screenshots=False, debug=args.debug)
     code = 1
     try:
         steps = 0

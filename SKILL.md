@@ -9,7 +9,7 @@ Run the jev-ultrafast loop against an **owned** tab on the shared terminal-brows
 
 ## When to Use
 
-- A goal on a live page should be executed with cheap typed decisions, not a11y dumps in context.
+- A **single-viewport click-path** goal on a live page (forms, wizards, filters, logins, navigation) should be executed with cheap typed decisions, not a11y dumps in context.
 - You already have terminal-browser open and need observe → choose → act → re-observe.
 - **Preferred when the Hermes plugin is installed:** call the native `jev_drive` tool (do not paste snapshots into chat, do not shell out to `drive.py` yourself).
 - If the user verbatim asks to watch/see the browser while you drive (e.g. 'let me see', 'show me what you click', 'open it visibly'), pass `watch: true`. Otherwise omit it (headless is cheaper and fine for cron/background). If watch fails because terminal-browser is missing, tell the user the dependency and offer non-watch retry.
@@ -18,6 +18,7 @@ Run the jev-ultrafast loop against an **owned** tab on the shared terminal-brows
 
 Don't use for:
 
+- Aggregation or extraction over long multi-viewport pages (scan / collect / rank rows). jev only sees the current viewport (≤6k text). Example: ranking models on artificialanalysis.ai — use fetch/HTML/API instead.
 - One-off `eval` / screenshot / cookie inspection — use `terminal-browser action` instead.
 - Mixing `@eN` refs from `terminal-browser action -- snapshot` with this loop. Those ids are not Jev's `eN`.
 

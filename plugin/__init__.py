@@ -5,11 +5,13 @@ from __future__ import annotations
 from .handler import check_jev_drive, handle_jev_drive
 
 DESCRIPTION = (
-    "Run a goal in a real browser: observe visible elements, let Jev pick "
-    "operation+target, act. Prefer this over dumping snapshots into chat. "
-    "Pass watch=true when the user asks to see the browser (TUI opens "
-    "terminal-browser). Omit url to continue the last driven tab in the same "
-    "browser (30 min). Pass a non-empty url when switching sites."
+    "Run a single-viewport click-path goal in a real browser (forms, wizards, "
+    "filters, logins, navigation): observe visible elements, let Jev pick "
+    "operation+target, act. Not for scan/collect/rank over long pages "
+    "(e.g. artificialanalysis.ai leaderboards) — use fetch/HTML/API. "
+    "Prefer this over dumping snapshots into chat. Pass watch=true when the "
+    "user asks to see the browser. Omit url to continue the last driven tab "
+    "in the same browser (30 min). Pass a non-empty url when switching sites."
 )
 
 PARAMETERS = {
@@ -48,6 +50,11 @@ PARAMETERS = {
             "default": 300,
             "minimum": 1,
             "maximum": 900,
+        },
+        "debug": {
+            "type": "boolean",
+            "description": "Inject a driver-owned debug HUD (outlines + ranking) in the owned tab. Default false.",
+            "default": False,
         },
     },
 }

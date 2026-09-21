@@ -13,6 +13,7 @@ from . import discover as _discover
 from .cdp import TB, cdp, cdp_port, connect, list_browsers
 
 READ_STATE = Path(__file__).with_name("snapshot.js").read_text()
+HUD_JS = Path(__file__).with_name("hud.js").read_text()
 MARKER = f"(() => {{ const state={READ_STATE}; return state?.marker ?? null; }})()"
 
 BLOCKED_SCHEMES = ("chrome:", "chrome-untrusted:", "devtools:", "chrome-extension:")
@@ -290,11 +291,18 @@ def _open_owned_tab(url):
 
 
 class Browser:
+    HYDRATE_MIN_ACTIONS = 8
+    HYDRATE_MAX_ROUNDS = 3
+    HYDRATE_SLEEP_S = 0.4
+    sleep = staticmethod(time.sleep)
+
     def __init__(self, url):
         connect()
         self.owned = False
         self.target = None
         self.session = None
+        self.debug = False
+        self._needs_hydrate = True
         if LEASE["tab"] == "target":
             target_id = LEASE["target_id"]
             if not target_id:
@@ -342,7 +350,19 @@ class Browser:
             raise StalePage("Document changed during evaluation")
         return response.get("result", {}).get("value")
 
-    def observe(self, screenshot=True):
+    def paint_hud(self, payload):
+        if not getattr(self, "debug", False) or not self.session:
+            return
+        try:
+            self.call(
+                "Runtime.evaluate",
+                expression=HUD_JS + "\nwindow.__jevHudPaint(" + json.dumps(payload) + ");",
+                returnByValue=True,
+            )
+        except (RuntimeError, StalePage):
+            return
+
+    def _observe_once(self, screenshot=True):
         if getattr(self, "after_input", None):
             action, self.after_input = self.after_input, None
             try:
@@ -396,6 +416,28 @@ class Browser:
                 time.sleep(0.02)
         raise StalePage("Page did not settle")
 
+    def _settle_observe(self, screenshot=True):
+        prev_len = -1
+        page = None
+        rounds = max(1, int(self.HYDRATE_MAX_ROUNDS))
+        for _ in range(rounds):
+            page = self._observe_once(screenshot)
+            n_actions = len(page.get("actions") or [])
+            text_len = len(page.get("text") or "")
+            if n_actions >= self.HYDRATE_MIN_ACTIONS and (prev_len < 0 or text_len <= prev_len):
+                return page
+            prev_len = text_len
+            if self.HYDRATE_SLEEP_S:
+                self.sleep(self.HYDRATE_SLEEP_S)
+        return page
+
+    def observe(self, screenshot=True):
+        if getattr(self, "_needs_hydrate", False) and self.HYDRATE_MAX_ROUNDS > 1:
+            page = self._settle_observe(screenshot)
+            self._needs_hydrate = False
+            return page
+        return self._observe_once(screenshot)
+
     def fresh(self, page, action=None):
         if action is not None and action["kind"] in {"click", "select"}:
             node = action["node"]
@@ -415,6 +457,8 @@ class Browser:
             time.sleep(0.1)
         result = browser_operation({"operation": "act", "session": self.session, "action": action, "text": text})
         self.after_input = action if action["kind"] != "wait" else None
+        if action["kind"] in {"click", "select", "fill"}:
+            self._needs_hydrate = True
         return result
 
     def close(self):
@@ -454,7 +498,13 @@ def browser_operation(request):
         action = request["action"]
         kind = action["kind"]
         if kind == "scroll":
-            call("Input.dispatchMouseEvent", type="mouseWheel", x=550, y=650, deltaX=0, deltaY=action["delta"])
+            size = evaluate("({h: innerHeight, w: innerWidth})") or {}
+            height = size.get("h") or 700
+            width = size.get("w") or 1100
+            sign = 1 if (action.get("delta") or 0) > 0 else -1
+            delta = sign * int(height * 0.8)
+            x, y = width / 2, height / 2
+            call("Input.dispatchMouseEvent", type="mouseWheel", x=x, y=y, deltaX=0, deltaY=delta)
         elif kind != "wait":
             if type(action["node"]) is not int:
                 raise ValueError("Invalid observed node")

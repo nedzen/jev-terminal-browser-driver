@@ -158,6 +158,8 @@ def compact_result(rows: list[dict], exit_code: int, error: str | None = None) -
     }
     if last.get("page_text") is not None:
         out["page_text"] = last["page_text"]
+    if any(t.get("degenerate") for t in ticks):
+        out["degenerate"] = True
     return out
 
 
@@ -208,6 +210,8 @@ def build_argv(args: dict) -> list[str]:
         argv.extend(["--cdp", str(args["cdp_url"])])
     if args.get("watch") in {True, "true", "True", 1, "1"}:
         argv.append("--watch")
+    if args.get("debug") in {True, "true", "True", 1, "1"}:
+        argv.append("--debug")
     return argv
 
 

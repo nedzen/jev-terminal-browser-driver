@@ -61,15 +61,11 @@ Read this first in a new session. Everything below is verified state + remaining
 6. Tests: 47 offline, `uv run pytest` (no network, no live browser needed).
 
 ## Remaining TODO (in priority order)
-0. **DEBUG FINDINGS (2026-09-21):** `jev_drive` hard-BLOCKED on data-extraction goals
-   (artificialanalysis.ai). **One line:** jev is a one-viewport actor and the verified
-   successes (Flights form flow) are all single-viewport click paths — either give it a
-   driver-side accumulation scratchpad (real fix, touches agent.py/model.py/questions.py)
-   or route extraction goals away from it (doc fix, zero code). Hydration wait and
-   viewport-scaled scroll are cheap wins regardless. Ranked causes: no cross-tick
-   accumulation → hydration race → 560px scroll vs 19k px page → repeat-guard.
-   Confidence-collapse heuristic: top op <0.6 with <0.1 gap = run already dead.
-   Full trace + four fix options: `docs/research/JEV_DRIVE_BLOCKED_DEBUG_20260921.md`.
+0. **DEBUG FINDINGS (2026-09-21):** extraction goals BLOCKED by construction (one-viewport
+   actor). **Routed away in SKILL/DESCRIPTION.** Cheap wins in driver: hydration settle,
+   viewport-scaled scroll, scroll-repeat-guard exemption (`DriveAgent`), `degenerate`
+   flag, optional `--debug` HUD. Scratchpad (agent.py/model.py/questions.py) still
+   deferred. Full trace: `docs/research/JEV_DRIVE_BLOCKED_DEBUG_20260921.md`.
    Repro: `~/.hermes/cache/scratch/jev_trace.py`.
 1. **Merge** `feature/hermes-plugin` → main after user is satisfied; push.
    Round 1 (desktop preview.open emit + page_text) and Round 2 (TUI watch,
