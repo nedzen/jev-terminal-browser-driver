@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .cdp import TB, cdp, cdp_port, connect, list_browsers
+from .discover import LAST, SESSION, agent_browser_argv, resolve_agent_browser
 
 READ_STATE = Path(__file__).with_name("snapshot.js").read_text()
 MARKER = f"(() => {{ const state={READ_STATE}; return state?.marker ?? null; }})()"
@@ -81,7 +82,17 @@ def _unique_url(url):
     return f"{url}{sep}jev={time.time_ns()}"
 
 
-def _open_owned_tab(url):
+def _wait_new_page(before_ids, timeout=15):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        for page in _json_pages():
+            if page.get("type") == "page" and page.get("id") not in before_ids:
+                return page["id"]
+        time.sleep(0.05)
+    return None
+
+
+def _open_via_new_tab(url):
     url = _unique_url(url)
     data = list_browsers()
     key = _pick_browser_key(data)
@@ -100,13 +111,40 @@ def _open_owned_tab(url):
             "terminal-browser new-tab failed; Target.createTarget is not supported on this Electron. "
             f"{detail}"
         ) from exc
-    deadline = time.monotonic() + 15
-    while time.monotonic() < deadline:
-        for page in _json_pages():
-            if page.get("type") == "page" and page.get("id") not in before_json:
-                return page["id"], True
-        time.sleep(0.05)
-    raise RuntimeError("new-tab did not appear in CDP /json/list")
+    created = _wait_new_page(before_json)
+    if not created:
+        raise RuntimeError("new-tab did not appear in CDP /json/list")
+    return created, True
+
+
+def _open_via_chrome(url):
+    url = _unique_url(url)
+    before_json = {page.get("id") for page in _json_pages()}
+    try:
+        created = cdp("Target.createTarget", url=url, background=True)["targetId"]
+        return created, True
+    except RuntimeError:
+        binary = resolve_agent_browser()
+        if not binary:
+            raise
+        subprocess.run(
+            agent_browser_argv(binary) + ["--session", LAST.session or SESSION, "open", url],
+            check=False,
+            timeout=60,
+            capture_output=True,
+            text=True,
+        )
+        created = _wait_new_page(before_json)
+        if not created:
+            raise RuntimeError("agent-browser open did not produce a CDP page")
+        return created, True
+
+
+def _open_owned_tab(url):
+    source = LAST.source if LAST else "terminal-browser"
+    if source == "terminal-browser":
+        return _open_via_new_tab(url)
+    return _open_via_chrome(url)
 
 
 class Browser:

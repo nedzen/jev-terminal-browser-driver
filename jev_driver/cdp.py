@@ -24,7 +24,7 @@ def list_browsers() -> dict:
     return json.loads(out)
 
 
-def cdp_port() -> int:
+def _tb_cdp_port() -> int:
     data = list_browsers()
     browsers = data.get("browsers") or []
     if not browsers:
@@ -35,6 +35,23 @@ def cdp_port() -> int:
     return next(iter(ports))
 
 
+def http_origin() -> str:
+    from .discover import LAST
+
+    if LAST and LAST.http_origin:
+        return LAST.http_origin
+    return f"http://127.0.0.1:{_tb_cdp_port()}"
+
+
+def cdp_port() -> int:
+    from urllib.parse import urlparse
+
+    parsed = urlparse(http_origin())
+    if parsed.port:
+        return parsed.port
+    return _tb_cdp_port()
+
+
 def browser_websocket_url(port: int | None = None) -> str:
     port = port if port is not None else cdp_port()
     with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=5) as resp:
@@ -43,17 +60,6 @@ def browser_websocket_url(port: int | None = None) -> str:
     if not url:
         raise RuntimeError("CDP /json/version had no webSocketDebuggerUrl")
     return url
-
-
-def _ensure_ws_locked() -> None:
-    global _ws
-    if _ws is not None:
-        return
-    _ws = websocket.create_connection(
-        browser_websocket_url(),
-        timeout=30,
-        suppress_origin=True,
-    )
 
 
 def _send_locked(method, session_id=None, **params) -> dict:
@@ -71,12 +77,13 @@ def _send_locked(method, session_id=None, **params) -> dict:
 
 def connect(url: str | None = None) -> None:
     global _ws, _discover_enabled
+    if url is None and _ws is None:
+        from .discover import LAST, discover
+
+        url = (LAST or discover()).ws_url
     with _lock:
         if _ws is None:
-            if url:
-                _ws = websocket.create_connection(url, timeout=30, suppress_origin=True)
-            else:
-                _ensure_ws_locked()
+            _ws = websocket.create_connection(url, timeout=30, suppress_origin=True)
         if not _discover_enabled:
             reply = _send_locked("Target.setDiscoverTargets", discover=True)
             if reply.get("error"):

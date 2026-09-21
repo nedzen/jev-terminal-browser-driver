@@ -9,6 +9,8 @@ from pathlib import Path
 
 from .agent import Agent
 from .browser import set_lease
+from .cdp import connect
+from .discover import discover
 from .questions import MAX_STEPS
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -45,6 +47,8 @@ def parse_args(argv=None):
     parser.add_argument("--browser", dest="browser_key", default=None)
     parser.add_argument("--max-steps", type=int, default=20)
     parser.add_argument("--navigate", action="store_true", help="With --target, also Page.navigate to --url.")
+    parser.add_argument("--cdp", dest="cdp_url", default=None, help="Explicit CDP websocket or http discovery URL.")
+    parser.add_argument("--json", action="store_true", help="Plugin contract: browser meta line, then JSON ticks.")
     return parser.parse_args(argv)
 
 
@@ -53,6 +57,20 @@ def main(argv=None) -> int:
     if args.max_steps < 1 or args.max_steps > MAX_STEPS:
         print(json.dumps({"status": "blocked", "error": f"--max-steps must be 1..{MAX_STEPS}"}), file=sys.stderr)
         return 1
+    found = discover(explicit=args.cdp_url, launch_url=args.url)
+    connect(found.ws_url)
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "event": "browser",
+                    "source": found.source,
+                    "cdp_url": found.ws_url,
+                    "auto_launched": found.auto_launched,
+                }
+            ),
+            flush=True,
+        )
     if args.target_id:
         set_lease(tab="target", target_id=args.target_id, browser_key=args.browser_key, navigate=args.navigate)
     else:
