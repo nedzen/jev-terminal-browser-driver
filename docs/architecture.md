@@ -56,10 +56,13 @@ scripts/drive.py
 
 ### Session continuity
 
-Omitting `--url` / `url` re-attaches to the previously driven page in the
-daemon browser instead of opening a fresh default-fixture tab; with no
-existing driven page, the default fixture applies. Follow-up calls on the
-same task should omit the URL.
+Omitting `--url` / `url` re-attaches to the previously driven tab **in the
+same browser** (`~/.cache/jev-driver/last-page.json` holds
+`{targetId, url, source, browser_id, ts}`). Continuity requires the same
+`discover()` source and `browser_id` (ws host:port), a live target (or
+URL-stem match on this `/json/list`), and a pointer younger than 30 minutes.
+Legacy files and cross-daemon ids fail closed: a new tab / default fixture,
+never an arbitrary live tab. Pass a non-empty `url` when switching sites.
 
 ### Takeover (watch mode)
 

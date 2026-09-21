@@ -64,8 +64,10 @@ Read this first in a new session. Everything below is verified state + remaining
 1. **Merge** `feature/hermes-plugin` → main after user is satisfied; push.
    Round 1 (desktop preview.open emit + page_text) and Round 2 (TUI watch,
    session continuity, overlay wait, WatchAgent takeover) are COMMITTED on the
-   branch (0d8f914, 9e1d561) — live-verify watch+continuity once in the TUI
-   and desktop, then merge.
+   branch (0d8f914, 9e1d561). Continuity latch fix (global last-page.json
+   re-pinning Flights across sessions `20260921_133359_7d3107` /
+   `20260921_134618_75af82`): omit-url must not attach a foreign tab; live-verify
+   after implement, then merge.
 2. **Separate plugin repo** (user decision): extract `plugin/` + install script
    into standalone repo for publishing. Plugin is stdlib-only by design.
 3. **Desktop zap button** (user wants; zap icon saved at

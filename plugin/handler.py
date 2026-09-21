@@ -143,6 +143,8 @@ def compact_result(rows: list[dict], exit_code: int, error: str | None = None) -
         "auto_launched": bool(meta.get("auto_launched")),
         "visibility": meta.get("visibility") or "headless",
     }
+    if meta.get("continuity"):
+        browser["continuity"] = meta["continuity"]
     success = exit_code == 0 and status == "done" and not error
     out = {
         "success": success,

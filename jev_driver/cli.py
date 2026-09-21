@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from .agent import Agent
-from .browser import find_continuable_page, set_lease
+from .browser import LAST_CONTINUITY, _log_continuity, find_continuable_page, set_lease
 from .cdp import connect
 from .discover import WatchUnavailable, discover
 from .questions import MAX_STEPS
@@ -73,33 +73,35 @@ def main(argv=None) -> int:
         return 1
     connect(found.ws_url)
     visibility = found.visibility or ("terminal-browser-pane" if found.source == "terminal-browser" else "headless")
-    if args.json:
-        print(
-            json.dumps(
-                {
-                    "event": "browser",
-                    "source": found.source,
-                    "cdp_url": found.ws_url,
-                    "auto_launched": found.auto_launched,
-                    "visibility": visibility,
-                }
-            ),
-            flush=True,
-        )
+    continuity = None
     if args.target_id:
         set_lease(tab="target", target_id=args.target_id, browser_key=args.browser_key, navigate=args.navigate)
         agent_url = url or launch
     elif url is None:
+        _log_continuity("empty-url")
         existing_id, existing_url = find_continuable_page()
         if existing_id:
             set_lease(tab="target", target_id=existing_id, browser_key=args.browser_key, navigate=False)
             agent_url = existing_url or launch
+            continuity = "re-attach"
         else:
             set_lease(tab="new", browser_key=args.browser_key, navigate=True)
             agent_url = DEFAULT_FIXTURE.as_uri()
+            continuity = LAST_CONTINUITY
     else:
         set_lease(tab="new", browser_key=args.browser_key, navigate=True)
         agent_url = url
+    if args.json:
+        meta = {
+            "event": "browser",
+            "source": found.source,
+            "cdp_url": found.ws_url,
+            "auto_launched": found.auto_launched,
+            "visibility": visibility,
+        }
+        if continuity:
+            meta["continuity"] = continuity
+        print(json.dumps(meta), flush=True)
     agent_cls = WatchAgent if args.watch else Agent
     agent = agent_cls(agent_url, args.goal, screenshots=False)
     code = 1

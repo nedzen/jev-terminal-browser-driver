@@ -27,6 +27,9 @@ LEASE = {
 }
 
 LAST_PAGE_PATH = Path.home() / ".cache" / "jev-driver" / "last-page.json"
+LAST_PAGE_TTL_S = 1800
+LAST_PAGE_KEYS = ("targetId", "url", "source", "browser_id", "ts")
+LAST_CONTINUITY = None
 
 
 def set_lease(*, tab="new", target_id=None, browser_key=None, navigate=True):
@@ -70,21 +73,99 @@ def _is_ephemeral_url(url):
     return False
 
 
+def _netloc_id(url: str) -> str:
+    """Host:port from a ws/http URL. Bracket IPv6 so [::1]:9222 round-trips."""
+    if not url:
+        return ""
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    port = parsed.port
+    if host:
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        return f"{host}:{port}" if port is not None else host
+    return (parsed.netloc or "").lower()
+
+
+def browser_identity():
+    last = _discover.LAST
+    if last is None:
+        return "", ""
+    source = last.source or ""
+    ident = _netloc_id(last.ws_url) or _netloc_id(last.http_origin)
+    return source, ident
+
+
+def _log_continuity(reason: str) -> None:
+    print(f"jev-driver: continuity {reason}", file=sys.stderr)
+
+
+def _load_last_page():
+    if not LAST_PAGE_PATH.is_file():
+        return None
+    try:
+        data = json.loads(LAST_PAGE_PATH.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(data, dict) or any(key not in data for key in LAST_PAGE_KEYS):
+        return None
+    return data
+
+
+def _write_last_page(record: dict) -> None:
+    LAST_PAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    LAST_PAGE_PATH.write_text(json.dumps(record))
+
+
 def remember_page(target_id, url):
     if not target_id or _is_ephemeral_url(url):
         return
-    LAST_PAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    LAST_PAGE_PATH.write_text(json.dumps({"targetId": target_id, "url": url or ""}))
+    source, browser_id = browser_identity()
+    existing = _load_last_page()
+    if LEASE.get("tab") == "target":
+        if not existing or existing.get("targetId") != target_id:
+            return
+        existing["url"] = url or existing.get("url") or ""
+        existing["ts"] = time.time()
+        _write_last_page(existing)
+        return
+    _write_last_page(
+        {
+            "targetId": target_id,
+            "url": url or "",
+            "source": source,
+            "browser_id": browser_id,
+            "ts": time.time(),
+        }
+    )
 
 
 def find_continuable_page():
     """Re-attach to a previously driven page when the caller omitted --url."""
-    remembered = {}
-    if LAST_PAGE_PATH.is_file():
-        try:
-            remembered = json.loads(LAST_PAGE_PATH.read_text())
-        except (json.JSONDecodeError, OSError):
-            remembered = {}
+    global LAST_CONTINUITY
+    LAST_CONTINUITY = None
+    existed = LAST_PAGE_PATH.is_file()
+    remembered = _load_last_page()
+    if remembered is None:
+        if existed:
+            LAST_CONTINUITY = "dropped:legacy-schema"
+            _log_continuity("legacy-schema")
+        return None, None
+    try:
+        age = time.time() - float(remembered["ts"])
+    except (TypeError, ValueError):
+        LAST_CONTINUITY = "dropped:legacy-schema"
+        _log_continuity("legacy-schema")
+        return None, None
+    if age > LAST_PAGE_TTL_S:
+        LAST_CONTINUITY = "dropped:ttl-expired"
+        _log_continuity("ttl-expired")
+        return None, None
+    source, browser_id = browser_identity()
+    if (remembered.get("source"), remembered.get("browser_id")) != (source, browser_id):
+        LAST_CONTINUITY = "dropped:browser-mismatch"
+        _log_continuity("browser-mismatch")
+        return None, None
     try:
         pages = _json_pages()
     except (OSError, json.JSONDecodeError, TimeoutError):
@@ -95,6 +176,7 @@ def find_continuable_page():
         info = by_id[remembered_id]
         url = info.get("url") or ""
         if not _is_ephemeral_url(url) and _target_ok({"type": "page", "url": url}, allow_denylist=False):
+            LAST_CONTINUITY = "re-attach"
             return remembered_id, url
     live = []
     for page in pages:
@@ -110,10 +192,10 @@ def find_continuable_page():
         stem = remembered["url"].split("?")[0].split("#")[0]
         for page in live:
             if (page.get("url") or "").split("?")[0].split("#")[0] == stem:
+                LAST_CONTINUITY = "re-attach"
                 return page["id"], page.get("url")
-    if live:
-        page = live[-1]
-        return page.get("id"), page.get("url")
+    LAST_CONTINUITY = "dropped:stale-id"
+    _log_continuity("stale-id")
     return None, None
 
 

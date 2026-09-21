@@ -8,7 +8,8 @@ DESCRIPTION = (
     "Run a goal in a real browser: observe visible elements, let Jev pick "
     "operation+target, act. Prefer this over dumping snapshots into chat. "
     "Pass watch=true when the user asks to see the browser (TUI opens "
-    "terminal-browser). Omit url to continue the last driven page."
+    "terminal-browser). Omit url to continue the last driven tab in the same "
+    "browser (30 min). Pass a non-empty url when switching sites."
 )
 
 PARAMETERS = {
@@ -17,7 +18,13 @@ PARAMETERS = {
     "required": ["goal"],
     "properties": {
         "goal": {"type": "string", "description": "Natural-language goal for the current page."},
-        "url": {"type": "string", "description": "Page to open in an owned tab (file:// or https://)."},
+        "url": {
+            "type": "string",
+            "description": (
+                "Page to open in a new owned tab. Omit to continue the last driven "
+                "tab in the same browser (30 min). Pass a non-empty url when switching sites."
+            ),
+        },
         "target": {"type": "string", "description": "Explicit CDP target id to attach (opt-in)."},
         "max_steps": {
             "type": "integer",

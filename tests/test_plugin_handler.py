@@ -158,6 +158,19 @@ def test_compact_result_passes_page_text():
     assert out["page_text"] == "hello widget"
 
 
+def test_compact_result_passes_continuity_meta():
+    rows = [
+        {
+            "event": "browser",
+            "source": "agent-browser-daemon",
+            "continuity": "dropped:stale-id",
+        },
+        {"status": "done", "url": "https://example.test/"},
+    ]
+    out = handler.compact_result(rows, 0)
+    assert out["browser"]["continuity"] == "dropped:stale-id"
+
+
 def test_preview_emit_called_with_url(monkeypatch, home):
     calls = []
     dui = types.ModuleType("tools.desktop_ui")

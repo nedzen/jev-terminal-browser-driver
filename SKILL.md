@@ -14,7 +14,7 @@ Run the jev-ultrafast loop against an **owned** tab on the shared terminal-brows
 - **Preferred when the Hermes plugin is installed:** call the native `jev_drive` tool (do not paste snapshots into chat, do not shell out to `drive.py` yourself).
 - If the user verbatim asks to watch/see the browser while you drive (e.g. 'let me see', 'show me what you click', 'open it visibly'), pass `watch: true`. Otherwise omit it (headless is cheaper and fine for cron/background). If watch fails because terminal-browser is missing, tell the user the dependency and offer non-watch retry.
 - On the desktop app the preview pane opens automatically with the driven URL; note it shows the page in the desktop's own browser session (cookies live there) — pages behind logins look logged-out.
-- Omit `url` to continue the last driven page. Pass a url only to open a new one.
+- Omit `url` to continue the last driven tab in the same browser (30 min). Pass a non-empty `url` when switching sites.
 
 Don't use for:
 
