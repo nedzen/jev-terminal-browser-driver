@@ -16,7 +16,6 @@ TIMEOUT_CAP = 900
 DEFAULT_MAX_STEPS = 12
 DEFAULT_TIMEOUT = 300
 TB = os.environ.get("TERMINAL_BROWSER", str(Path.home() / ".local" / "bin" / "terminal-browser"))
-BUNDLED_AB = Path.home() / ".local" / "share" / "terminal-browser" / "app" / "agent-browser" / "bin" / "agent-browser"
 
 
 def driver_home() -> Path:
@@ -45,15 +44,8 @@ def has_decision_key() -> bool:
     return any(_read_key_from_env_file(path) for path in homes)
 
 
-def resolve_agent_browser() -> str | None:
-    found = shutil.which("agent-browser")
-    if found:
-        return found
-    if BUNDLED_AB.is_file() and os.access(BUNDLED_AB, os.X_OK):
-        return str(BUNDLED_AB)
-    if shutil.which("npx"):
-        return "npx agent-browser"
-    return None
+def terminal_browser_installed() -> bool:
+    return bool(shutil.which("terminal-browser")) or Path(TB).is_file()
 
 
 def terminal_browser_running() -> bool:
@@ -66,13 +58,7 @@ def terminal_browser_running() -> bool:
 
 
 def agent_browser_daemon_present() -> bool:
-    root = Path.home() / ".agent-browser"
-    if not root.is_dir():
-        return False
-    try:
-        return any(root.iterdir())
-    except OSError:
-        return False
+    return False
 
 
 def check_jev_drive() -> bool:
@@ -83,7 +69,9 @@ def check_jev_drive() -> bool:
         return False
     if not has_decision_key():
         return False
-    return bool(terminal_browser_running() or resolve_agent_browser() or agent_browser_daemon_present())
+    # TUI-only: the driver provisions a visible terminal-browser pane itself,
+    # so presence of the binary is enough — no running browser required.
+    return terminal_browser_installed()
 
 
 def parse_json_lines(text: str) -> list[dict]:

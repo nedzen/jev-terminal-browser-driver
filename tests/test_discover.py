@@ -1,4 +1,4 @@
-"""Discovery ladder order. No live browser."""
+"""TUI-only discovery: explicit → running terminal-browser → visible provision."""
 
 from unittest.mock import Mock
 
@@ -26,86 +26,132 @@ def test_explicit_skips_terminal_browser(monkeypatch):
     tb.assert_not_called()
 
 
-def test_terminal_browser_skips_agent_browser(monkeypatch):
+def test_running_terminal_browser_wins(monkeypatch):
     monkeypatch.setattr(
         disc,
         "_terminal_browser_discovery",
         lambda: disc.Discovery("ws://127.0.0.1:50785/devtools/browser/a", "http://127.0.0.1:50785", "terminal-browser"),
     )
-    ab = Mock(side_effect=AssertionError("agent-browser should not run"))
-    monkeypatch.setattr(disc, "resolve_agent_browser", ab)
+    prov = Mock(side_effect=AssertionError("provision should not run"))
+    monkeypatch.setattr(disc, "_provision_terminal_browser", prov)
     found = disc.discover()
     assert found.source == "terminal-browser"
-    ab.assert_not_called()
+    assert found.visibility == "terminal-browser-pane"
+    prov.assert_not_called()
 
 
-def test_empty_tb_uses_agent_browser_daemon(monkeypatch):
+def test_no_browser_provisions_visible_pane(monkeypatch):
     monkeypatch.setattr(disc, "_terminal_browser_discovery", lambda: None)
-    monkeypatch.setattr(disc, "resolve_agent_browser", lambda: "/bin/agent-browser")
-    monkeypatch.setattr(disc, "agent_browser_cdp_url", lambda binary, session=disc.SESSION: "ws://127.0.0.1:9222/devtools/browser/d")
-    monkeypatch.setattr(disc, "_loopback_discovery", lambda: (_ for _ in ()).throw(AssertionError("loopback")))
-    found = disc.discover()
-    assert found.source == "agent-browser-daemon"
-    assert found.session == disc.SESSION
+    monkeypatch.setattr(disc, "_daemon_db_discovery", lambda: None)
+    calls = []
 
+    def provision(url):
+        calls.append(url)
+        return disc.Discovery(
+            "ws://127.0.0.1:57463/devtools/browser/b",
+            "http://127.0.0.1:57463",
+            "terminal-browser",
+            auto_launched=True,
+            visibility="terminal-browser-pane",
+        )
 
-def test_auto_provision_uses_jev_driver_session(monkeypatch):
-    launches = []
-    monkeypatch.setattr(disc, "_terminal_browser_discovery", lambda: None)
-    monkeypatch.setattr(disc, "resolve_agent_browser", lambda: "/bin/agent-browser")
-    calls = {"n": 0}
-
-    def cdp_url(binary, session=disc.SESSION):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            return None
-        return "ws://127.0.0.1:9333/devtools/browser/h"
-
-    monkeypatch.setattr(disc, "agent_browser_cdp_url", cdp_url)
-    monkeypatch.setattr(disc, "_loopback_discovery", lambda: None)
-    monkeypatch.setattr(disc.time, "sleep", lambda _s: None)
-
-    def launch(binary, url):
-        launches.append((binary, url))
-
-    monkeypatch.setattr(disc, "_launch_headless", launch)
+    monkeypatch.setattr(disc, "_provision_terminal_browser", provision)
     found = disc.discover(launch_url="https://example.test/")
-    assert found.source == "headless-launched"
+    assert calls == ["https://example.test/"]
+    assert found.source == "terminal-browser"
     assert found.auto_launched is True
-    assert launches == [("/bin/agent-browser", "https://example.test/")]
+    assert found.visibility == "terminal-browser-pane"
 
 
-def test_auto_provision_polls_cdp_url_after_launch(monkeypatch):
+def test_no_browser_no_provision_raises(monkeypatch):
     monkeypatch.setattr(disc, "_terminal_browser_discovery", lambda: None)
-    monkeypatch.setattr(disc, "resolve_agent_browser", lambda: "/bin/agent-browser")
-    monkeypatch.setattr(disc, "_loopback_discovery", lambda: None)
-    monkeypatch.setattr(disc, "_launch_headless", lambda binary, url: None)
-    sleeps = []
-    monkeypatch.setattr(disc.time, "sleep", lambda s: sleeps.append(s))
-    calls = {"n": 0}
-
-    def cdp_url(binary, session=disc.SESSION):
-        calls["n"] += 1
-        if calls["n"] < 4:
-            return None
-        return "ws://127.0.0.1:9333/devtools/browser/h"
-
-    monkeypatch.setattr(disc, "agent_browser_cdp_url", cdp_url)
-    found = disc.discover(launch_url="about:blank")
-    assert found.source == "headless-launched"
-    assert calls["n"] == 4
-    assert sleeps == [disc.POST_LAUNCH_DELAY_S, disc.POST_LAUNCH_DELAY_S]
+    monkeypatch.setattr(disc, "_daemon_db_discovery", lambda: None)
+    with pytest.raises(disc.WatchUnavailable, match="auto-provision is disabled"):
+        disc.discover(auto_provision=False)
 
 
-def test_resolve_agent_browser_prefers_path_then_bundled(monkeypatch, tmp_path):
-    bundled = tmp_path / "agent-browser"
-    bundled.write_text("#!/bin/sh\n")
-    bundled.chmod(0o755)
-    def which(name):
-        return "/usr/bin/agent-browser" if name == "agent-browser" else None
+def test_no_browser_no_binary_raises(monkeypatch):
+    monkeypatch.setattr(disc, "_terminal_browser_discovery", lambda: None)
+    monkeypatch.setattr(disc, "_daemon_db_discovery", lambda: None)
+    monkeypatch.setattr(disc, "resolve_terminal_browser", lambda: None)
+    with pytest.raises(disc.WatchUnavailable, match="terminal-browser is not installed"):
+        disc.discover()
 
-    monkeypatch.setattr(disc.shutil, "which", which)
-    assert disc.resolve_agent_browser() == "/usr/bin/agent-browser"
-    monkeypatch.setattr(disc.shutil, "which", lambda name: None)
-    monkeypatch.setattr(disc, "BUNDLED_AGENT_BROWSER", bundled)
-    assert disc.resolve_agent_browser() == str(bundled)
+
+def test_daemon_db_discovery_finds_live_instance(tmp_path, monkeypatch):
+    import sqlite3
+
+    db = tmp_path / ".local/share/terminal-browser-test/terminal-browser.db"
+    db.parent.mkdir(parents=True)
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE instances (key text PRIMARY KEY, cdp_port integer, started_at integer)"
+        )
+        conn.execute("INSERT INTO instances VALUES ('a-1', 57463, 2)")
+        conn.execute("INSERT INTO instances VALUES ('b-1', NULL, 1)")
+    monkeypatch.setattr(disc.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(disc, "browser_websocket_url", lambda port: f"ws://127.0.0.1:{port}/devtools/browser/x")
+    found = disc._daemon_db_discovery()
+    assert found is not None
+    assert found.http_origin == "http://127.0.0.1:57463"
+
+
+def test_daemon_db_discovery_none_when_no_db(tmp_path, monkeypatch):
+    monkeypatch.setattr(disc.Path, "home", lambda: tmp_path)
+    assert disc._daemon_db_discovery() is None
+
+
+def test_provision_env_scrubs_herdr(monkeypatch):
+    monkeypatch.setenv("HERDR_PANE_ID", "wG:p1")
+    monkeypatch.setenv("HERDR_ENV", "1")
+    monkeypatch.setenv("PATH", "/usr/bin")
+    monkeypatch.setenv("TERM_PROGRAM", "ghostty")
+    env = disc._provision_env()
+    assert not any(k.startswith("HERDR_") for k in env)
+    assert env["PATH"] == "/usr/bin"
+    assert env["TERM_PROGRAM"] == "ghostty"
+
+
+def test_provision_parses_instance_record_cdp_port(monkeypatch):
+    record = '{"key": "67930-1", "pid": 67930, "cdpPort": 57463, "url": "https://x.com"}'
+    assert disc._instance_record_port(record) == 57463
+    assert disc._instance_record_port("not json") is None
+    assert disc._instance_record_port('{"cdpPort": "57463"}') is None
+
+
+def test_provision_command_is_visible_split(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERDR_PANE_ID", "wG:p1")
+    seen = {}
+
+    class Completed:
+        returncode = 0
+        stdout = '{"cdpPort": 57463}'
+        stderr = ""
+
+    def fake_run(argv, **kwargs):
+        seen["argv"] = argv
+        seen["env"] = kwargs.get("env")
+        return Completed()
+
+    monkeypatch.setattr(disc.subprocess, "run", fake_run)
+    monkeypatch.setattr(disc, "browser_websocket_url", lambda port: f"ws://127.0.0.1:{port}/devtools/browser/x")
+    found = disc._provision_terminal_browser("https://example.test/")
+    argv = seen["argv"]
+    assert argv[1:4] == ["open", "https://example.test/", "--split"]
+    assert "--no-merge" in argv
+    assert "HERDR_PANE_ID" not in seen["env"]
+    assert found.visibility == "terminal-browser-pane"
+    assert found.auto_launched is True
+
+
+def test_provision_nonzero_exit_raises(monkeypatch):
+    monkeypatch.setattr(disc, "resolve_terminal_browser", lambda: "/bin/terminal-browser")
+
+    class Completed:
+        returncode = 1
+        stdout = ""
+        stderr = "unsupported terminal"
+
+    monkeypatch.setattr(disc.subprocess, "run", lambda argv, **kwargs: Completed())
+    with pytest.raises(disc.WatchUnavailable, match="could not open a visible pane"):
+        disc._provision_terminal_browser("about:blank")

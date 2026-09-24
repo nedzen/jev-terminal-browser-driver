@@ -1,4 +1,12 @@
-"""CDP discovery ladder: explicit → terminal-browser → agent-browser daemon → loopback → headless launch."""
+"""CDP discovery, TUI-only: explicit → terminal-browser → visible provision.
+
+No headless, no agent-browser, no loopback scanning. If no terminal-browser
+pane exists we PROVISION one: `terminal-browser open <url> --split right` with
+all HERDR_* env vars scrubbed so terminal-browser's terminal detection skips
+the herdr adapter (it matches on HERDR_PANE_ID alone and would otherwise nest
+the browser inside the calling herdr pane) and opens a visible split in the
+real terminal window (ghostty/kitty/cmux/...).
+"""
 
 from __future__ import annotations
 
@@ -6,7 +14,6 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 import time
 import urllib.error
 import urllib.request
@@ -16,15 +23,9 @@ from urllib.parse import urlparse
 
 from .cdp import TB, browser_websocket_url, list_browsers
 
-SESSION = "jev-driver"
-BUNDLED_AGENT_BROWSER = (
-    Path.home() / ".local" / "share" / "terminal-browser" / "app" / "agent-browser" / "bin" / "agent-browser"
-)
-LOOPBACK_PORTS = range(9222, 9331)
-CDP_PROBE_TIMEOUT = 20
 POST_LAUNCH_TRIES = 5
 POST_LAUNCH_DELAY_S = 5
-
+PROVISION_TIMEOUT_S = 60
 
 WATCH_INSTALL = (
     "watch requested but terminal-browser is not installed. Install it "
@@ -49,7 +50,6 @@ class Discovery:
     http_origin: str
     source: str
     auto_launched: bool = False
-    session: str | None = None
     visibility: str = "headless"
 
 
@@ -103,12 +103,6 @@ def normalize_cdp_url(raw: str) -> str:
     return ws
 
 
-def agent_browser_argv(binary: str) -> list[str]:
-    if binary == "npx agent-browser" or binary.startswith("npx "):
-        return ["npx", "--yes", "agent-browser"]
-    return [binary]
-
-
 def resolve_terminal_browser() -> str | None:
     found = shutil.which("terminal-browser")
     if found:
@@ -119,79 +113,18 @@ def resolve_terminal_browser() -> str | None:
     return None
 
 
-def resolve_agent_browser() -> str | None:
-    found = shutil.which("agent-browser")
-    if found:
-        return found
-    if BUNDLED_AGENT_BROWSER.is_file() and os.access(BUNDLED_AGENT_BROWSER, os.X_OK):
-        return str(BUNDLED_AGENT_BROWSER)
-    if shutil.which("npx"):
-        return "npx agent-browser"
-    return None
+def _provision_env() -> dict:
+    """Child env with every HERDR_* variable stripped.
 
-
-def _child_env() -> dict:
-    """agent-browser accepts only engine names (chrome, lightpanda).
-
-    Hermes loads ~/.hermes/.env into its process env; a user .env commonly
-    carries AGENT_BROWSER_ENGINE set to an engine *hash* (or empty) — both are
-    rejected by agent-browser ("Unknown engine: ... chrome, lightpanda") and
-    poison every auto-launch under the Hermes process. Keep the var only if it
-    names a supported engine; otherwise drop it so the daemon default applies.
+    terminal-browser detects the terminal via an adapter chain whose FIRST
+    entry is the herdr adapter, matched on `HERDR_PANE_ID` alone. Every
+    process spawned from inside a herdr pane inherits that variable, so an
+    unscrubbed launch makes terminal-browser ask herdr to split — nesting the
+    browser in a herdr pane of the agent's tab instead of a visible split in
+    the real terminal window. Scrubbing lets detection fall through to the
+    actual terminal (ghostty/kitty/cmux/...).
     """
-    env = os.environ.copy()
-    engine = str(env.get("AGENT_BROWSER_ENGINE", "")).strip().lower()
-    if engine not in {"chrome", "lightpanda"}:
-        env.pop("AGENT_BROWSER_ENGINE", None)
-    return env
-
-
-def _run_agent_browser(binary: str, extra: list[str], timeout: float = 15) -> str:
-    return subprocess.check_output(
-        agent_browser_argv(binary) + extra,
-        text=True,
-        timeout=timeout,
-        stderr=subprocess.PIPE,
-        env=_child_env(),
-    )
-
-
-def agent_browser_cdp_url(binary: str, session: str = SESSION) -> str | None:
-    try:
-        out = _run_agent_browser(
-            binary, ["--session", session, "get", "cdp-url"], timeout=CDP_PROBE_TIMEOUT
-        ).strip()
-    except subprocess.TimeoutExpired:
-        print(
-            f"jev-driver: agent-browser get cdp-url timed out after {CDP_PROBE_TIMEOUT}s "
-            f"(session={session})",
-            file=sys.stderr,
-        )
-        return None
-    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-        detail = getattr(exc, "stderr", None) or str(exc)
-        if str(detail).strip():
-            print(f"jev-driver: agent-browser get cdp-url failed: {str(detail).strip()[-500:]}", file=sys.stderr)
-        return None
-    if not out:
-        return None
-    if out.startswith("{"):
-        try:
-            payload = json.loads(out)
-            data = payload.get("data") if isinstance(payload, dict) else None
-            if isinstance(data, str) and data.startswith("ws"):
-                return data
-            if isinstance(payload, dict):
-                for key in ("cdpUrl", "cdp_url", "url"):
-                    val = payload.get(key)
-                    if isinstance(val, str) and val.startswith("ws"):
-                        return val
-        except json.JSONDecodeError:
-            return None
-        return None
-    if out.startswith("ws"):
-        return out.split()[0]
-    return None
+    return {k: v for k, v in os.environ.items() if not k.startswith("HERDR_")}
 
 
 def _terminal_browser_discovery() -> Discovery | None:
@@ -211,78 +144,115 @@ def _terminal_browser_discovery() -> Discovery | None:
     return Discovery(ws_url=ws, http_origin=f"http://127.0.0.1:{port}", source="terminal-browser")
 
 
-def _loopback_discovery() -> Discovery | None:
-    for port in LOOPBACK_PORTS:
-        ws = json_version_ws(f"http://127.0.0.1:{port}", timeout=0.4)
-        if ws:
-            return Discovery(ws_url=ws, http_origin=f"http://127.0.0.1:{port}", source="loopback")
-    return None
+def _daemon_db_discovery() -> Discovery | None:
+    """Find live terminal-browser instances via the daemon SQLite record.
 
+    `terminal-browser ls` only sees browsers attached to the calling terminal
+    (its adapter chain is env/TTY-based). From a no-TTY context — e.g. a
+    subprocess of a herdr pane — a visible ghostty-split browser is invisible
+    to `ls`. The daemon DB at ~/.local/share/terminal-browser-*/terminal-browser.db
+    records every instance with its cdp_port; verify the port before trusting it.
+    """
+    import sqlite3
 
-def _wait_for_agent_browser_cdp(
-    binary: str, *, tries: int = POST_LAUNCH_TRIES, delay: float = POST_LAUNCH_DELAY_S
-) -> str | None:
-    for attempt in range(1, tries + 1):
-        ws = agent_browser_cdp_url(binary)
-        if ws:
-            return ws
-        if attempt < tries:
-            time.sleep(delay)
-    return None
-
-
-def _launch_headless(binary: str, url: str) -> None:
-    completed = subprocess.run(
-        agent_browser_argv(binary) + ["--session", SESSION, "open", url],
-        check=False,
-        timeout=60,
-        capture_output=True,
-        text=True,
-        env=_child_env(),
+    roots = sorted(
+        Path.home().glob(".local/share/terminal-browser-*/terminal-browser.db"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
     )
-    if completed.returncode != 0:
-        tail = (completed.stderr or completed.stdout or "").strip()[-800:]
-        print(
-            f"jev-driver: agent-browser open --session {SESSION} exited {completed.returncode}"
-            + (f": {tail}" if tail else ""),
-            file=sys.stderr,
-        )
-    elif (completed.stderr or "").strip():
-        print(f"jev-driver: agent-browser open stderr: {completed.stderr.strip()[-500:]}", file=sys.stderr)
+    for db_path in roots:
+        try:
+            with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2) as conn:
+                rows = conn.execute(
+                    "SELECT cdp_port FROM instances WHERE cdp_port IS NOT NULL ORDER BY started_at DESC"
+                ).fetchall()
+        except (sqlite3.Error, OSError):
+            continue
+        for (port,) in rows:
+            try:
+                ws = browser_websocket_url(int(port))
+            except (RuntimeError, urllib.error.URLError, TimeoutError, OSError, ValueError):
+                continue
+            return Discovery(ws_url=ws, http_origin=f"http://127.0.0.1:{int(port)}", source="terminal-browser")
+    return None
 
 
-def _watch_open_split(url: str) -> Discovery:
+def _instance_record_port(text: str) -> int | None:
+    """`terminal-browser open` prints its instance record (with cdpPort) as JSON."""
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(rec, dict) and isinstance(rec.get("cdpPort"), int):
+            return rec["cdpPort"]
+    return None
+
+
+def _provision_terminal_browser(
+    url: str, *, tries: int = POST_LAUNCH_TRIES, delay: float = POST_LAUNCH_DELAY_S
+) -> Discovery:
+    """Open a VISIBLE terminal-browser pane split right in the real terminal.
+
+    Never headless. Raises (WatchUnavailable for the watch path) when a
+    visible pane cannot be created — there is no silent background fallback.
+    """
     binary = resolve_terminal_browser()
     if not binary:
         raise WatchUnavailable(WATCH_INSTALL)
-    proc = subprocess.Popen(
-        [binary, "open", url, "--split", "right"],
-        env=os.environ.copy(),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
+    try:
+        completed = subprocess.run(
+            [binary, "open", url, "--split", "right", "--no-merge"],
+            env=_provision_env(),
+            capture_output=True,
+            text=True,
+            timeout=PROVISION_TIMEOUT_S,
+        )
+    except FileNotFoundError as exc:
+        raise WatchUnavailable(f"terminal-browser binary vanished: {exc}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise WatchUnavailable(
+            f"terminal-browser open timed out after {PROVISION_TIMEOUT_S}s. {WATCH_TERMINAL_NOTE}"
+        ) from exc
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()[-800:]
+        raise WatchUnavailable(
+            "terminal-browser could not open a visible pane"
+            + (f" — it said: {detail}" if detail else "")
+            + f" {WATCH_TERMINAL_NOTE} If you run inside herdr, ensure the outer terminal"
+            " (ghostty/kitty/cmux/...) is supported."
+        )
+
+    # From a no-TTY caller `ls` cannot see tty-associated browsers; the
+    # instance record printed by `open` carries the cdpPort directly.
+    port = _instance_record_port(completed.stdout)
+    if port:
+        try:
+            ws = browser_websocket_url(port)
+            return Discovery(
+                ws_url=ws,
+                http_origin=f"http://127.0.0.1:{port}",
+                source="terminal-browser",
+                auto_launched=True,
+                visibility="terminal-browser-pane",
+            )
+        except (RuntimeError, urllib.error.URLError, TimeoutError, OSError):
+            pass
+
+    # Real-TTY caller: poll the normal discovery path until the pane is ready.
+    for attempt in range(1, tries + 1):
         found = _terminal_browser_discovery()
         if found:
-            found.visibility = "terminal-browser-pane"
             found.auto_launched = True
+            found.visibility = "terminal-browser-pane"
             return found
-        code = proc.poll()
-        if code is not None:
-            err = (proc.stderr.read() if proc.stderr else "") or ""
-            out = (proc.stdout.read() if proc.stdout else "") or ""
-            detail = (err or out).strip()
-            extra = f" terminal-browser said: {detail}" if detail else ""
-            raise WatchUnavailable(
-                "watch requested but terminal-browser could not open a visible pane."
-                f"{extra} {WATCH_TERMINAL_NOTE} Retry without watch, or open TB in a supported terminal."
-            )
-        time.sleep(0.2)
+        if attempt < tries:
+            time.sleep(delay)
     raise WatchUnavailable(
-        "watch requested but terminal-browser did not become ready within 30s. "
-        f"{WATCH_TERMINAL_NOTE}"
+        f"terminal-browser pane did not become ready within {int(tries * delay)}s. {WATCH_TERMINAL_NOTE}"
     )
 
 
@@ -293,53 +263,28 @@ def discover(
     auto_provision: bool = True,
     watch: bool = False,
 ) -> Discovery:
-    """Walk the HQ ladder. Stores the result on LAST for cdp_port / tab-open."""
+    """TUI-only discovery. Stores the result on LAST for cdp_port / tab-open.
+
+    Order: explicit CDP URL → running terminal-browser pane → provision a
+    visible pane (split right, HERDR_* scrubbed). No headless fallback: if a
+    visible pane cannot be produced, raise.
+    """
     global LAST
-    if watch:
-        found = _terminal_browser_discovery()
-        if found:
-            found.visibility = "terminal-browser-pane"
-            LAST = found
-            return LAST
-        if resolve_terminal_browser():
-            LAST = _watch_open_split(launch_url)
-            return LAST
-        raise WatchUnavailable(WATCH_INSTALL)
     raw = (explicit or os.environ.get("JEV_CDP_URL") or os.environ.get("BROWSER_CDP_URL") or "").strip()
     if raw:
         ws = normalize_cdp_url(raw)
         LAST = Discovery(ws_url=ws, http_origin=ws_to_http_origin(ws), source="explicit")
         return LAST
-    found = _terminal_browser_discovery()
+    found = _terminal_browser_discovery() or _daemon_db_discovery()
     if found:
         found.visibility = "terminal-browser-pane"
         LAST = found
         return LAST
-    binary = resolve_agent_browser()
-    if binary:
-        ws = agent_browser_cdp_url(binary)
-        if ws:
-            LAST = Discovery(
-                ws_url=ws, http_origin=ws_to_http_origin(ws), source="agent-browser-daemon", session=SESSION
-            )
-            return LAST
-    found = _loopback_discovery()
-    if found:
-        LAST = found
+    if auto_provision:
+        LAST = _provision_terminal_browser(launch_url)
         return LAST
-    if auto_provision and binary:
-        _launch_headless(binary, launch_url)
-        ws = _wait_for_agent_browser_cdp(binary)
-        if ws:
-            LAST = Discovery(
-                ws_url=ws,
-                http_origin=ws_to_http_origin(ws),
-                source="headless-launched",
-                auto_launched=True,
-                session=SESSION,
-            )
-            return LAST
-    raise RuntimeError(
-        "No CDP browser found. Open terminal-browser, set JEV_CDP_URL, "
-        "or install agent-browser for headless auto-provision."
+    raise WatchUnavailable(
+        "No terminal-browser pane found and auto-provision is disabled. "
+        "Open one with `terminal-browser open <url>`, or retry with auto-provision. "
+        + WATCH_TERMINAL_NOTE
     )

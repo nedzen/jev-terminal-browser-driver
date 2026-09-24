@@ -260,26 +260,14 @@ def _open_via_new_tab(url):
 
 def _open_via_chrome(url):
     url = _unique_url(url)
-    before_json = {page.get("id") for page in _json_pages()}
     try:
         created = cdp("Target.createTarget", url=url, background=True)["targetId"]
         return created, True
-    except RuntimeError:
-        binary = _discover.resolve_agent_browser()
-        if not binary:
-            raise
-        session = (_discover.LAST.session if _discover.LAST else None) or _discover.SESSION
-        subprocess.run(
-            _discover.agent_browser_argv(binary) + ["--session", session, "open", url],
-            check=False,
-            timeout=60,
-            capture_output=True,
-            text=True,
-        )
-        created = _wait_new_page(before_json)
-        if not created:
-            raise RuntimeError("agent-browser open did not produce a CDP page")
-        return created, True
+    except RuntimeError as exc:
+        raise RuntimeError(
+            "Target.createTarget is not supported on this browser; "
+            "jev-driver only provisions terminal-browser panes (TUI-only scope)."
+        ) from exc
 
 
 def _open_owned_tab(url):

@@ -37,7 +37,7 @@ def test_watch_uses_running_tb_without_open(monkeypatch):
         "_terminal_browser_discovery",
         lambda: disc.Discovery("ws://127.0.0.1:1/devtools/browser/a", "http://127.0.0.1:1", "terminal-browser"),
     )
-    monkeypatch.setattr(disc, "_watch_open_split", lambda url: opens.append(url) or None)
+    monkeypatch.setattr(disc, "_provision_terminal_browser", lambda url: opens.append(url) or None)
     found = disc.discover(watch=True, launch_url="https://example.test/")
     assert found.source == "terminal-browser"
     assert found.visibility == "terminal-browser-pane"
@@ -46,7 +46,7 @@ def test_watch_uses_running_tb_without_open(monkeypatch):
 
 def test_watch_opens_split_when_tb_binary_exists(monkeypatch):
     monkeypatch.setattr(disc, "_terminal_browser_discovery", lambda: None)
-    monkeypatch.setattr(disc, "resolve_terminal_browser", lambda: "/bin/terminal-browser")
+    monkeypatch.setattr(disc, "_daemon_db_discovery", lambda: None)
     spawned = []
 
     def fake_open(url):
@@ -59,7 +59,7 @@ def test_watch_opens_split_when_tb_binary_exists(monkeypatch):
             visibility="terminal-browser-pane",
         )
 
-    monkeypatch.setattr(disc, "_watch_open_split", fake_open)
+    monkeypatch.setattr(disc, "_provision_terminal_browser", fake_open)
     found = disc.discover(watch=True, launch_url="https://example.test/flights")
     assert spawned == ["https://example.test/flights"]
     assert found.auto_launched is True
@@ -68,6 +68,7 @@ def test_watch_opens_split_when_tb_binary_exists(monkeypatch):
 
 def test_watch_missing_binary_is_actionable(monkeypatch):
     monkeypatch.setattr(disc, "_terminal_browser_discovery", lambda: None)
+    monkeypatch.setattr(disc, "_daemon_db_discovery", lambda: None)
     monkeypatch.setattr(disc, "resolve_terminal_browser", lambda: None)
     with pytest.raises(disc.WatchUnavailable, match="not installed"):
         disc.discover(watch=True)
@@ -79,17 +80,14 @@ def test_watch_open_surfaces_tb_stderr(monkeypatch):
     monkeypatch.setattr(disc, "_terminal_browser_discovery", lambda: None)
     monkeypatch.setattr(disc, "resolve_terminal_browser", lambda: "/bin/terminal-browser")
 
-    class Proc:
-        def __init__(self):
-            self.stderr = Mock(read=lambda: "unsupported terminal: iTerm2\n")
-            self.stdout = Mock(read=lambda: "")
+    class Completed:
+        returncode = 1
+        stdout = ""
+        stderr = "unsupported terminal: iTerm2\n"
 
-        def poll(self):
-            return 1
-
-    monkeypatch.setattr(disc.subprocess, "Popen", lambda *a, **k: Proc())
+    monkeypatch.setattr(disc.subprocess, "run", lambda argv, **k: Completed())
     with pytest.raises(disc.WatchUnavailable, match="unsupported terminal"):
-        disc._watch_open_split("https://example.test/")
+        disc._provision_terminal_browser("https://example.test/")
 
 
 def test_watch_agent_yields_on_stale_before_act():
