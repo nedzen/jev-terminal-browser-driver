@@ -1,9 +1,9 @@
 # Draft for a pull request to NousResearch/hermes-agent plugin-catalog/.
 # `hermes plugins validate .` passes on the repository root.
-# Replace sha with the commit that is actually published, then open the catalog PR.
+# sha is the merge commit of the v0.1.0 release. Open the catalog PR with this file.
 name: jev-driver
 repo: https://github.com/nedzen/jev-terminal-browser-driver
-sha: "0000000000000000000000000000000000000000"
+sha: "0be4c6ff6191d258c282ba33498577a3d891b016"
 description: >
   Drive and read one visible terminal-browser pane with Jev typed decisions.
   Clicks, types, and follows links in the user's logged-in browser, and reads
