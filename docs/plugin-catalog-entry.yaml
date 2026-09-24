@@ -1,6 +1,6 @@
 # Draft for a pull request to NousResearch/hermes-agent plugin-catalog/.
-# Do not submit until `hermes plugins doctor` and a clean-home install pass.
-# Replace sha with the commit that is actually published.
+# `hermes plugins validate .` passes on the repository root.
+# Replace sha with the commit that is actually published, then open the catalog PR.
 name: jev-driver
 repo: https://github.com/nedzen/jev-terminal-browser-driver
 sha: "0000000000000000000000000000000000000000"

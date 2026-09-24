@@ -86,7 +86,7 @@ uv run python scripts/drive.py --goal '...' --target <cdpTargetId>
 ```
 
 Each tick prints `{"status", "url", "last_action", "elapsed_ms", "usage", "why"}`.
-With debug (the default) it also prints `insight`.
+With `--debug` it also prints `insight`.
 Exit `0` on `done`, `1` on `blocked`/error/budget. **Model `DONE` is not
 success** — check the URL or page text independently.
 
@@ -115,15 +115,15 @@ herdr pane. If that cannot happen, the tool returns `blocked` and names the
 reason. It never falls through to headless Chromium. It never calls
 `Target.closeTarget` on a TUI tab.
 
-`debug` defaults on (`--no-debug` / `debug: false` to disable). The owned tab
-gets a HUD: chosen element in green, other candidates in red with labels,
-the goal, the step log, and why the run stopped. The tool result adds `why`
+`debug` is off unless Plugins settings or `debug: true` / `--debug` turn it on.
+The owned tab then gets a collapsible bottom-right panel plus outlines:
+chosen element in green, other candidates in red. The tool result adds `why`
 and `insights` (operation, labeled target, confidence, top probabilities).
 Model `DONE` is still not success.
 
 Tool fields: `goal` (required), optional `url` (navigates the driver's
 existing tab; a new tab only if that tab is gone), `target`, `max_steps`
-(cap 30), `cdp_url`, `timeout_s`, `debug` (default true), `watch`.
+(cap 30), `cdp_url`, `timeout_s`, `debug` (omit to use the plugin setting), `watch`.
 `watch: true` does not change visibility; it yields if the user changes the
 page. Prefer `jev_drive` over pasting snapshots into chat. Each run appends
 to `~/.cache/jev-driver/drive.jsonl` and `drive.log` (goal, ranked hits,

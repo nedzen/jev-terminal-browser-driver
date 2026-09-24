@@ -102,11 +102,10 @@ with a &lt; 0.1 gap to the runner-up.
 
 ### Debug HUD
 
-`--debug` is off unless the user asks (`debug: true`). It injects
-`jev_driver/hud.js` into the **owned** tab only. The overlay is `aria-hidden`
-and `inert`, so snapshot.js does not index it.
+`--debug` follows the Hermes plugin setting `plugins.entries.jev-driver.settings.debug` unless a call passes `debug` explicitly. It injects
+`jev_driver/hud.js` into the **owned** tab only. The overlay root is `aria-hidden`, so snapshot.js does not index it. It is not `inert`, so the corner panel can be clicked.
 
-What it shows on the page: a green outline and score on the chosen element, and a red outline and score on the other candidates, only while that decision still matches the current page. The top and bottom text panels are not drawn. The same trace (goal, steps, ranked operations, why the run stopped) is written to `~/.cache/jev-driver/drive.log` instead, so the overlay text cannot crowd the page.
+What it shows: a green outline on the chosen element, red outlines on the other candidates, and a bottom-right panel (backdrop blur) that collapses to a one-line chip. Expanded, it shows the goal, why, ranked operations, ranked hits, recent steps, and token spend. The same trace is also written to `~/.cache/jev-driver/drive.log`.
 
 The same facts are copied into each tick as `insight` and aggregated on the
 plugin result as `insights` plus a final `why`. A `DONE` tick reports

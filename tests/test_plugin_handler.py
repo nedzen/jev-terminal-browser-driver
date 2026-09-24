@@ -229,6 +229,12 @@ def test_max_steps_and_timeout_clamped(home):
     assert handler.clamp_timeout(9999) == 900
 
 
+def test_debug_setting_fills_only_when_omitted():
+    assert plugin.apply_debug_setting({"goal": "g"}, True)["debug"] is True
+    assert plugin.apply_debug_setting({"goal": "g", "debug": False}, True)["debug"] is False
+    assert plugin.apply_debug_setting({"goal": "g"}, False)["debug"] is False
+
+
 def test_driver_home_walks_up_to_drive_py(monkeypatch):
     monkeypatch.delenv("JEV_DRIVER_HOME", raising=False)
     assert (handler.driver_home() / "scripts" / "drive.py").is_file()

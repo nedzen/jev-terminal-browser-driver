@@ -125,14 +125,17 @@ def test_degenerate_helper():
     assert rec.get("degenerate") is True
 
 
-def test_hud_js_is_inert_and_noninteractive():
+def test_hud_js_is_hidden_from_snapshot_and_collapsible():
     src = Path("jev_driver/hud.js").read_text()
-    assert "aria-hidden" in src
-    assert "inert" in src
+    assert 'aria-hidden", "true"' in src or "aria-hidden" in src
     assert "payload.marks" in src
     assert "3px solid #3dff7a" in src
+    assert "backdrop-filter:blur" in src
+    assert "right:12px;bottom:12px" in src
+    assert "data-jev-hud-toggle" in src
+    assert "__jevHudOpen" in src
+    assert "inert" not in src
     assert "<pre" not in src
-    assert "position:absolute;top:0;left:0;right:0" not in src
     assert "<button" not in src
     assert "a[href]" not in src and "<a " not in src
 
@@ -188,6 +191,8 @@ def test_hud_payload_names_candidates():
     chosen = [mark for mark in payload["marks"] if mark["chosen"]]
     assert chosen[0]["node"] == 4
     assert chosen[0]["label"] == "Widget"
+    assert payload["goal"] == "Click Widget"
+    assert payload["ops"][0] == ["CLICK", 0.93]
 
 
 def test_done_tick_names_done_and_keeps_its_own_usage():

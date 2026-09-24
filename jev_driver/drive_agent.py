@@ -440,9 +440,22 @@ class DriveAgent(Agent):
         last = ((state.get("history") or [None])[-1]) or {}
         status = state.get("status") or ""
         why = _why(status, decision, state.get("history") or [])
+        history = state.get("history") or []
+        usage = {"input_tokens": 0, "output_tokens": 0, "cost": 0.0}
+        for item in history:
+            row = item.get("usage") or {}
+            usage["input_tokens"] += int(row.get("input_tokens") or 0)
+            usage["output_tokens"] += int(row.get("output_tokens") or 0)
+            usage["cost"] += float(row.get("cost") or 0)
+        if status == "predicted":
+            row = decision.get("usage") or {}
+            usage["input_tokens"] += int(row.get("input_tokens") or 0)
+            usage["output_tokens"] += int(row.get("output_tokens") or 0)
+            usage["cost"] += float(row.get("cost") or 0)
         return {
             "goal": state.get("goal") or "",
             "status": status,
+            "reason": state.get("stop_reason") or "",
             "operation": operation,
             "confidence": decision.get("confidence"),
             "target_label": target_label,
@@ -457,6 +470,8 @@ class DriveAgent(Agent):
             "steps": steps,
             "marks": marks,
             "url": (page.get("url") or "")[:180],
+            "step": len(history),
+            "usage": usage,
         }
 
     def _paint_hud(self):

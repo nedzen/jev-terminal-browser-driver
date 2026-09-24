@@ -2,8 +2,8 @@
 # Symlink plugin/ into Hermes plugin roots. Named profiles do not inherit ~/.hermes/plugins.
 set -eu
 REPO="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
-SRC="$REPO/plugin"
-if [ ! -f "$SRC/plugin.yaml" ]; then
+SRC="$REPO"
+if [ ! -f "$SRC/plugin.yaml" ] && [ ! -f "$SRC/plugin/plugin.yaml" ]; then
   echo "missing $SRC/plugin.yaml" >&2
   exit 1
 fi

@@ -12,8 +12,8 @@ DESCRIPTION = (
     "A new tab is opened only when that tab is gone. "
     "background defaults false and must stay false unless the user asks for a hidden "
     "browser; it does not launch one, it only attaches to cdp_url. "
-    "debug defaults false. Pass debug=true only when the user asks to see scores "
-    "on the page. "
+    "debug follows the plugin setting unless this call passes debug. "
+    "Pass debug=true only when the user asks to see the overlay. "
     "Read reason and page_text before deciding the tool failed. "
     "model_blocked: this target was refused, the tool can still click. "
     "click_not_sent or stale_page: the click was chosen and not sent; call the same goal once more. "
@@ -76,13 +76,13 @@ PARAMETERS = {
         "debug": {
             "type": "boolean",
             "description": (
-                "Draw score outlines on the page and include an insight trace. "
-                "Default false. Pass true only when the user asks to see the scores."
+                "Show the debug overlay and include an insight trace for this call. "
+                "Omit to use the plugin debug setting. Pass true only when the user asks."
             ),
-            "default": False,
         },
     },
 }
+
 
 # Hermes registry.get_definitions wraps entry.schema as the OpenAI `function` block.
 # tool_search reads function.description and function.parameters — not ToolEntry.description
@@ -94,12 +94,25 @@ SCHEMA = {
 }
 
 
+def apply_debug_setting(payload: dict, setting) -> dict:
+    """Use the plugin setting when this call does not pass debug."""
+    out = dict(payload)
+    if "debug" not in out:
+        out["debug"] = bool(setting)
+    return out
+
+
 def register(ctx) -> None:
+    def handle(args=None, **kwargs):
+        payload = dict(args if isinstance(args, dict) else kwargs)
+        payload = apply_debug_setting(payload, ctx.get_config("debug", False))
+        return handle_jev_drive(payload)
+
     ctx.register_tool(
         name="jev_drive",
         toolset="jev",
         schema=SCHEMA,
-        handler=handle_jev_drive,
+        handler=handle,
         check_fn=check_jev_drive,
         description=DESCRIPTION,
         emoji="⚡",
