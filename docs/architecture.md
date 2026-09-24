@@ -38,10 +38,10 @@ scripts/drive.py
 
 1. **Tab lease.** `drive.py` sets a module-level lease on `jev_driver.browser`
    *before* constructing `Agent`. Default `--tab new` opens a TUI-visible tab
-   via `terminal-browser new-tab` (terminal-browser's Electron) or
-   `Target.createTarget` (system Chrome, where the daemon runs headless) and
-   attaches by `targetId`. `--target <id>` attaches to a tab you name
-   explicitly. The driver never attaches to tabs it didn't create.
+   via `terminal-browser new-tab` and attaches by `targetId`.
+   `Target.createTarget` is not available on this Electron. `--target <id>`
+   attaches to a tab you name explicitly. The driver never attaches to tabs
+   it didn't create.
 2. **Observation.** `jev_driver/snapshot.js` (upstream, verbatim) runs inside
    the page: indexes visible interactive elements (buttons, links, inputs,
    selects, ARIA roles), assigns stable IDs (`e1…e250`), records per-element
@@ -65,19 +65,35 @@ scripts/drive.py
 
 ### Session continuity
 
-Omitting `--url` / `url` re-attaches to the previously driven tab **in the
-same browser** (`~/.cache/jev-driver/last-page.json` holds
-`{targetId, url, source, browser_id, ts}`). Continuity requires the same
-`discover()` source and `browser_id` (ws host:port), a live target (or
-URL-stem match on this `/json/list`), and a pointer younger than 30 minutes.
-Legacy files and cross-daemon ids fail closed: a new tab / default fixture,
-never an arbitrary live tab. Pass a non-empty `url` when switching sites.
+The driver keeps one tab. `~/.cache/jev-driver/last-page.json` holds
+`{targetId, url, source, browser_id, ts}` for the tab it created, including
+fixture pages. The next run re-attaches to that target when it is still
+alive, in the same browser, and younger than 30 minutes. Passing `url`
+navigates that tab (`Page.navigate`). It does not open another one. A new
+tab is created only when the pointer is missing, expired, or the target is
+gone. Explicit `--target` still wins. A dead id is not replaced by an
+unrelated tab; if another live tab has the same URL stem, that tab is
+reused, otherwise a new tab is opened.
+
+Runs append to `~/.cache/jev-driver/drive.jsonl` and `drive.log`: the goal,
+each tick's ranked operations and labeled targets, and a `blocked` record
+with why and a short page excerpt.
 
 ### Hydration, scroll, repeat-guard
 
 After navigate (and after click/select/fill), `Browser.observe` may re-read
 the page up to 3 times if the action count is still low or visible text is
 still growing (`HYDRATE_*` class attributes; tests inject a zero sleep).
+A page that is only search chrome ("Top Latest People Media Lists") is not
+ready: reading continues for up to 8 rounds. A `DONE` below 0.6, or a `DONE`
+on that chrome or on a Follow-button directory, is not success. A covered
+fill target is focused and typed into. Fill freshness follows that field,
+not the rest of the page, so a changing feed does not cancel a search box.
+Once a field holds text, `Press Enter` is offered as its own action. Jev
+never implies the key. Two decisions that still execute nothing stop the
+run. The log records each act (`via` pointer, focus, wheel, or enter), each
+rejected `DONE`, and each stale attempt. Stops carry `reason` plus the
+visible text. Screenshot goals return that text immediately and do not act.
 Scroll wheel delta is `innerHeight * 0.8` at CDP dispatch; `snapshot.js`
 still reports 560. `DriveAgent` exempts advancing `SCROLL_*` from the
 upstream 3-repeat hard-block (`agent.py` stays verbatim). Tick JSON may
@@ -86,10 +102,15 @@ with a &lt; 0.1 gap to the runner-up.
 
 ### Debug HUD
 
-`--debug` / `debug: true` injects `jev_driver/hud.js` into the **owned** tab
-only: red outlines on `__jevFast` nodes, a top bar (goal → operation), and
-a ranking console from `operation_probabilities` / `target_probabilities`.
-The HUD root is `aria-hidden` + `inert` so snapshot.js does not index it.
+`--debug` defaults on (`--no-debug` / `debug: false` turns it off). It injects
+`jev_driver/hud.js` into the **owned** tab only. The overlay is `aria-hidden`
+and `inert`, so snapshot.js does not index it.
+
+What it shows on the page: a green outline and score on the chosen element, and a red outline and score on the other candidates, only while that decision still matches the current page. The top and bottom text panels are not drawn. The same trace (goal, steps, ranked operations, why the run stopped) is written to `~/.cache/jev-driver/drive.log` instead, so the overlay text cannot crowd the page.
+
+The same facts are copied into each tick as `insight` and aggregated on the
+plugin result as `insights` plus a final `why`. A `DONE` tick reports
+`last_action: DONE` and that decision's own token usage, not the previous click.
 
 ### Takeover (watch mode)
 
@@ -102,31 +123,31 @@ force-navigates a surface the user moved.
 
 ## Discovery ladder (which browser gets driven)
 
+Scope is Hermes `--tui` plus a visible terminal-browser pane. No headless
+Chromium, no agent-browser daemon, no loopback scan, no desktop preview.
 `jev_driver/discover.py` resolves a CDP endpoint in this order:
 
 1. Explicit `--cdp` URL, or `JEV_CDP_URL` / `BROWSER_CDP_URL` env.
 2. A running terminal-browser instance (`terminal-browser ls --all --json`
    → `cdpPort`).
-3. The agent-browser daemon (`~/.agent-browser`, session `jev-driver`) —
-   covers headless sessions and Hermes' own `browser` toolset engine.
-4. Loopback probe `127.0.0.1:9222–9330` (`/json/version`).
-5. Auto-provision: launch a headless `agent-browser --session jev-driver`
-   session (system Chrome) and re-discover.
+3. The terminal-browser daemon SQLite record
+   (`~/.local/share/terminal-browser-*/terminal-browser.db`), because `ls`
+   from a no-TTY Hermes subprocess cannot see a pane that belongs to another
+   terminal. The port is checked against `/json/version` before use.
+4. Provision a visible pane: `terminal-browser open <url> --split right
+   --no-merge`. The child env has every `HERDR_*` variable removed so the
+   split is created by the real terminal (cmux, ghostty, kitty, …) and not
+   nested inside a herdr pane. The CDP port comes from the JSON record
+   `open` prints.
+5. Raise `WatchUnavailable`. There is no quieter fallback.
 
-**Watch branch** (`watch=true` / `--watch`): terminal-browser is the
-environment authority (there is NO herdr/cmux assumption — herdr is one of
-eight supported terminals). If a TB instance is running → attach. Else if the
-TB binary is on PATH → `terminal-browser open <url> --split right` (TB splits
-herdr/cmux/kitty/ghostty/wezterm/tmux/vscode/supacode panes natively via
-inherited `HERDR_*` env) and poll for its port (~30s). Else raise
-`WatchUnavailable` with the install pointer, and surface TB's own diagnostics
-(unsupported terminal, missing kitty graphics, etc.). Never fall through to
-headless when watch was requested.
-
-Env hygiene: `discover._child_env()` strips `AGENT_BROWSER_ENGINE` unless it
-names `chrome` / `lightpanda` — Hermes injects `~/.hermes/.env` into session
-env, and a hash/empty value there makes agent-browser reject every launch
-(verified live; see `archive/iteration-1-cli/JEV_DRIVER_NOTES.md`).
+`watch=true` uses that same ladder. The only extra behavior is takeover:
+if the page changes under the driver, the run stops with "user took over
+the browser" instead of continuing. See `docs/research/TUI_ONLY_DISCOVERY_FIX.md`
+for why the old headless ladder was removed. The older writeup in
+`archive/iteration-1-cli/JEV_DRIVER_NOTES.md` that mentions
+`discover._child_env()` and `AGENT_BROWSER_ENGINE` describes code that is
+gone.
 
 ## CDP transport
 
@@ -138,22 +159,16 @@ preserves the upstream helper's contract: unwrapped `result` payloads,
 `RuntimeError` on CDP errors, no `sessionId` on `Target.*` methods, session id
 only on `Runtime./Page./Input./Emulation.*` after a flatten attach.
 
-## Visibility surfaces
+## Visibility
 
-- **Desktop:** the plugin handler (in-process) emits Hermes' own
-  `preview.open` desktop-ui event (`tools/desktop_ui.py`), so the preview pane
-  opens automatically with the driven URL. No plugin.js needed; no CDP attach
-  to the webview (forbidden-by-design — see
-  `research/VISIBLE_BROWSER_RESEARCH.md`). The preview shows the page in the
-  desktop's own webview partition; the agent drives its own browser session
-  (cookies live there) — pages behind logins look logged-out in the preview.
-- **TUI:** when a terminal-browser pane is running, the ladder attaches to it
-  and the user watches live (`watch` mode, Round 2). terminal-browser renders
-  only in kitty-graphics-protocol terminals (kitty, ghostty, wezterm, tmux,
-  vscode, cmux, supacode, herdr — NOT iTerm2/Terminal.app); installing
-  terminal-browser does not install a terminal.
-- **Headless:** default for cron/background; the daemon session persists for
-  reuse.
+One surface: a terminal-browser pane in a kitty-graphics terminal (kitty,
+ghostty, wezterm, tmux, vscode, cmux, supacode — not iTerm2 or Terminal.app).
+Installing terminal-browser does not install a terminal. The Hermes desktop
+preview pane is not used; research on it
+(`research/VISIBLE_BROWSER_RESEARCH.md`,
+`research/DESKTOP_PLUGIN_RESEARCH.md`,
+`research/DESKTOP_BUTTON_RESEARCH.md`) is historical and not the current
+contract.
 
 ## Safety model
 

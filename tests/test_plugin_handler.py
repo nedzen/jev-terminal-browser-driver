@@ -171,40 +171,49 @@ def test_compact_result_passes_continuity_meta():
     assert out["browser"]["continuity"] == "dropped:stale-id"
 
 
-def test_preview_emit_called_with_url(monkeypatch, home):
+def test_tui_run_does_not_open_desktop_preview(monkeypatch, home):
     calls = []
     dui = types.ModuleType("tools.desktop_ui")
     tools = types.ModuleType("tools")
 
-    def emit_or_error(event, payload, fail_prefix, desktop_only, result):
-        calls.append((event, payload, result))
-        return json.dumps(result)
+    def emit_or_error(*args, **kwargs):
+        calls.append(args)
+        raise AssertionError("desktop preview is out of TUI-only scope")
 
     dui.emit_or_error = emit_or_error
     tools.desktop_ui = dui
     monkeypatch.setitem(sys.modules, "tools", tools)
     monkeypatch.setitem(sys.modules, "tools.desktop_ui", dui)
-    proc = FakeProc(stdout=json.dumps({"status": "done", "url": "x"}), returncode=0)
-    handler.run_drive({"goal": "g", "url": "https://example.test/widget"}, popen=lambda *a, **k: proc)
-    assert calls[0][0] == "preview.open"
-    assert calls[0][1] == {"url": "https://example.test/widget", "label": "Jev"}
-
-
-def test_preview_import_failure_is_silent(monkeypatch, home):
-    import builtins
-
-    real_import = builtins.__import__
-
-    def fake_import(name, *args, **kwargs):
-        if name == "tools" or name.startswith("tools."):
-            raise ImportError("missing")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", fake_import)
-    handler.maybe_open_preview("https://example.test/")
-    proc = FakeProc(stdout=json.dumps({"status": "done", "url": "x"}), returncode=0)
-    result = handler.run_drive({"goal": "g"}, popen=lambda *a, **k: proc)
+    proc = FakeProc(stdout=json.dumps({"status": "done", "url": "x", "why": "done"}), returncode=0)
+    result = handler.run_drive({"goal": "g", "url": "https://example.test/widget"}, popen=lambda *a, **k: proc)
+    assert calls == []
     assert result["success"] is True
+
+
+def test_compact_result_keeps_debug_insights():
+    out = handler.compact_result(
+        [
+            {"event": "browser", "source": "terminal-browser"},
+            {
+                "status": "ready",
+                "url": "file:///click.html",
+                "last_action": "Widget",
+                "why": "CLICK Widget (page changed)",
+                "insight": {"operation": "CLICK", "target": "Widget", "why": "CLICK Widget (page changed)"},
+            },
+            {
+                "status": "done",
+                "url": "file:///click.html#widget",
+                "last_action": "DONE",
+                "why": "Model chose DONE.",
+                "insight": {"operation": "DONE", "why": "Model chose DONE."},
+            },
+        ],
+        0,
+    )
+    assert out["why"] == "Model chose DONE."
+    assert [row["operation"] for row in out["insights"]] == ["CLICK", "DONE"]
+    assert out["browser"]["visibility"] == "terminal-browser-pane"
 
 
 def test_max_steps_and_timeout_clamped(home):

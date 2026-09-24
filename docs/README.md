@@ -5,23 +5,31 @@ drives a real browser with cheap typed decisions (Jev via OpenRouter) and
 returns ~200-byte JSON per tick. A standalone CLI (`scripts/drive.py`) lives
 underneath the plugin and is what the plugin shells out to.
 
-## Current docs (start here)
+Scope is **Hermes `--tui` + a visible terminal-browser pane**. Headless
+Chromium and the Hermes desktop preview are not part of the product.
+
+## Read these
 
 | Doc | What it covers |
 |---|---|
-| `../README.md` | Project overview, install, usage, tool schema, visibility behavior, limitations, credits |
-| `../SKILL.md` | The Hermes skill doc — when to use the tool vs plain `terminal-browser action`, pitfalls, verification |
-| `../HANDOFF.md` | Session-continuation state: verified status, known pitfalls, open TODO, people/panes |
-| `architecture.md` | How it works: execution chain, decision protocol, CDP transport, discovery ladder, safety model |
+| `../README.md` | Install, CLI, plugin fields, the visible-or-fail discovery rule |
+| `../SKILL.md` | What the Hermes agent should do: when to call `jev_drive`, debug on, pitfalls |
+| `architecture.md` | Execution chain, decision protocol, CDP transport, current discovery ladder, safety model |
+| `research/TUI_ONLY_DISCOVERY_FIX.md` | Why the headless ladder was removed, and the HERDR-scrub / daemon-DB mechanism |
 
-## Research (design evidence — read before changing architecture)
+## Do not treat these as the current contract
 
-| Doc | Verdict it established |
+They record decisions that were later dropped (desktop preview, headless
+agent-browser, a zap button). Useful as history. If they disagree with
+`architecture.md`, architecture wins.
+
+| Doc | What it actually is |
 |---|---|
-| `research/TUI_ONLY_DISCOVERY_FIX.md` | Why runs were invisible/herdr-nested/headless-403; the visible-pane, HERDR-scrubbed, daemon-DB fix (branch `fix/tui-only`, f320105) |
-| `research/DESKTOP_PLUGIN_RESEARCH.md` | Desktop app = same local Python backend; plugin loader parity TUI/Desktop; agent-browser engine facts |
-| `research/DESKTOP_BUTTON_RESEARCH.md` | Desktop plugin UI surface (panes/palette/statusBar chips); preview toolbar is NOT pluggable; upstream slot PR deferred |
-| `research/VISIBLE_BROWSER_RESEARCH.md` | Visibility verdicts: preview.open emit = the desktop path; true-drive into the webview forbidden-by-design; TUI watch via `terminal-browser open --split` |
+| `../HANDOFF.md` | Session notes from 2026-09-21. The top banner says what is stale. People/pane ids are dead. |
+| `research/DESKTOP_PLUGIN_RESEARCH.md` | Desktop-app parity investigation. Not implemented as a supported path. |
+| `research/DESKTOP_BUTTON_RESEARCH.md` | Desktop toolbar button. Not in scope. |
+| `research/VISIBLE_BROWSER_RESEARCH.md` | How we learned the desktop webview cannot be driven. The TUI conclusion is now the whole product. |
+| `research/JEV_DRIVE_BLOCKED_DEBUG_20260921.md` | Why extraction-over-a-long-page goals block. Still true: one viewport only. |
 
 ## Archive — iteration 1 (CLI-era, before the plugin)
 
@@ -34,8 +42,8 @@ run instructions predate the plugin and are superseded by the README.
 | `archive/iteration-1-cli/JEV_DRIVER_NOTES.md` | First live-ops notes: probe result, per-tick token costs, CDP/Electron pitfalls, N-way viewport notes |
 | `archive/iteration-1-cli/bench_nway.md` | N-way element-choice bench (20/20 @ N≈20, 8/8 @ N≈120, latency + token cost) |
 
-Note: the Electron/CDP pitfalls first recorded in the archive notes (no
-`Target.createTarget` on terminal-browser's Electron; never
-`Target.closeTarget` — TUI `PageHost` crash; CDP websocket needs
-`suppress_origin=True`) are still true and are reflected in the README and the
-`AGENT_BROWSER_ENGINE` scrub in `jev_driver/discover.py`.
+Note: the Electron/CDP pitfalls first recorded in the archive notes are still
+true: no `Target.createTarget` on terminal-browser's Electron; never
+`Target.closeTarget` (TUI `PageHost` crash); CDP websocket needs
+`suppress_origin=True`. The `AGENT_BROWSER_ENGINE` scrub described in those
+notes was removed with the headless ladder.

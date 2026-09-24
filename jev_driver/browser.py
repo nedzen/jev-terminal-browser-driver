@@ -11,6 +11,8 @@ from urllib.parse import urlparse
 
 from . import discover as _discover
 from .cdp import TB, cdp, cdp_port, connect, list_browsers
+from .readiness import page_is_shell
+from .runlog import write_event
 
 READ_STATE = Path(__file__).with_name("snapshot.js").read_text()
 HUD_JS = Path(__file__).with_name("hud.js").read_text()
@@ -119,7 +121,8 @@ def _write_last_page(record: dict) -> None:
 
 
 def remember_page(target_id, url):
-    if not target_id or _is_ephemeral_url(url):
+    """Remember the driver's tab, including fixture URLs, so the next run can reuse it."""
+    if not target_id:
         return
     source, browser_id = browser_identity()
     existing = _load_last_page()
@@ -163,20 +166,37 @@ def find_continuable_page():
         _log_continuity("ttl-expired")
         return None, None
     source, browser_id = browser_identity()
-    if (remembered.get("source"), remembered.get("browser_id")) != (source, browser_id):
-        LAST_CONTINUITY = "dropped:browser-mismatch"
-        _log_continuity("browser-mismatch")
-        return None, None
     try:
         pages = _json_pages()
     except (OSError, json.JSONDecodeError, TimeoutError):
         pages = []
     by_id = {p.get("id"): p for p in pages if p.get("type") == "page" and p.get("id")}
     remembered_id = remembered.get("targetId")
+    same_label = (remembered.get("source"), remembered.get("browser_id")) == (source, browser_id)
+    if not same_label:
+        # The connected browser still has this tab. A host-string mismatch must not open another one.
+        info = by_id.get(remembered_id) if remembered_id else None
+        url = (info or {}).get("url") or ""
+        if info and _target_ok({"type": "page", "url": url}, allow_denylist=False):
+            _log_continuity(
+                "re-attach despite label mismatch "
+                f"remembered={remembered.get('source')}:{remembered.get('browser_id')} "
+                f"connected={source}:{browser_id}"
+            )
+            LAST_CONTINUITY = "re-attach"
+            return remembered_id, url
+        LAST_CONTINUITY = "dropped:browser-mismatch"
+        _log_continuity(
+            "browser-mismatch "
+            f"remembered={remembered.get('source')}:{remembered.get('browser_id')} "
+            f"connected={source}:{browser_id}"
+        )
+        return None, None
     if remembered_id and remembered_id in by_id:
         info = by_id[remembered_id]
         url = info.get("url") or ""
-        if not _is_ephemeral_url(url) and _target_ok({"type": "page", "url": url}, allow_denylist=False):
+        # The id is the driver's own tab, even when it is still on a fixture or an error page.
+        if _target_ok({"type": "page", "url": url}, allow_denylist=False):
             LAST_CONTINUITY = "re-attach"
             return remembered_id, url
     live = []
@@ -281,6 +301,7 @@ def _open_owned_tab(url):
 class Browser:
     HYDRATE_MIN_ACTIONS = 8
     HYDRATE_MAX_ROUNDS = 3
+    HYDRATE_SHELL_ROUNDS = 8
     HYDRATE_SLEEP_S = 0.4
     sleep = staticmethod(time.sleep)
 
@@ -350,7 +371,7 @@ class Browser:
         except (RuntimeError, StalePage):
             return
 
-    def _observe_once(self, screenshot=True):
+    def _read_page(self, screenshot=True):
         if getattr(self, "after_input", None):
             action, self.after_input = self.after_input, None
             try:
@@ -404,17 +425,32 @@ class Browser:
                 time.sleep(0.02)
         raise StalePage("Page did not settle")
 
+    def _observe_once(self, screenshot=True):
+        page = self._read_page(screenshot)
+        _offer_enter(page)
+        return page
+
     def _settle_observe(self, screenshot=True):
         prev_len = -1
         page = None
-        rounds = max(1, int(self.HYDRATE_MAX_ROUNDS))
-        for _ in range(rounds):
+        limit = max(1, int(self.HYDRATE_MAX_ROUNDS))
+        rounds = 0
+        while rounds < limit:
+            rounds += 1
             page = self._observe_once(screenshot)
+            text = page.get("text") or ""
             n_actions = len(page.get("actions") or [])
-            text_len = len(page.get("text") or "")
-            if n_actions >= self.HYDRATE_MIN_ACTIONS and (prev_len < 0 or text_len <= prev_len):
+            if page_is_shell(text):
+                limit = max(limit, int(self.HYDRATE_SHELL_ROUNDS))
+                if rounds >= limit:
+                    return page
+                prev_len = len(text)
+                if self.HYDRATE_SLEEP_S:
+                    self.sleep(self.HYDRATE_SLEEP_S)
+                continue
+            if n_actions >= self.HYDRATE_MIN_ACTIONS and (prev_len < 0 or len(text) <= prev_len):
                 return page
-            prev_len = text_len
+            prev_len = len(text)
             if self.HYDRATE_SLEEP_S:
                 self.sleep(self.HYDRATE_SLEEP_S)
         return page
@@ -427,7 +463,7 @@ class Browser:
         return self._observe_once(screenshot)
 
     def fresh(self, page, action=None):
-        if action is not None and action["kind"] in {"click", "select"}:
+        if action is not None and action["kind"] in {"click", "select", "fill"}:
             node = action["node"]
             if type(node) is not int:
                 return False
@@ -435,15 +471,46 @@ class Browser:
                 "(() => { const c=window.__jevFast; "
                 f"return c ? [c.pageKey(),c.guard(c.nodes.get({node}))] : null; }})()"
             )
+            if action["kind"] == "fill":
+                return _same_field(page, node, current)
             return current == [page["page_key"], page["guards"].get(str(node))]
         return self.evaluate(MARKER) == page["marker"]
 
     def act(self, action, page, text=None):
         if not self.fresh(page, action):
-            raise StalePage("Page changed since this decision. Observe again.")
+            kind = action.get("kind")
+            reason = "field_changed" if kind in {"click", "select", "fill"} else "page_changed"
+            write_event(
+                {
+                    "event": "stale",
+                    "kind": kind,
+                    "label": action.get("label"),
+                    "reason": reason,
+                    "why": (
+                        "The target changed before input."
+                        if reason == "field_changed"
+                        else "The page changed before input."
+                    ),
+                }
+            )
+            message = (
+                "Field changed since this decision. Observe again."
+                if reason == "field_changed"
+                else "Page changed since this decision. Observe again."
+            )
+            raise StalePage(message)
         if action["kind"] == "wait":
             time.sleep(0.1)
         result = browser_operation({"operation": "act", "session": self.session, "action": action, "text": text})
+        write_event(
+            {
+                "event": "act",
+                "kind": action.get("kind"),
+                "label": action.get("label"),
+                "via": (result or {}).get("via") if isinstance(result, dict) else action.get("kind"),
+                "typed": (text or "")[:80] or None,
+            }
+        )
         self.after_input = action if action["kind"] != "wait" else None
         if action["kind"] in {"click", "select", "fill"}:
             self._needs_hydrate = True
@@ -467,6 +534,79 @@ def fingerprint(state):
     return hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()
 
 
+def _same_field(page: dict, node: int, current) -> bool:
+    """A fill is still valid when this field's identity, value, and URL are unchanged.
+
+    The feed around a search box changes constantly. That must not cancel typing.
+    """
+    if not isinstance(current, list) or len(current) < 2:
+        return False
+    page_key, guard = current
+    stored_key = page.get("page_key")
+    stored_guard = (page.get("guards") or {}).get(str(node))
+    if not isinstance(page_key, list) or not isinstance(stored_key, list):
+        return False
+    if len(page_key) < 2 or len(stored_key) < 2 or page_key[1] != stored_key[1]:
+        return False
+    if not isinstance(guard, list) or not isinstance(stored_guard, list):
+        return False
+    if len(guard) < 4 or len(stored_guard) < 4:
+        return False
+    return guard[0] == stored_guard[0] and guard[3] == stored_guard[3]
+
+
+def _offer_enter(page: dict | None) -> None:
+    """Press Enter is its own action once a field holds text. Jev does not imply it."""
+    if not isinstance(page, dict):
+        return
+    actions = page.get("actions")
+    if not isinstance(actions, list):
+        return
+    if any(item.get("id") == "press_enter" for item in actions):
+        return
+    if any(item.get("kind") == "fill" and str(item.get("value") or "").strip() for item in actions):
+        actions.append({"id": "press_enter", "kind": "enter", "label": "Press Enter"})
+
+
+def _insert_fill(call, text: str) -> None:
+    modifier = 4 if sys.platform == "darwin" else 2
+    call(
+        "Input.dispatchKeyEvent",
+        type="keyDown",
+        key="a",
+        code="KeyA",
+        modifiers=modifier,
+        commands=["selectAll"],
+    )
+    call(
+        "Input.dispatchKeyEvent",
+        type="keyUp",
+        key="a",
+        code="KeyA",
+        modifiers=modifier,
+    )
+    call("Input.insertText", text=text)
+
+
+def _focus_covered_field(evaluate, action) -> bool:
+    """Focus a fill target the hit-test could not click. X's search box is often covered."""
+    try:
+        focused = evaluate(
+            """(action => {
+              const e=window.__jevFast?.nodes.get(action.node);
+              if (!e?.isConnected || e.matches(':disabled') || e.closest('[aria-disabled="true"],[inert]')) return null;
+              if (e.readOnly || e.getAttribute('aria-readonly')==='true') return null;
+              e.focus();
+              return true;
+            })("""
+            + json.dumps(action)
+            + ")"
+        )
+    except StalePage:
+        return False
+    return focused is True
+
+
 def browser_operation(request):
     operation = request["operation"]
     session = request["session"]
@@ -485,6 +625,17 @@ def browser_operation(request):
     if operation == "act":
         action = request["action"]
         kind = action["kind"]
+        if kind == "enter":
+            for event in ("keyDown", "keyUp"):
+                call(
+                    "Input.dispatchKeyEvent",
+                    type=event,
+                    key="Enter",
+                    code="Enter",
+                    windowsVirtualKeyCode=13,
+                    nativeVirtualKeyCode=13,
+                )
+            return {"executed": action["id"], "via": "enter"}
         if kind == "scroll":
             size = evaluate("({h: innerHeight, w: innerWidth})") or {}
             height = size.get("h") or 700
@@ -516,29 +667,22 @@ def browser_operation(request):
             if target is None:
                 if kind == "select":
                     raise RuntimeError("Dropdown execution was not confirmed; inspect before retrying.")
+                if kind == "fill" and _focus_covered_field(evaluate, action):
+                    _insert_fill(call, request.get("text") or "")
+                    return {"executed": action["id"], "via": "focus"}
                 raise StalePage("Target changed or is covered. Observe again.")
             if kind != "select":
                 x, y = target["x"], target["y"]
                 for event in ("mousePressed", "mouseReleased"):
                     call("Input.dispatchMouseEvent", type=event, x=x, y=y, button="left", clickCount=1)
                 if kind == "fill":
-                    call(
-                        "Input.dispatchKeyEvent",
-                        type="keyDown",
-                        key="a",
-                        code="KeyA",
-                        modifiers=4 if sys.platform == "darwin" else 2,
-                        commands=["selectAll"],
-                    )
-                    call(
-                        "Input.dispatchKeyEvent",
-                        type="keyUp",
-                        key="a",
-                        code="KeyA",
-                        modifiers=4 if sys.platform == "darwin" else 2,
-                    )
-                    call("Input.insertText", text=request["text"])
-        return {"executed": action["id"]}
+                    _insert_fill(call, request.get("text") or "")
+            via = "pointer"
+        else:
+            via = "wait"
+        if kind == "scroll":
+            via = "wheel"
+        return {"executed": action["id"], "via": via}
 
     info = evaluate(READ_STATE)
     if info is None:

@@ -99,24 +99,6 @@ def _sum_usage(rows: list[dict]) -> dict:
     return total
 
 
-def maybe_open_preview(url: str) -> None:
-    """Best-effort desktop preview.open. TUI/gateway/cron: emitter is None → no-op."""
-    if not url:
-        return
-    try:
-        from tools import desktop_ui
-
-        desktop_ui.emit_or_error(
-            "preview.open",
-            {"url": url, "label": "Jev"},
-            "Failed to open the preview pane: ",
-            "The preview pane is only available in the Hermes desktop app.",
-            {"success": True, "url": url, "label": "Jev"},
-        )
-    except Exception:
-        return
-
-
 def compact_result(rows: list[dict], exit_code: int, error: str | None = None) -> dict:
     meta = next((r for r in rows if r.get("event") == "browser"), {})
     ticks = [r for r in rows if r.get("status")]
@@ -129,10 +111,13 @@ def compact_result(rows: list[dict], exit_code: int, error: str | None = None) -
         "source": meta.get("source"),
         "cdp_url": meta.get("cdp_url"),
         "auto_launched": bool(meta.get("auto_launched")),
-        "visibility": meta.get("visibility") or "headless",
+        "visibility": meta.get("visibility")
+        or ("terminal-browser-pane" if meta.get("source") == "terminal-browser" else "unknown"),
     }
     if meta.get("continuity"):
         browser["continuity"] = meta["continuity"]
+    if meta.get("log"):
+        browser["log"] = meta["log"]
     success = exit_code == 0 and status == "done" and not error
     out = {
         "success": success,
@@ -146,6 +131,13 @@ def compact_result(rows: list[dict], exit_code: int, error: str | None = None) -
     }
     if last.get("page_text") is not None:
         out["page_text"] = last["page_text"]
+    if last.get("why"):
+        out["why"] = last["why"]
+    if last.get("reason"):
+        out["reason"] = last["reason"]
+    insights = [t["insight"] for t in ticks if isinstance(t.get("insight"), dict)]
+    if insights:
+        out["insights"] = insights
     if any(t.get("degenerate") for t in ticks):
         out["degenerate"] = True
     return out
@@ -198,8 +190,12 @@ def build_argv(args: dict) -> list[str]:
         argv.extend(["--cdp", str(args["cdp_url"])])
     if args.get("watch") in {True, "true", "True", 1, "1"}:
         argv.append("--watch")
-    if args.get("debug") in {True, "true", "True", 1, "1"}:
+    # Debug HUD + insight trace default ON. Pass an explicit off switch so the
+    # CLI default (also on) cannot resurrect a debug=false request.
+    if args.get("debug", True) in {True, "true", "True", 1, "1"}:
         argv.append("--debug")
+    else:
+        argv.append("--no-debug")
     return argv
 
 
@@ -218,8 +214,6 @@ def run_drive(args: dict, *, popen=subprocess.Popen, kill_group=_kill_group) -> 
     if not (home / "scripts" / "drive.py").is_file():
         return compact_result([], 1, error=f"drive.py missing under {home}")
     timeout_s = clamp_timeout(args.get("timeout_s", DEFAULT_TIMEOUT))
-    if args.get("url"):
-        maybe_open_preview(str(args["url"]))
     proc = popen(
         build_argv(args),
         cwd=str(home),

@@ -12,9 +12,11 @@ Run the jev-ultrafast loop against an **owned** tab on the shared terminal-brows
 - A **single-viewport click-path** goal on a live page (forms, wizards, filters, logins, navigation) should be executed with cheap typed decisions, not a11y dumps in context.
 - You already have terminal-browser open and need observe → choose → act → re-observe.
 - **Preferred when the Hermes plugin is installed:** call the native `jev_drive` tool (do not paste snapshots into chat, do not shell out to `drive.py` yourself).
-- If the user verbatim asks to watch/see the browser while you drive (e.g. 'let me see', 'show me what you click', 'open it visibly'), pass `watch: true`. Otherwise omit it (headless is cheaper and fine for cron/background). If watch fails because terminal-browser is missing, tell the user the dependency and offer non-watch retry.
-- On the desktop app the preview pane opens automatically with the driven URL; note it shows the page in the desktop's own browser session (cookies live there) — pages behind logins look logged-out.
-- Omit `url` to continue the last driven tab in the same browser (30 min). Pass a non-empty `url` when switching sites.
+- This is Hermes `--tui` only. Every run drives a **visible** terminal-browser pane (the open one, or a split the driver opens). There is no headless mode and no desktop preview.
+- `debug` defaults to true. Leave it on. The owned tab shows the decision, labeled candidates, and why the run stopped. The tool result includes `insights` and `why`. Pass `debug: false` only when the user asks for a quiet run.
+- `watch: true` does not change visibility. It only yields if the user changes the page ("their mouse wins"). Omit it unless they are driving the same tab by hand.
+- If the driver says terminal-browser is missing or the terminal cannot draw it, say that. Do not retry in a background browser.
+- Pass `url` to navigate the driver's existing tab. Do not expect a new tab per call. A new tab is opened only when the driver has no live tab of its own (30 min). Omit `url` to stay on the current page.
 
 Don't use for:
 
@@ -24,7 +26,7 @@ Don't use for:
 
 ## Prerequisites
 
-- terminal-browser running (`~/.local/bin/terminal-browser ls --all --json` shows a `cdpPort`).
+- `terminal-browser` installed. A pane may already be open; if not, the driver opens one split to the right. Kitty-graphics terminals only (kitty, ghostty, wezterm, tmux, vscode, cmux, supacode). Not iTerm2 or Terminal.app.
 - `OPENROUTER_API_KEY` or `DECISION_GATE_API_KEY` (env or `~/.hermes/.env`).
 - From this repo: `uv sync`.
 
@@ -38,7 +40,7 @@ uv run python scripts/drive.py \
   --max-steps 5
 ```
 
-Each tick prints one JSON line `{status, url, last_action, elapsed_ms, usage}`. Exit 0 = model chose DONE; still verify the URL independently. `--target <cdpTargetId>` attaches to a tab you name explicitly. Default `--tab new` opens a TUI tab and **detaches** on exit (does not `Target.closeTarget` — that destroys Electron `webContents` under the TUI).
+Each tick prints one JSON line `{status, url, last_action, elapsed_ms, usage, why}` and, unless `--no-debug`, an `insight` object (operation, labeled target, top probabilities, whether the page changed). Exit 0 = model chose DONE; still verify the URL independently. `--target <cdpTargetId>` attaches to a tab you name explicitly. Default `--tab new` opens a TUI tab and **detaches** on exit (does not `Target.closeTarget` — that destroys Electron `webContents` under the TUI).
 
 ## Pitfalls
 
@@ -47,7 +49,7 @@ Each tick prints one JSON line `{status, url, last_action, elapsed_ms, usage}`. 
 - Default path never attaches to existing user tabs. Do not pass `--target` on hindsight/X/Laya tabs.
 - No `setDeviceMetricsOverride`; pane viewport is used as-is.
 - Choice cap is 255; snapshot already caps 250 actions.
-- Model DONE is not success — check `url` (or page text) yourself.
+- Model DONE is not success — check `url` (or page text) yourself. A DONE below 0.6 is returned as not done, with `reason` of `weak_done` or `shell`. Use `page_text` and `reason` instead of opening another browser tool.
 - TYPE_TEXT uses OpenRouter chat-completions (`inception/mercury-2.5`); Jev uses `https://openrouter.ai/api/alpha/decisions`.
 
 ## Verification

@@ -5,13 +5,17 @@ from __future__ import annotations
 from .handler import check_jev_drive, handle_jev_drive
 
 DESCRIPTION = (
-    "Run a single-viewport click-path goal in a real browser (forms, wizards, "
-    "filters, logins, navigation): observe visible elements, let Jev pick "
-    "operation+target, act. Not for scan/collect/rank over long pages "
+    "Drive a visible terminal-browser tab from Hermes TUI. One viewport at a "
+    "time: forms, wizards, filters, logins, in-view navigation. Jev picks the "
+    "operation and target, then acts. Not for scan/collect/rank over long pages "
     "(e.g. artificialanalysis.ai leaderboards) — use fetch/HTML/API. "
-    "Prefer this over dumping snapshots into chat. Pass watch=true when the "
-    "user asks to see the browser. Omit url to continue the last driven tab "
-    "in the same browser (30 min). Pass a non-empty url when switching sites."
+    "Do not ask it to take a screenshot. After it types, Press Enter is a separate "
+    "action. Debug is on unless debug=false: the tab shows labeled candidates and why "
+    "the run stopped, and the tool result includes an insights trace. "
+    "Reuses the driver's own tab: a url navigates that tab instead of opening "
+    "another one. A new tab is opened only when that tab is gone (30 min). "
+    "watch=true only changes "
+    "takeover: stop if the user changes the page. The pane is visible either way."
 )
 
 PARAMETERS = {
@@ -23,8 +27,8 @@ PARAMETERS = {
         "url": {
             "type": "string",
             "description": (
-                "Page to open in a new owned tab. Omit to continue the last driven "
-                "tab in the same browser (30 min). Pass a non-empty url when switching sites."
+                "Navigate the driver's existing tab to this page. Omit to keep the "
+                "current page. A new tab is opened only if the driver has no live tab."
             ),
         },
         "target": {"type": "string", "description": "Explicit CDP target id to attach (opt-in)."},
@@ -39,8 +43,8 @@ PARAMETERS = {
         "watch": {
             "type": "boolean",
             "description": (
-                "If true, drive a visible terminal-browser pane (needs a kitty-graphics "
-                "terminal: kitty/ghostty/wezterm/tmux/vscode/cmux/supacode/herdr). Default false."
+                "If true, stop when the user changes the page (their action wins). "
+                "The browser pane is visible either way. Default false."
             ),
             "default": False,
         },
@@ -53,8 +57,12 @@ PARAMETERS = {
         },
         "debug": {
             "type": "boolean",
-            "description": "Inject a driver-owned debug HUD (outlines + ranking) in the owned tab. Default false.",
-            "default": False,
+            "description": (
+                "Debug overlay plus an insights trace in the tool result "
+                "(operation, labeled targets, confidence, why it stopped). "
+                "Default true. Pass false to turn both off."
+            ),
+            "default": True,
         },
     },
 }

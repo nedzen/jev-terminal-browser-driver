@@ -209,10 +209,26 @@ def test_source_mismatch_is_not_continuable(monkeypatch, tmp_path):
     monkeypatch.setattr(
         br,
         "_json_pages",
-        lambda: [{"id": "T1", "type": "page", "url": "https://www.google.com/travel/flights"}],
+        lambda: [{"id": "OTHER", "type": "page", "url": "https://www.google.com/travel/flights"}],
     )
     assert find_continuable_page() == (None, None)
     assert br.LAST_CONTINUITY == "dropped:browser-mismatch"
+
+
+def test_label_mismatch_reuses_the_tab_on_this_browser(monkeypatch, tmp_path):
+    path = tmp_path / "last-page.json"
+    _pointer(path, targetId="T1", source="terminal-browser", browser_id="127.0.0.1:1")
+    monkeypatch.setattr(br, "LAST_PAGE_PATH", path)
+    _identity(monkeypatch, source="terminal-browser", ws="ws://127.0.0.1:9222/devtools/browser/x")
+    monkeypatch.setattr(
+        br,
+        "_json_pages",
+        lambda: [{"id": "T1", "type": "page", "url": "https://x.com/explore"}],
+    )
+    target, url = find_continuable_page()
+    assert target == "T1"
+    assert url == "https://x.com/explore"
+    assert br.LAST_CONTINUITY == "re-attach"
 
 
 def test_stem_match_same_browser(monkeypatch, tmp_path):
@@ -244,6 +260,38 @@ def test_legacy_schema_is_not_continuable(monkeypatch, tmp_path):
     )
     assert find_continuable_page() == (None, None)
     assert br.LAST_CONTINUITY == "dropped:legacy-schema"
+
+
+def test_remembered_fixture_tab_is_reused(monkeypatch, tmp_path):
+    path = tmp_path / "last-page.json"
+    _pointer(
+        path,
+        targetId="FIX",
+        url="file:///x/jev-terminal-browser-driver/fixtures/click.html",
+    )
+    monkeypatch.setattr(br, "LAST_PAGE_PATH", path)
+    _identity(monkeypatch)
+    monkeypatch.setattr(
+        br,
+        "_json_pages",
+        lambda: [
+            {"id": "FIX", "type": "page", "url": "file:///x/jev-terminal-browser-driver/fixtures/click.html?jev=1"},
+            {"id": "USER", "type": "page", "url": "https://x.com/home"},
+        ],
+    )
+    target, url = find_continuable_page()
+    assert target == "FIX"
+    assert "fixtures/click.html" in url
+
+
+def test_remember_stores_fixture_tab(monkeypatch, tmp_path):
+    path = tmp_path / "last-page.json"
+    monkeypatch.setattr(br, "LAST_PAGE_PATH", path)
+    _identity(monkeypatch)
+    set_lease(tab="new")
+    remember_page("FIX", "file:///x/jev-terminal-browser-driver/fixtures/click.html")
+    stored = json.loads(path.read_text())
+    assert stored["targetId"] == "FIX"
 
 
 def test_remember_new_tab_changes_target_id(monkeypatch, tmp_path):

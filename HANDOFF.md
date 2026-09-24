@@ -1,6 +1,14 @@
 # HANDOFF — jev-terminal-browser-driver (session continuation, 2026-09-21)
 
-Read this first in a new session. Everything below is verified state + remaining work.
+> **2026-09-24 — read this before the rest.** Scope is Hermes `--tui` and a
+> visible terminal-browser pane (`fix/tui-only`). Headless agent-browser,
+> desktop `preview.open`, and `discover._child_env()` described below were
+> removed. Current contract: `docs/architecture.md` and
+> `docs/research/TUI_ONLY_DISCOVERY_FIX.md`. Debug defaults on and the tool
+> result includes `why` + `insights`. Pane ids in this file are stale.
+
+The sections under this banner are the 2026-09-21 session record, not the
+current design.
 
 ## What the project is
 - Repo: `/Users/marius/Projects/jev-terminal-browser-driver` (branch `feature/hermes-plugin`, main has the published state)

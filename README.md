@@ -76,16 +76,17 @@ uv run python scripts/drive.py \
 uv run python scripts/drive.py --goal '...' --target <cdpTargetId>
 ```
 
-Each tick prints `{"status", "url", "last_action", "elapsed_ms", "usage"}`.
+Each tick prints `{"status", "url", "last_action", "elapsed_ms", "usage", "why"}`.
+With debug (the default) it also prints `insight`.
 Exit `0` on `done`, `1` on `blocked`/error/budget. **Model `DONE` is not
 success** — check the URL or page text independently.
 
 ## Hermes plugin
 
-The same loop is a native Hermes tool `jev_drive` (toolset `jev`). The plugin
-process never imports `jev_driver`; it shells out to `uv run python
-scripts/drive.py --json`. TUI and Desktop share this path (`hermes serve` on
-localhost).
+The same loop is a native Hermes tool `jev_drive` (toolset `jev`) for
+`hermes --tui`. The plugin process never imports `jev_driver`; it shells out
+to `uv run python scripts/drive.py --json`. Desktop preview and headless
+Chromium are out of scope.
 
 ```bash
 ./scripts/install_plugin.sh            # ~/.hermes/plugins/jev-driver
@@ -96,35 +97,37 @@ hermes plugins enable jev-driver
 Named profiles do **not** inherit the default-home plugin dir — symlink each
 profile you care about. `plugins.enabled` is per home.
 
-If no terminal-browser is running, the driver walks a discovery ladder and
-will auto-provision a **headless** `agent-browser --session jev-driver`
-instance. It never launches terminal-browser and never calls
+Discovery is visible-or-fail. Order: explicit `--cdp` / `JEV_CDP_URL` →
+a running terminal-browser pane (`ls` or the daemon SQLite record, so a
+no-TTY Hermes subprocess can still see the pane) → `terminal-browser open
+<url> --split right --no-merge` with every `HERDR_*` variable stripped, so
+the split lands in the real terminal (cmux, ghostty, …) instead of a nested
+herdr pane. If that cannot happen, the tool returns `blocked` and names the
+reason. It never falls through to headless Chromium. It never calls
 `Target.closeTarget` on a TUI tab.
 
-Hermes loads `~/.hermes/.env` into the session. If `AGENT_BROWSER_ENGINE` is
-set to an engine **hash** (or anything other than `chrome` / `lightpanda`),
-agent-browser rejects the launch and in-Hermes auto-provision fails while
-bare `drive.py` still works. The driver strips unknown values for child
-processes (`discover._child_env`). Fix the `.env` line or leave it unset.
+`debug` defaults on (`--no-debug` / `debug: false` to disable). The owned tab
+gets a HUD: chosen element in green, other candidates in red with labels,
+the goal, the step log, and why the run stopped. The tool result adds `why`
+and `insights` (operation, labeled target, confidence, top probabilities).
+Model `DONE` is still not success.
 
-Tool fields: `goal` (required), optional `url` (omit = re-attach to the last
-driven page), `target`, `max_steps` (cap 30), `cdp_url`, `timeout_s`,
-`watch: true` for watchable TUI browsing. Prefer `jev_drive` over pasting
-snapshots into chat.
+Tool fields: `goal` (required), optional `url` (navigates the driver's
+existing tab; a new tab only if that tab is gone), `target`, `max_steps`
+(cap 30), `cdp_url`, `timeout_s`, `debug` (default true), `watch`.
+`watch: true` does not change visibility; it yields if the user changes the
+page. Prefer `jev_drive` over pasting snapshots into chat. Each run appends
+to `~/.cache/jev-driver/drive.jsonl` and `drive.log` (goal, ranked hits,
+blocked reason).
 
-On the desktop app the preview pane opens automatically with the driven URL;
-note it shows the page in the desktop's own browser session (cookies live
-there) — pages behind logins look logged-out.
+terminal-browser needs a kitty-graphics terminal (kitty, ghostty, wezterm,
+tmux, vscode, cmux, supacode — not iTerm2/Terminal.app). Installing it does
+not install a terminal. If opening the pane fails, the error includes
+terminal-browser's own diagnostics.
 
-Pass `watch: true` (or `--watch`) to drive a **visible** terminal-browser pane.
-TB needs an existing kitty-graphics terminal (kitty, ghostty, wezterm, tmux,
-vscode, cmux, supacode, herdr — not iTerm2/Terminal.app). Installing TB does
-not install a terminal. If watch fails, the error includes TB's own
-diagnostics.
-
-Omit `--url` / `url` to re-attach to the last driven page. The final tool
-result includes `page_text` (visible snapshot text, max 2000 chars) on
-`done`/`blocked`.
+Omit `--url` / `url` to stay on the current page of that same tab. The final
+tool result includes `page_text` (visible snapshot text, max 2000 chars) on
+`done`/`blocked`, and `browser.log` is the path of the JSONL log.
 
 ### Offline tests
 
@@ -163,7 +166,7 @@ automated.
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | Execution chain, decision protocol, discovery ladder, CDP transport, safety model, visibility surfaces |
 | [docs/README.md](docs/README.md) | Docs index |
-| [docs/research/](docs/research/) | Design-evidence research (desktop plugin surfaces, preview-bar feasibility, visibility verdicts) |
+| [docs/research/](docs/research/) | One current note (`TUI_ONLY_DISCOVERY_FIX.md`); the rest is historical |
 | [docs/archive/iteration-1-cli/](docs/archive/iteration-1-cli/) | Pre-plugin iteration record (live-ops notes, N-way bench) |
 | [SKILL.md](SKILL.md) | Hermes skill contract (when to use, pitfalls) |
 | [HANDOFF.md](HANDOFF.md) | Session-continuation state (status, pitfalls, TODO) |
