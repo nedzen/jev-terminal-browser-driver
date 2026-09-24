@@ -229,7 +229,10 @@ def field_context(goal, action, page, history):
 def field_text(context):
     key = load_text_key()
     if not key:
-        raise ValueError("TYPE_TEXT needs TEXT_MODEL_API_KEY; no text is hardcoded or guessed by the executor.")
+        raise ValueError(
+            "Typing needs OPENROUTER_API_KEY (Plugins > jev-driver > OpenRouter API key) or TEXT_MODEL_API_KEY. "
+            "No text was typed."
+        )
     base = os.environ.get("TEXT_MODEL_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
     model = os.environ.get("TEXT_MODEL", "inception/mercury-2.5")
     reasoning = {"thinking": {"type": "disabled"}} if "api.deepseek.com/" in base else {"reasoning": {"effort": "low"}}

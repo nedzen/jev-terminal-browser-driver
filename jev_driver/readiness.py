@@ -11,12 +11,24 @@ REASON_WHY = {
     "field_changed": "Stopped: the field changed before the text could be typed.",
     "click_not_sent": "Stopped: the click was chosen but the page changed before it was sent.",
     "stale_page": "Stopped: the page kept changing before the action could run.",
+    "already_followed": (
+        "Stopped: this link was already followed and the new page is showing. "
+        "The model wanted to click a same-named link again. Check page_text."
+    ),
+    "toggle_undo": (
+        "Stopped: the next click would undo an earlier click on the same control"
+        " (it now shows a different label or state). Check the page before driving again."
+    ),
     "unsupported": "This driver does not take screenshots. Here is the visible text.",
     "extract": "jev_drive only clicks the current view. Call jev_read to collect structured data.",
     "model_blocked": (
         "Model chose BLOCKED. Here is the visible text; do not open another browser tool for the same look."
     ),
     "max_steps": "Stopped: tick budget exhausted before the goal was visibly done.",
+    "scroll_only": (
+        "Stopped: only scrolled, and the goal had no end state to reach. "
+        "The page is below. Use jev_read with scrolls to look at more of it."
+    ),
 }
 
 
@@ -37,6 +49,10 @@ def page_is_shell(text: str | None) -> bool:
     if not lines:
         return True
     if any(_is_sentence(line) for line in lines):
+        return False
+    if sum(1 for line in lines if len(line.split()) >= 6) >= 2:
+        return False
+    if len(lines) >= 40 or sum(len(line) for line in lines) >= 1200:
         return False
     return len(lines) >= 3
 

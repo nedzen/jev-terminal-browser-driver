@@ -39,19 +39,25 @@ def clamp_scrolls(value) -> int:
     return max(0, min(scrolls, MAX_SCROLLS))
 
 
-def read_expression(script: str | None, scrolls: int) -> str:
-    """Async page function. Scrolls first, then either the outline or the caller body."""
+def read_expression(script: str | None, scrolls: int, *, as_expression: bool = False) -> str:
+    """Async page function. Scrolls first, then either the outline or the caller script.
+
+    The script may be a statement body with `return`, a bare expression, or a function.
+    A function result is called, so `() => {...}` works the same as its body.
+    """
     n = clamp_scrolls(scrolls)
     scroll = (
         f"for (let i = 0; i < {n}; i++) {{"
         " window.scrollBy(0, Math.round((window.innerHeight || 800) * 0.85));"
         " await new Promise((r) => setTimeout(r, 350)); }"
     )
-    body = (script or "").strip()
+    body = (script or "").strip().rstrip(";")
     if not body:
-        return f"(async () => {{ {scroll} return {OUTLINE_JS}; }})()"
+        return f"(async () => {{ {scroll} return {OUTLINE_JS.strip()}; }})()"
+    run = f"await ({body}\n)" if as_expression else f"await (async () => {{ {body}\n }})()"
     return (
-        f"(async () => {{ {scroll} const value = await (async () => {{ {body}\\n }})();"
+        f"(async () => {{ {scroll} let value = {run};"
+        " if (typeof value === 'function') value = await value();"
         f" const text = JSON.stringify(value);"
         f" if (text == null) return {{ error: 'script returned undefined' }};"
         f" if (text.length > {MAX_RESULT}) return {{ truncated: true, json: text.slice(0, {MAX_RESULT}) }};"
@@ -74,7 +80,12 @@ def evaluate_async(browser, expression: str):
 
 
 def read_page(browser, script: str | None, scrolls: int) -> dict:
-    value = evaluate_async(browser, read_expression(script, scrolls))
+    if (script or "").strip():
+        value = evaluate_async(browser, read_expression(script, scrolls, as_expression=True))
+        if isinstance(value, dict) and str(value.get("error") or "").startswith("SyntaxError"):
+            value = evaluate_async(browser, read_expression(script, scrolls))
+    else:
+        value = evaluate_async(browser, read_expression(script, scrolls))
     url = ""
     try:
         url = browser.evaluate("location.href") or ""

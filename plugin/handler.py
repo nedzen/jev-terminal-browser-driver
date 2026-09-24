@@ -15,6 +15,25 @@ TIMEOUT_CAP = 900
 DEFAULT_MAX_STEPS = 12
 DEFAULT_TIMEOUT = 300
 TB = os.environ.get("TERMINAL_BROWSER", str(Path.home() / ".local" / "bin" / "terminal-browser"))
+LOG_DIR = Path.home() / ".cache" / "jev-driver"
+
+
+def log_handler_event(tool: str, error: str, stderr: str = "") -> None:
+    """Record failures the driver process could not log itself: timeouts and crashes."""
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    tail = " | ".join((stderr or "").strip().splitlines()[-8:])[:1500]
+    record = {"ts": stamp, "event": "handler", "tool": tool, "error": error, "stderr": tail or None}
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        with (LOG_DIR / "drive.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        line = f"{stamp} handler tool={tool} error={error}"
+        if tail:
+            line += f"\n  stderr: {tail[:400]}"
+        with (LOG_DIR / "drive.log").open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+    except OSError:
+        return
 
 
 def driver_home() -> Path:
@@ -115,6 +134,7 @@ def compact_result(rows: list[dict], exit_code: int, error: str | None = None) -
     ticks = [r for r in rows if r.get("status")]
     last = ticks[-1] if ticks else {}
     status = last.get("status") or ("error" if error else "blocked")
+    error = error or last.get("error")
     if status not in {"done", "blocked", "error"}:
         status = "blocked"
     actions = [t.get("last_action") for t in ticks if t.get("last_action")]
@@ -247,6 +267,7 @@ def run_drive(args: dict, *, popen=subprocess.Popen, kill_group=_kill_group) -> 
         except Exception:
             leftover = ""
         rows = parse_json_lines(leftover)
+        log_handler_event("jev_drive", f"timeout after {timeout_s}s")
         result = compact_result(rows, 1, error="timeout")
         result["status"] = "blocked"
         result["success"] = False
@@ -258,6 +279,8 @@ def run_drive(args: dict, *, popen=subprocess.Popen, kill_group=_kill_group) -> 
     elif proc.returncode != 0 and not rows:
         tail = (stderr or "").strip().splitlines()[-15:]
         error = "driver failed with no output" + (": " + " | ".join(tail) if tail else "")
+    if error:
+        log_handler_event("jev_drive", error, stderr or "")
     return compact_result(rows, proc.returncode or 0, error=error)
 
 
@@ -280,6 +303,7 @@ def build_read_argv(args: dict) -> list[str]:
     argv.extend(["--scrolls", str(scrolls)])
     if args.get("target"):
         argv.extend(["--target", str(args["target"])])
+    argv.append("--debug" if args.get("debug") in {True, "true", "True", 1, "1"} else "--no-debug")
     return argv
 
 
@@ -301,12 +325,15 @@ def run_read(args: dict, *, popen=subprocess.Popen, kill_group=_kill_group) -> d
         stdout, stderr = proc.communicate(timeout=timeout_s)
     except subprocess.TimeoutExpired:
         kill_group(proc)
+        log_handler_event("jev_read", f"timeout after {timeout_s}s")
         return {"success": False, "status": "blocked", "error": "timeout"}
     rows = parse_json_lines(stdout or "")
     if rows:
         return rows[-1]
     tail = (stderr or "").strip().splitlines()[-8:]
-    return {"success": False, "error": "read failed" + (": " + " | ".join(tail) if tail else "")}
+    error = "read failed" + (": " + " | ".join(tail) if tail else "")
+    log_handler_event("jev_read", error, stderr or "")
+    return {"success": False, "error": error}
 
 
 def handle_jev_read(args: dict | None = None, **kwargs) -> str:

@@ -6,8 +6,10 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from .browser import LAST_CONTINUITY, _log_continuity, find_continuable_page, set_lease
+from . import browser as browser_mod
+from .browser import _log_continuity, find_continuable_page, set_lease
 from .cdp import connect
 from .discover import WatchUnavailable, discover
 from .drive_agent import DriveAgent, _why
@@ -40,6 +42,19 @@ def _top_probs(probs, labels=None, limit=4):
     return [{"name": labels.get(key, key), "p": round(float(val), 3)} for key, val in items]
 
 
+def same_document(left, right) -> bool:
+    """True when both URLs are the same page, ignoring a trailing slash and fragment."""
+
+    def norm(raw):
+        parts = urlsplit((raw or "").strip())
+        path = parts.path.rstrip("/") or "/"
+        return (parts.scheme.lower(), parts.netloc.lower(), path, parts.query)
+
+    if not left or not right:
+        return False
+    return norm(left) == norm(right)
+
+
 def choose_lease(*, url, target_id, continuable, default_url, navigate_explicit=True, dropped=None):
     """Decide which tab to drive.
 
@@ -59,7 +74,7 @@ def choose_lease(*, url, target_id, continuable, default_url, navigate_explicit=
         return {
             "tab": "target",
             "target_id": existing_id,
-            "navigate": bool(url),
+            "navigate": bool(url) and not same_document(url, existing_url),
             "agent_url": url or existing_url or default_url,
             "continuity": "re-attach",
         }
@@ -70,6 +85,14 @@ def choose_lease(*, url, target_id, continuable, default_url, navigate_explicit=
         "agent_url": url or default_url,
         "continuity": None if url else dropped,
     }
+
+
+def no_page_error(plan, url):
+    """A call without url must reuse the remembered tab, never fall back to the local fixture."""
+    if url or plan["tab"] != "new":
+        return None
+    reason = plan.get("continuity") or "no remembered tab"
+    return f"No page to reuse ({reason}). Pass url to open one."
 
 
 def trace_fields(snap: dict, rec: dict, *, goal: str) -> dict:
@@ -108,9 +131,9 @@ def tick_record(snap: dict, *, debug: bool = False) -> dict:
     decision = decisions[-1] if decisions else None
     page = snap.get("page") or {}
     choice = (decision or {}).get("choice")
-    terminal = snap.get("status") in {"done", "blocked"} and choice in {"DONE", "BLOCKED"}
-    if terminal:
-        last_action = choice
+    stopped = snap.get("status") in {"done", "blocked"}
+    if stopped and (choice in {"DONE", "BLOCKED"} or snap.get("stop_reason")):
+        last_action = choice if choice in {"DONE", "BLOCKED"} else snap["status"].upper()
         usage = (decision or {}).get("usage") or {}
     elif last:
         last_action = last.get("action")
@@ -227,7 +250,7 @@ def main(argv=None) -> int:
     if not args.target_id:
         _log_continuity("lookup")
         continuable = find_continuable_page()
-        dropped = None if continuable[0] else LAST_CONTINUITY
+        dropped = None if continuable[0] else browser_mod.LAST_CONTINUITY
     plan = choose_lease(
         url=url,
         target_id=args.target_id,
@@ -236,6 +259,11 @@ def main(argv=None) -> int:
         navigate_explicit=args.navigate,
         dropped=dropped,
     )
+    missing = no_page_error(plan, url)
+    if missing:
+        write_event({"event": "blocked", "goal": args.goal, "error": missing, "continuity": plan.get("continuity")})
+        print(json.dumps({"status": "blocked", "error": missing, "reason": "no_page"}), flush=True)
+        return 1
     set_lease(
         tab=plan["tab"],
         target_id=plan["target_id"],
@@ -296,6 +324,9 @@ def main(argv=None) -> int:
                 rec = {**tick_record(snap, debug=args.debug), "status": "blocked", "error": "max-steps"}
                 rec["reason"] = "max_steps"
                 rec["why"] = REASON_WHY["max_steps"]
+                kinds = {item.get("kind") for item in snap.get("history") or []}
+                if kinds and kinds <= {"scroll", "wait"}:
+                    rec["why"] = REASON_WHY["scroll_only"]
                 if args.debug and isinstance(rec.get("insight"), dict):
                     rec["insight"]["why"] = rec["why"]
                 rec["page_text"] = ((snap.get("page") or {}).get("text") or "")[:2000]

@@ -44,6 +44,7 @@ def home(monkeypatch, tmp_path):
     (tmp_path / "fixtures").mkdir()
     (tmp_path / "fixtures" / "click.html").write_text("<a>Widget</a>")
     monkeypatch.setenv("JEV_DRIVER_HOME", str(tmp_path))
+    monkeypatch.setattr(handler, "LOG_DIR", tmp_path / "logs")
     return tmp_path
 
 
@@ -244,8 +245,46 @@ def test_read_expression_scrolls_then_runs_the_body():
     scripted = read_expression("return document.title", 99)
     assert "return document.title" in scripted
     assert "i < 15" in scripted
+    assert "\\n" not in scripted
+    assert "return \n" not in outline
+
+
+def test_blocked_row_error_reaches_the_agent(home):
+    out = handler.compact_result([{"status": "blocked", "error": "No page to reuse. Pass url."}], 1)
+    assert out["error"] == "No page to reuse. Pass url."
+
+
+def test_timeout_is_logged_by_the_handler(home):
+    handler.run_drive({"goal": "g"}, popen=lambda argv, **kw: FakeProc(timeout=True), kill_group=lambda proc: None)
+    rows = [json.loads(line) for line in (home / "logs" / "drive.jsonl").read_text().splitlines()]
+    assert rows[-1]["event"] == "handler"
+    assert rows[-1]["tool"] == "jev_drive"
+    assert "timeout" in rows[-1]["error"]
 
 
 def test_driver_home_walks_up_to_drive_py(monkeypatch):
     monkeypatch.delenv("JEV_DRIVER_HOME", raising=False)
     assert (handler.driver_home() / "scripts" / "drive.py").is_file()
+
+
+def test_read_script_forms_all_return_a_value():
+    from jev_driver.page_read import read_page
+
+    class Page:
+        def __init__(self):
+            self.calls = []
+
+        def call(self, method, **params):
+            expression = params["expression"]
+            self.calls.append(expression)
+            if "await (return" in expression or "await (const" in expression:
+                return {"exceptionDetails": {"exception": {"description": "SyntaxError: Unexpected token"}}}
+            return {"result": {"value": {"json": "1"}}}
+
+        def evaluate(self, expression):
+            return "https://example.test/"
+
+    for script in ("document.title", "() => 1", "return 1", "const a = 1; return a"):
+        page = Page()
+        assert read_page(page, script, 0)["data"] == 1
+    assert len(page.calls) == 2

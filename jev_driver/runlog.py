@@ -28,8 +28,10 @@ def _ranked(pairs) -> str:
     return " | ".join(f"{item.get('name')} {item.get('p')}" for item in pairs)
 
 
-def write_event(event: dict, *, jsonl_path: Path = JSONL_PATH, text_path: Path = TEXT_PATH) -> None:
+def write_event(event: dict, *, jsonl_path: Path | None = None, text_path: Path | None = None) -> None:
     """Append one JSON record and one readable line. Disk errors are ignored."""
+    jsonl_path = jsonl_path or JSONL_PATH
+    text_path = text_path or TEXT_PATH
     try:
         record = {"ts": _stamp(), **event}
         jsonl_path.parent.mkdir(parents=True, exist_ok=True)
@@ -59,6 +61,12 @@ def write_event(event: dict, *, jsonl_path: Path = JSONL_PATH, text_path: Path =
             bits.append(f"via={record['via']}")
         if record.get("typed"):
             bits.append(f"typed={_one_line(record['typed'], 80)!r}")
+        if record.get("continuity"):
+            bits.append(f"continuity={record['continuity']}")
+        if record.get("scrolls") is not None:
+            bits.append(f"scrolls={record['scrolls']}")
+        if record.get("script"):
+            bits.append(f"script={_one_line(record['script'], 180)!r}")
         lines = [" ".join(bits)]
         if record.get("ranked_ops") is not None or record.get("ranked_targets") is not None:
             lines.append(f"  ops: {_ranked(record.get('ranked_ops'))}")

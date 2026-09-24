@@ -1,7 +1,9 @@
 """Driver-side Agent subclass. agent.py stays verbatim."""
 
+import re
+
 from .agent import Agent
-from .browser import StalePage
+from .browser import StalePage, without_counts
 from .model import action_space, field_context, field_text
 from .readiness import REASON_WHY, done_acceptable, done_probability, page_is_shell
 from .runlog import write_event
@@ -55,6 +57,17 @@ def _why(status, decision, history, reason=None):
     return ""
 
 
+_PAGINATION = re.compile(r"^(next|previous|prev|more|load more|show more|continue|older|newer)\b|[›»→←‹«]|^\d+$")
+_REPEAT_GOAL = re.compile(r"\b(twice|times|each|every|until|pages|all of)\b")
+
+
+def _top_operation(decision) -> str | None:
+    probs = (decision or {}).get("operation_probabilities") or {}
+    if not probs:
+        return None
+    return max(probs.items(), key=lambda kv: float(kv[1] or 0))[0]
+
+
 def _ranked(probs, limit=6):
     items = sorted((probs or {}).items(), key=lambda kv: -float(kv[1] or 0))
     return [[str(key), round(float(val), 3)] for key, val in items[:limit]]
@@ -69,6 +82,8 @@ class DriveAgent(Agent):
         self._unexecuted_key = None
         self._unexecuted_count = 0
         self._weak_done = 0
+        self._clicked = []
+        self._start_url = (self.state.get("page") or {}).get("url")
         browser = self.state.get("browser")
         if browser is not None:
             browser.debug = debug
@@ -77,11 +92,19 @@ class DriveAgent(Agent):
 
     def command(self, name, body=None):
         if name == "act":
-            rejected = self._reject_weak_done()
+            rejected = self._reject_weak_done() or self._look_further()
             if rejected is not None:
                 self._paint_hud()
                 return rejected
             before_y = ((self.state.get("page") or {}).get("scroll") or {}).get("y")
+            page = self.state.get("page") or {}
+            decision = self.state.get("decision") or {}
+            chosen = next((a for a in page.get("actions") or [] if a.get("id") == decision.get("choice")), None)
+            if chosen is not None and self._would_undo(chosen, page):
+                self.state["decision"] = None
+                self._paint_hud()
+                return self.snapshot()
+            steps_before = len(self.state.get("history") or [])
             try:
                 snap = super().command("act", body)
             except StalePage as exc:
@@ -105,6 +128,8 @@ class DriveAgent(Agent):
                     self._paint_hud()
                     return self.snapshot()
                 raise
+            if chosen is not None and len(self.state.get("history") or []) > steps_before:
+                self._remember_click(chosen, page, (self.state.get("page") or {}).get("url"))
             self._unexecuted_key = None
             self._unexecuted_count = 0
             self._note_model_blocked()
@@ -224,6 +249,8 @@ class DriveAgent(Agent):
             action = _click_named(page.get("actions") or [], label)
             if action is None:
                 return None
+            if self._would_undo(action, page):
+                return self.snapshot()
             try:
                 browser.act(action, page)
                 break
@@ -241,6 +268,7 @@ class DriveAgent(Agent):
             )
             return None
         state["page"] = browser.observe(screenshot=getattr(self, "screenshots", False))
+        self._remember_click(action, page, state["page"].get("url"))
         history = state.setdefault("history", [])
         history.append(
             {
@@ -263,6 +291,77 @@ class DriveAgent(Agent):
             }
         )
         return self.snapshot()
+
+    @staticmethod
+    def _control_state(action: dict, page: dict) -> dict:
+        rect = action.get("rect") or {}
+        scroll = page.get("scroll") or {}
+        return {
+            "node": action.get("node"),
+            "url": page.get("url"),
+            "x": float(rect.get("x") or 0) + float(scroll.get("x") or 0),
+            "y": float(rect.get("y") or 0) + float(scroll.get("y") or 0),
+            "label": action.get("label"),
+            "shape": without_counts(action.get("label")),
+            "flags": tuple(action.get(key) for key in ("checked", "selected")),
+        }
+
+    def _remember_click(self, action: dict, page: dict, after_url: str | None = None) -> None:
+        if action.get("kind") == "click":
+            record = {**self._control_state(action, page), "led_to": after_url}
+            self._clicked = [*getattr(self, "_clicked", []), record]
+
+    def _repeats_ok(self, control: dict) -> bool:
+        """Pagination and goals that ask for repeats may follow the same label again."""
+        label = str(control.get("label") or "").strip().lower()
+        goal = str(self.state.get("goal") or "").lower()
+        return bool(_PAGINATION.search(label) or _REPEAT_GOAL.search(goal))
+
+    def _would_undo(self, action: dict, page: dict) -> bool:
+        """Stop instead of undoing a toggle or following the same link a second time."""
+        if action.get("kind") != "click":
+            return False
+        now = self._control_state(action, page)
+        for before in getattr(self, "_clicked", []):
+            led_to = before.get("led_to")
+            if led_to and led_to.split("#")[0] != (before["url"] or "").split("#")[0] and not self._repeats_ok(now):
+                if before["shape"] == now["shape"] and now["url"] != before["url"]:
+                    state = self.state
+                    state["status"] = "done"
+                    state["stop_reason"] = "already_followed"
+                    write_event(
+                        {
+                            "event": "done",
+                            "goal": state.get("goal"),
+                            "reason": "already_followed",
+                            "label": now["label"],
+                            "why": REASON_WHY["already_followed"],
+                        }
+                    )
+                    return True
+            if before["url"] != now["url"]:
+                continue
+            same = (before["node"] is not None and before["node"] == now["node"]) or (
+                abs(before["x"] - now["x"]) < 8 and abs(before["y"] - now["y"]) < 8
+            )
+            if not same:
+                continue
+            if before["shape"] == now["shape"] and before["flags"] == now["flags"]:
+                continue
+            state = self.state
+            state["status"] = "blocked"
+            state["stop_reason"] = "toggle_undo"
+            write_event(
+                {
+                    "event": "blocked",
+                    "goal": state.get("goal"),
+                    "reason": "toggle_undo",
+                    "label": now["label"],
+                    "why": f"{REASON_WHY['toggle_undo']} Was {before['label']!r}, now {now['label']!r}.",
+                }
+            )
+            return True
+        return False
 
     def _note_unexecuted(self, exc: BaseException | None = None) -> bool:
         """Count decisions that raised before anything was performed. Two on the same target stops the run."""
@@ -309,6 +408,8 @@ class DriveAgent(Agent):
         if not decision or decision.get("choice") != "DONE":
             return None
         if done_acceptable(decision, page):
+            return None
+        if self._moved_on(page) and _top_operation(decision) == "DONE" and not page_is_shell(page.get("text")):
             return None
         state["decision"] = None
         text = page.get("text") or ""
@@ -361,6 +462,75 @@ class DriveAgent(Agent):
             browser.sleep(getattr(browser, "HYDRATE_SLEEP_S", 0) or 0)
             state["page"] = browser._observe_once(screenshot=False)
         state["status"] = "ready"
+        return self.snapshot()
+
+    LOOK_SCROLLS = 3
+
+    def _moved_on(self, page: dict) -> bool:
+        """This run already took the user to another page, so the goal's action has happened."""
+        start = getattr(self, "_start_url", None)
+        url = (page or {}).get("url")
+        return bool(start and url) and start.split("#")[0] != url.split("#")[0]
+
+    def _look_further(self):
+        """BLOCKED usually means the target is below the viewport. Scroll and ask again, a few times."""
+        state = self.state
+        decision = state.get("decision") or {}
+        if decision.get("choice") != "BLOCKED":
+            return None
+        looked = getattr(self, "_looked", 0)
+        page = state.get("page") or {}
+        browser = state.get("browser")
+        if looked >= self.LOOK_SCROLLS or browser is None:
+            return None
+        text = page.get("text") or ""
+        if page_is_shell(text) or len(text.strip()) < 160:
+            self._looked = looked + 1
+            state["decision"] = None
+            for _ in range(8):
+                browser.sleep(getattr(browser, "HYDRATE_SLEEP_S", 0) or 0)
+                state["page"] = browser._observe_once(screenshot=False)
+                now = (state["page"] or {}).get("text") or ""
+                if not page_is_shell(now) and len(now.strip()) >= 160:
+                    break
+            state["status"] = "ready"
+            write_event(
+                {
+                    "event": "look_further",
+                    "goal": state.get("goal"),
+                    "why": "Model chose BLOCKED on a page still loading; waited.",
+                }
+            )
+            return self.snapshot()
+        scroll = next((item for item in page.get("actions") or [] if item.get("id") == "scroll_down"), None)
+        if scroll is None:
+            return None
+        self._looked = looked + 1
+        state["decision"] = None
+        try:
+            browser.act(scroll, page)
+        except StalePage:
+            pass
+        state["page"] = browser.observe(screenshot=getattr(self, "screenshots", False))
+        history = state.setdefault("history", [])
+        history.append(
+            {
+                "step": len(history) + 1,
+                "action": "Scroll down",
+                "kind": "scroll",
+                "operation": "SCROLL_DOWN",
+                "page_changed": state["page"].get("fingerprint") != page.get("fingerprint"),
+                "usage": decision.get("usage") or {},
+            }
+        )
+        state["status"] = "ready"
+        write_event(
+            {
+                "event": "look_further",
+                "goal": state.get("goal"),
+                "why": f"Model chose BLOCKED; scrolled to look for the target ({self._looked}/{self.LOOK_SCROLLS}).",
+            }
+        )
         return self.snapshot()
 
     def _maybe_unblock_scroll(self, snap, before_y):
@@ -417,13 +587,13 @@ class DriveAgent(Agent):
                     }
                 )
         steps = []
-        for item in (state.get("history") or [])[-6:]:
+        for item in (state.get("history") or [])[-12:]:
             text = item.get("text") or ""
             steps.append(
                 {
                     "n": item.get("step"),
                     "op": item.get("operation") or item.get("kind"),
-                    "label": (item.get("action") or "")[:60],
+                    "label": (item.get("action") or "").split(" → ")[0][:60],
                     "p": round(float(item.get("probability") or 0), 3),
                     "changed": item.get("page_changed"),
                     "text": text[:40] or None,

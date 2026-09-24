@@ -21,8 +21,13 @@ config_schema:
     env: TYPESAFE_API_KEY
     label: TypeSafe API key
     description: "Sent as the bearer token to api.typesafe.ai. Not stored in config.yaml."
+  text_api_key:
+    type: secret
+    env: OPENROUTER_API_KEY
+    label: OpenRouter API key (typing)
+    description: "Only used to write the text for form fields. Without it the driver can click but not type."
   debug:
     type: bool
     default: false
     label: Debug overlay
-    description: "Show the bottom-right Jev panel on every jev_drive run. The model cannot turn this off."
+    description: "Show the Jev panel and target outlines in the page on every jev_drive and jev_read call. The model cannot change this."

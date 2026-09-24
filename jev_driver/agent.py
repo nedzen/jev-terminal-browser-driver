@@ -1,4 +1,5 @@
-# Verbatim from https://github.com/browser-use/jev-ultrafast (c) 2026 Browser Use, MIT License.
+# From https://github.com/browser-use/jev-ultrafast (c) 2026 Browser Use, MIT License.
+# One change: DONE/BLOCKED only require the same document, not an identical page.
 """The complete agent loop. Typed choices, observable state, bounded execution."""
 
 import base64
@@ -92,7 +93,7 @@ class Agent:
             state["decision"] = None
             selected = decision["choice"]
             if selected in {"DONE", "BLOCKED"}:
-                if not state["browser"].fresh(page):
+                if not state["browser"].fresh(page, {"kind": "done"}):
                     state["status"] = "ready"
                     raise StalePage("Page changed since the decision. Choose again.")
                 state["status"] = "done" if selected == "DONE" else "blocked"

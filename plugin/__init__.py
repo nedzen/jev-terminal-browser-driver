@@ -5,22 +5,25 @@ from __future__ import annotations
 from .handler import check_jev_drive, handle_jev_drive, handle_jev_read
 
 DESCRIPTION = (
-    "Drive one visible browser tab. Call this tool and stop. Do not open another "
-    "browser tool, do not take a screenshot, and do not read this plugin's source. "
-    "One viewport: forms, wizards, filters, logins, and in-view clicks. "
+    "Click, type, select, and scroll in one visible browser tab until a goal is done. "
+    "Use it for actions: open a menu, fill a form, press a button, like a post, follow a link. "
+    "Do not open another browser tool, take a screenshot, or read this plugin's source. "
+    "Write the goal as the whole task with its end state, for example "
+    "'Open Bookmarks from the left nav; done when the Bookmarks timeline shows'. "
+    "Several steps in one goal are fine. Do not split a task into one call per click. "
+    "To look at, list, or collect what is on the page, call jev_read instead; "
+    "it scrolls too (scrolls=N), so do not call jev_drive just to scroll and see more. "
     "Pass url to navigate the driver's own tab. Omit url to stay on the current page. "
-    "A new tab is opened only when that tab is gone. "
-    "background defaults false and must stay false unless the user asks for a hidden "
-    "browser; it does not launch one, it only attaches to cdp_url. "
-    "The debug overlay is a plugin setting. This tool has no debug argument. "
-    "Read reason and page_text before deciding the tool failed. "
-    "model_blocked: this target was refused, the tool can still click. "
-    "click_not_sent or stale_page: the click was chosen and not sent; call the same goal once more. "
-    "field_changed: the text field changed before typing. "
-    "shell or weak_done: the page was not ready. "
-    "unsupported: the goal asked for a screenshot; page_text is the result. "
-    "Not for scan/collect/rank or returning JSON. Use jev_read for that. "
-    "watch=true only stops if the user changes the page. The pane is visible either way."
+    "The result has status (done or blocked), actions, why, reason, and page_text. "
+    "Reasons: max_steps, the budget ran out, check page_text and continue with a narrower goal. "
+    "click_not_sent or stale_page, the page moved before input; retry the same goal once. "
+    "toggle_undo, the next click would have undone an earlier one, so the first click worked. "
+    "model_blocked, the target is not visible here; scroll with jev_read or pass a url. "
+    "shell or weak_done, the page was still loading. "
+    "no_page, there is no driver tab; pass url. "
+    "Do not repeat a goal that was blocked twice; report what page_text shows. "
+    "background must stay false unless the user asks for a hidden browser. "
+    "The debug overlay is a plugin setting, not an argument."
 )
 
 PARAMETERS = {
@@ -86,10 +89,12 @@ SCHEMA = {
 }
 
 READ_DESCRIPTION = (
-    "Collect structured data from the same visible tab jev_drive uses. "
-    "Do not ask jev_drive to extract or return JSON. "
+    "Read the same visible tab jev_drive uses, without clicking. "
+    "Use it to see what is on the page, list posts, or collect JSON. "
     "Omit script to get an outline of articles, headings, times, and links. "
-    "Then call again with script: a JavaScript function body that returns JSON-serializable data. "
+    "Then call again with script: an expression, a function, or a body with return, "
+    "for example `[...document.querySelectorAll('article')].map(a => a.innerText.slice(0, 280))`. "
+    "The value must be JSON-serializable. "
     "scrolls moves down the page before the script runs (max 15) so one call can cover a long feed. "
     "Pass url to navigate that tab first. Omit url to read the current page."
 )
@@ -101,7 +106,10 @@ READ_PARAMETERS = {
         "url": {"type": "string", "description": "Navigate the driver's tab here before reading. Omit to stay."},
         "script": {
             "type": "string",
-            "description": "JavaScript function body. Must return JSON-serializable data. Omit for an outline.",
+            "description": (
+                "JavaScript expression, function, or body with return. JSON-serializable result. "
+                "Omit for an outline."
+            ),
         },
         "scrolls": {
             "type": "integer",
@@ -146,11 +154,16 @@ def register(ctx) -> None:
         description=DESCRIPTION,
         emoji="⚡",
     )
+    def handle_read(args=None, **kwargs):
+        payload = dict(args if isinstance(args, dict) else kwargs)
+        payload = apply_debug_setting(payload, ctx.get_config("debug", False))
+        return handle_jev_read(payload)
+
     ctx.register_tool(
         name="jev_read",
         toolset="jev",
         schema=READ_SCHEMA,
-        handler=handle_jev_read,
+        handler=handle_read,
         check_fn=check_jev_drive,
         description=READ_DESCRIPTION,
         emoji="📄",

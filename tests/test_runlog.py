@@ -2,7 +2,7 @@
 
 import json
 
-from jev_driver.cli import choose_lease, trace_fields
+from jev_driver.cli import choose_lease, no_page_error, trace_fields
 from jev_driver.runlog import write_event
 
 
@@ -31,6 +31,18 @@ def test_missing_tab_is_the_only_new_tab():
     assert plan["tab"] == "new"
     assert plan["navigate"] is True
     assert plan["agent_url"] == "https://example.test/next"
+
+
+def test_same_url_does_not_reload_the_existing_tab():
+    plan = choose_lease(
+        url="https://x.com/i/history/likes",
+        target_id=None,
+        continuable=("T1", "https://x.com/i/history/likes/"),
+        default_url="file:///fixture",
+    )
+    assert plan["navigate"] is False
+    assert plan["continuity"] == "re-attach"
+    assert plan["agent_url"] == "https://x.com/i/history/likes"
 
 
 def test_omit_url_stays_on_the_same_tab_without_navigating():
@@ -126,3 +138,23 @@ def test_log_writes_goal_ranks_and_block(tmp_path):
     assert "BLOCKED 0.7" in body
     assert "Widget 0.4" in body
     assert "nothing useful here" in body
+    assert "continuity=re-attach" in body
+
+
+def test_no_url_and_no_tab_blocks_instead_of_opening_the_fixture():
+    plan = choose_lease(
+        url=None,
+        target_id=None,
+        continuable=(None, None),
+        default_url="file:///fixture",
+        dropped="dropped:stale-id",
+    )
+    error = no_page_error(plan, None)
+    assert error and "dropped:stale-id" in error
+    assert no_page_error(plan, "https://example.test/") is None
+
+
+def test_cli_reads_the_live_continuity_reason():
+    import jev_driver.cli as cli
+
+    assert not hasattr(cli, "LAST_CONTINUITY")

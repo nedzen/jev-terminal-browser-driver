@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 import subprocess
 import sys
 import time
@@ -30,6 +31,7 @@ LEASE = {
 }
 
 LAST_PAGE_PATH = Path.home() / ".cache" / "jev-driver" / "last-page.json"
+HUD_STATE_PATH = LAST_PAGE_PATH.parent / "hud.json"
 LAST_PAGE_TTL_S = 1800
 LAST_PAGE_KEYS = ("targetId", "url", "source", "browser_id", "ts")
 LAST_CONTINUITY = None
@@ -101,6 +103,8 @@ def browser_identity():
 
 def _log_continuity(reason: str) -> None:
     print(f"jev-driver: continuity {reason}", file=sys.stderr)
+    if reason != "lookup":
+        write_event({"event": "continuity", "why": reason})
 
 
 def _load_last_page():
@@ -118,6 +122,22 @@ def _load_last_page():
 def _write_last_page(record: dict) -> None:
     LAST_PAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
     LAST_PAGE_PATH.write_text(json.dumps(record))
+
+
+def hud_open() -> bool:
+    """Whether the user left the debug panel expanded. Survives navigation and new runs."""
+    try:
+        return json.loads(HUD_STATE_PATH.read_text()).get("open") is True
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def save_hud_open(opened: bool) -> None:
+    try:
+        HUD_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        HUD_STATE_PATH.write_text(json.dumps({"open": bool(opened)}))
+    except OSError:
+        return
 
 
 def remember_page(target_id, url):
@@ -239,7 +259,8 @@ def _json_pages():
 
 
 def _unique_url(url):
-    sep = "&" if "?" in url else "?"
+    """Distinct new-tab URL. A fragment, so the site never sees a changed request."""
+    sep = "&" if "#" in url else "#"
     return f"{url}{sep}jev={time.time_ns()}"
 
 
@@ -333,12 +354,13 @@ class Browser:
             self.owned = False
             self.session = _attach(self.target)
             if LEASE["navigate"]:
-                self.call("Page.navigate", url=url)
+                self._keep_hud_toggle()
+                self._navigate(url)
         else:
             self.target, self.owned = _open_owned_tab(url)
             self.session = _attach(self.target)
             if LEASE["create_fallback"] and LEASE["navigate"]:
-                self.call("Page.navigate", url=url)
+                self._navigate(url)
         self.call("Emulation.setFocusEmulationEnabled", enabled=True)
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
@@ -359,17 +381,70 @@ class Browser:
             raise StalePage("Document changed during evaluation")
         return response.get("result", {}).get("value")
 
+    def _install_hud(self):
+        """Repaint the saved panel on every new document in this tab while attached."""
+        if getattr(self, "_hud_installed", False) or not self.session:
+            return
+        source = (
+            HUD_JS
+            + "\nif (document.readyState === 'loading') {"
+            " document.addEventListener('DOMContentLoaded', () => window.__jevHudRestore()); }"
+            " else { window.__jevHudRestore(); }"
+        )
+        try:
+            self.call("Page.addScriptToEvaluateOnNewDocument", source=source)
+            self._hud_installed = True
+        except RuntimeError:
+            return
+
+    def _navigate(self, url, timeout=15):
+        """Page.navigate returns before the old document is gone. Wait for the new one."""
+        try:
+            before, href = self.evaluate("[performance.timeOrigin, location.href]")
+        except (RuntimeError, StalePage, TypeError, ValueError):
+            before, href = None, ""
+        if (href or "").split("#")[0] == url.split("#")[0] and "#" in url:
+            before = None
+        self.call("Page.navigate", url=url)
+        deadline = time.monotonic() + timeout
+        while before is not None and time.monotonic() < deadline:
+            try:
+                if self.evaluate("performance.timeOrigin") != before:
+                    return
+            except (RuntimeError, StalePage):
+                pass
+            time.sleep(0.05)
+
+    def _keep_hud_toggle(self):
+        """The user may have toggled the panel since the last paint. Save it before the document goes away."""
+        try:
+            opened = self.evaluate("window.__jevHudOpen")
+        except (RuntimeError, StalePage):
+            return
+        if isinstance(opened, bool) and opened != hud_open():
+            save_hud_open(opened)
+
+    def _hud_eval(self, expression):
+        try:
+            response = self.call("Runtime.evaluate", expression=HUD_JS + "\n" + expression, returnByValue=True)
+        except (RuntimeError, StalePage):
+            return
+        opened = (response.get("result") or {}).get("value")
+        if isinstance(opened, bool) and opened != hud_open():
+            save_hud_open(opened)
+
     def paint_hud(self, payload):
         if not getattr(self, "debug", False) or not self.session:
             return
-        try:
-            self.call(
-                "Runtime.evaluate",
-                expression=HUD_JS + "\nwindow.__jevHudPaint(" + json.dumps(payload) + ");",
-                returnByValue=True,
-            )
-        except (RuntimeError, StalePage):
+        self._install_hud()
+        self._hud_eval("window.__jevHudPaint(" + json.dumps({**payload, "open": hud_open()}) + ");")
+
+    def restore_hud(self):
+        """Show the last saved panel without a new decision."""
+        if not getattr(self, "debug", False) or not self.session:
             return
+        self._install_hud()
+        self._hud_eval("window.__jevHudRestore();")
 
     def _read_page(self, screenshot=True):
         if getattr(self, "after_input", None):
@@ -414,16 +489,19 @@ class Browser:
                 )
             except RuntimeError:
                 pass
-        for attempt in range(10):
+        # A click can start a full page load. Give the next document time to exist.
+        deadline = time.monotonic() + 10
+        attempt = 0
+        while True:
             try:
                 return browser_operation(
                     {"operation": "observe", "session": self.session, "screenshot": screenshot}
                 )
             except StalePage:
-                if attempt == 9:
+                attempt += 1
+                if time.monotonic() >= deadline:
                     raise
-                time.sleep(0.02)
-        raise StalePage("Page did not settle")
+                time.sleep(0.02 if attempt < 10 else 0.15)
 
     def _observe_once(self, screenshot=True):
         page = self._read_page(screenshot)
@@ -463,7 +541,11 @@ class Browser:
         return self._observe_once(screenshot)
 
     def fresh(self, page, action=None):
-        if action is not None and action["kind"] in {"click", "select", "fill"}:
+        kind = (action or {}).get("kind")
+        if kind in {"scroll", "wait", "done"}:
+            current = self.evaluate("(() => [performance.timeOrigin, location.href])()")
+            return _same_document(page, current)
+        if kind in {"click", "select", "fill"}:
             node = action["node"]
             if type(node) is not int:
                 return False
@@ -471,9 +553,9 @@ class Browser:
                 "(() => { const c=window.__jevFast; "
                 f"return c ? [c.pageKey(),c.guard(c.nodes.get({node}))] : null; }})()"
             )
-            if action["kind"] == "fill":
+            if kind == "fill":
                 return _same_field(page, node, current)
-            return current == [page["page_key"], page["guards"].get(str(node))]
+            return _same_target(page, node, current)
         return self.evaluate(MARKER) == page["marker"]
 
     def act(self, action, page, text=None):
@@ -553,6 +635,36 @@ def _same_field(page: dict, node: int, current) -> bool:
     if len(guard) < 4 or len(stored_guard) < 4:
         return False
     return guard[0] == stored_guard[0] and guard[3] == stored_guard[3]
+
+
+_COUNTS = re.compile(r"\d[\d.,]*\s*[KMBkmb]?")
+
+
+def without_counts(value):
+    """Live feeds tick like counts and relative times. Those must not cancel a click."""
+    return _COUNTS.sub("#", value) if isinstance(value, str) else value
+
+
+def _same_document(page: dict, current) -> bool:
+    stored = page.get("page_key")
+    if not isinstance(current, list) or len(current) < 2:
+        return False
+    if not isinstance(stored, list) or len(stored) < 2:
+        return current[1] == page.get("url")
+    return current[0] == stored[0] and current[1] == stored[1]
+
+
+def _same_target(page: dict, node: int, current) -> bool:
+    """Same document and the same control. Scroll position and ticking numbers are ignored."""
+    if not isinstance(current, list) or len(current) < 2:
+        return False
+    page_key, guard = current
+    if not _same_document(page, page_key):
+        return False
+    stored = (page.get("guards") or {}).get(str(node))
+    if not isinstance(guard, list) or not isinstance(stored, list) or len(guard) != len(stored):
+        return False
+    return [without_counts(item) for item in guard] == [without_counts(item) for item in stored]
 
 
 def _offer_enter(page: dict | None) -> None:
@@ -652,9 +764,17 @@ def browser_operation(request):
               if (!e?.isConnected || e.matches(':disabled') || e.closest('[aria-disabled="true"],[inert]') ||
                   !e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})) return null;
               if (action.kind==='fill' && (e.readOnly || e.getAttribute('aria-readonly')==='true')) return null;
-              const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2;
-              if (!r.width || !r.height || x<0 || y<0 || x>=innerWidth || y>=innerHeight) return null;
-              if (!e.contains(document.elementFromPoint(x,y))) return null;
+              let x=0, y=0;
+              const hit=()=>{
+                const r=e.getBoundingClientRect();
+                x=r.x+r.width/2; y=r.y+r.height/2;
+                return r.width && r.height && x>=0 && y>=0 && x<innerWidth && y<innerHeight &&
+                  e.contains(document.elementFromPoint(x,y));
+              };
+              if (!hit()) {
+                e.scrollIntoView({block:'center',inline:'nearest',behavior:'instant'});
+                if (!hit()) return null;
+              }
               if (action.kind==='select') {
                 if (e.tagName!=='SELECT' || ![...e.options].some(o=>o.value===action.value &&
                     !o.disabled && !o.closest('optgroup[disabled]'))) return null;

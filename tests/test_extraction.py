@@ -129,11 +129,12 @@ def test_hud_js_is_hidden_from_snapshot_and_collapsible():
     src = Path("jev_driver/hud.js").read_text()
     assert 'aria-hidden", "true"' in src or "aria-hidden" in src
     assert "payload.marks" in src
-    assert "3px solid #3dff7a" in src
+    assert "style.outline" not in src
     assert "backdrop-filter:blur" in src
-    assert "right:12px;bottom:12px" in src
+    assert "right:14px;bottom:14px" in src
     assert "data-jev-hud-toggle" in src
     assert "__jevHudOpen" in src
+    assert "payload.open" in src
     assert "inert" not in src
     assert "<pre" not in src
     assert "<button" not in src
@@ -507,3 +508,122 @@ def test_enter_key_is_dispatched(monkeypatch):
     keys = [params for method, params in sent if method == "Input.dispatchKeyEvent"]
     assert [item["type"] for item in keys] == ["keyDown", "keyUp"]
     assert keys[0]["key"] == "Enter"
+
+
+def _bare_agent():
+    from jev_driver.drive_agent import DriveAgent
+
+    agent = DriveAgent.__new__(DriveAgent)
+    agent.state = {"goal": "Like the first post", "status": "ready"}
+    agent._clicked = []
+    return agent
+
+
+def test_toggle_that_flipped_is_not_clicked_back(monkeypatch):
+    monkeypatch.setattr("jev_driver.drive_agent.write_event", lambda event: None)
+    agent = _bare_agent()
+    page = {"url": "https://x.com/search", "scroll": {"x": 0, "y": 0}}
+    like = {"kind": "click", "node": 7, "label": "95082 Likes. Like", "rect": {"x": 10, "y": 400}}
+    agent._remember_click(like, page)
+    liked = {**like, "label": "95083 Likes. Liked"}
+    assert agent._would_undo(liked, page) is True
+    assert agent.state["stop_reason"] == "toggle_undo"
+
+
+def test_repeat_click_on_an_unchanged_control_is_allowed(monkeypatch):
+    monkeypatch.setattr("jev_driver.drive_agent.write_event", lambda event: None)
+    agent = _bare_agent()
+    page = {"url": "https://shop.test/cart", "scroll": {"x": 0, "y": 0}}
+    plus = {"kind": "click", "node": 3, "label": "Add one", "rect": {"x": 50, "y": 50}}
+    agent._remember_click(plus, page)
+    assert agent._would_undo(plus, page) is False
+    other = {"kind": "click", "node": 9, "label": "Liked", "rect": {"x": 50, "y": 900}}
+    assert agent._would_undo(other, page) is False
+
+
+def test_new_tab_marker_is_a_fragment():
+    from jev_driver.browser import _unique_url
+
+    assert _unique_url("https://x.com/search?q=a").startswith("https://x.com/search?q=a#jev=")
+    assert "&jev=" in _unique_url("https://x.com/#top")
+
+
+def test_click_survives_ticking_counts_but_not_a_new_document():
+    from jev_driver.browser import _same_target
+
+    key = [1.0, "https://x.com/home", 0, 0, 1, 1, []]
+    guard = [7, "button", "8933 Likes. Like", *[None] * 4, False, *[None] * 5, "@a · 2m 8933"]
+    page = {"page_key": key, "guards": {"7": guard}}
+    ticked = [*guard[:2], "8934 Likes. Like", *guard[3:13], "@a · 3m 8934"]
+    scrolled = [1.0, "https://x.com/home", 0, 400, 1, 1, []]
+    assert _same_target(page, 7, [scrolled, ticked]) is True
+    assert _same_target(page, 7, [[2.0, *key[1:]], ticked]) is False
+    liked = [*guard[:2], "8934 Likes. Liked", *guard[3:]]
+    assert _same_target(page, 7, [key, liked]) is False
+
+
+def test_scroll_only_needs_the_same_document():
+    from jev_driver.browser import _same_document
+
+    page = {"page_key": [1.0, "https://x.com/home"], "url": "https://x.com/home"}
+    assert _same_document(page, [1.0, "https://x.com/home"]) is True
+    assert _same_document(page, [1.0, "https://x.com/explore"]) is False
+
+
+def test_menu_that_opened_is_not_a_toggle_undo(monkeypatch):
+    monkeypatch.setattr("jev_driver.drive_agent.write_event", lambda event: None)
+    agent = _bare_agent()
+    page = {"url": "https://x.com/home", "scroll": {"x": 0, "y": 0}}
+    menu = {"kind": "click", "node": 4, "label": "More menu items", "expanded": "false", "rect": {"x": 5, "y": 5}}
+    agent._remember_click(menu, page)
+    assert agent._would_undo({**menu, "expanded": "true"}, page) is False
+
+
+def test_panel_open_state_is_remembered():
+    from jev_driver import browser
+
+    assert browser.hud_open() is False
+    browser.save_hud_open(True)
+    assert browser.hud_open() is True
+
+
+def test_headline_feed_is_not_a_loading_shell():
+    from jev_driver.readiness import page_is_shell
+
+    feed = (
+        "Explore\nTrending\nNews\nGoogle Launches First AI Satellite with Tensor Chips Next Week\n"
+        "8 hours ago · News\nMasterpiece Classic returns with a new season this fall"
+    )
+    assert page_is_shell(feed) is False
+    assert page_is_shell("Home\nExplore\nNotifications\nMessages") is True
+    loading = "To view keyboard shortcuts, press question mark\nView keyboard shortcuts\nExplore"
+    assert page_is_shell(loading) is True
+
+
+def test_top_done_is_accepted_once_the_run_reached_a_new_page(monkeypatch):
+    monkeypatch.setattr("jev_driver.drive_agent.write_event", lambda event: None)
+    agent = _bare_agent()
+    agent._start_url = "https://en.wikipedia.org/wiki/String_trimmer"
+    text = "Husqvarna Group\nHusqvarna AB is a Swedish manufacturer of outdoor power products."
+    agent.state["page"] = {"url": "https://en.wikipedia.org/wiki/Husqvarna_Group", "text": text}
+    decision = {"choice": "DONE", "operation_probabilities": {"DONE": 0.36, "CLICK": 0.29, "WAIT": 0.26}}
+    agent.state["decision"] = decision
+    assert agent._reject_weak_done() is None
+
+
+def test_same_link_is_not_followed_twice_but_next_is(monkeypatch):
+    monkeypatch.setattr("jev_driver.drive_agent.write_event", lambda event: None)
+    agent = _bare_agent()
+    agent.state["goal"] = 'Click the "Husqvarna" link'
+    first = {"url": "https://w.test/wiki/String_trimmer", "scroll": {"x": 0, "y": 0}}
+    second = {"url": "https://w.test/wiki/Husqvarna_Group", "scroll": {"x": 0, "y": 0}}
+    link = {"kind": "click", "node": 1, "label": "Husqvarna", "rect": {"x": 1, "y": 1}}
+    agent._remember_click(link, first, second["url"])
+    assert agent._would_undo({**link, "node": 9}, second) is True
+    assert agent.state["stop_reason"] == "already_followed"
+
+    agent = _bare_agent()
+    agent.state["goal"] = "Open the results"
+    nxt = {"kind": "click", "node": 1, "label": "Next", "rect": {"x": 1, "y": 1}}
+    agent._remember_click(nxt, first, second["url"])
+    assert agent._would_undo({**nxt, "node": 9}, second) is False
