@@ -227,3 +227,8 @@ def test_max_steps_and_timeout_clamped(home):
     assert "--max-steps" in captured["argv"]
     assert captured["argv"][captured["argv"].index("--max-steps") + 1] == "30"
     assert handler.clamp_timeout(9999) == 900
+
+
+def test_driver_home_walks_up_to_drive_py(monkeypatch):
+    monkeypatch.delenv("JEV_DRIVER_HOME", raising=False)
+    assert (handler.driver_home() / "scripts" / "drive.py").is_file()

@@ -187,13 +187,18 @@ def parse_args(argv=None):
     parser.add_argument("--max-steps", type=int, default=20)
     parser.add_argument("--navigate", action="store_true", help="With --target, also Page.navigate to --url.")
     parser.add_argument("--cdp", dest="cdp_url", default=None, help="Explicit CDP websocket or http discovery URL.")
+    parser.add_argument(
+        "--background",
+        action="store_true",
+        help="Attach to --cdp instead of a visible pane. Does not launch a hidden browser.",
+    )
     parser.add_argument("--json", action="store_true", help="Plugin contract: browser meta line, then JSON ticks.")
     parser.add_argument("--watch", action="store_true", help="Drive a visible terminal-browser pane.")
     parser.add_argument(
         "--debug",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Inject a debug HUD and include an insight trace (default on; --no-debug to disable).",
+        default=False,
+        help="Draw score outlines and include an insight trace. Off unless the user asks.",
     )
     return parser.parse_args(argv)
 
@@ -206,12 +211,17 @@ def main(argv=None) -> int:
     url = args.url
     launch = url or DEFAULT_FIXTURE.as_uri()
     try:
-        found = discover(explicit=args.cdp_url, launch_url=launch, watch=args.watch)
+        found = discover(
+            explicit=args.cdp_url,
+            launch_url=launch,
+            watch=args.watch,
+            background=args.background,
+        )
     except WatchUnavailable as exc:
         print(json.dumps({"status": "blocked", "error": str(exc)}), flush=True)
         return 1
     connect(found.ws_url)
-    visibility = found.visibility or ("terminal-browser-pane" if found.source == "terminal-browser" else "headless")
+    visibility = "background" if args.background else "terminal-browser-pane"
     continuable = (None, None)
     dropped = None
     if not args.target_id:

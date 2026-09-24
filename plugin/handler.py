@@ -10,7 +10,6 @@ import subprocess
 import time
 from pathlib import Path
 
-DEFAULT_HOME = Path.home() / "Projects" / "jev-terminal-browser-driver"
 MAX_STEPS_CAP = 30
 TIMEOUT_CAP = 900
 DEFAULT_MAX_STEPS = 12
@@ -19,7 +18,19 @@ TB = os.environ.get("TERMINAL_BROWSER", str(Path.home() / ".local" / "bin" / "te
 
 
 def driver_home() -> Path:
-    return Path(os.environ.get("JEV_DRIVER_HOME", DEFAULT_HOME)).expanduser()
+    """Directory that contains scripts/drive.py.
+
+    Walks up from this file so a catalog install works without a checkout at
+    ~/Projects. JEV_DRIVER_HOME still overrides it.
+    """
+    env = os.environ.get("JEV_DRIVER_HOME", "").strip()
+    if env:
+        return Path(env).expanduser()
+    here = Path(__file__).resolve().parent
+    for candidate in (here, *here.parents):
+        if (candidate / "scripts" / "drive.py").is_file():
+            return candidate
+    return here
 
 
 def _read_key_from_env_file(path: Path) -> bool:
@@ -186,13 +197,16 @@ def build_argv(args: dict) -> list[str]:
         argv.extend(["--url", str(args["url"])])
     if args.get("target"):
         argv.extend(["--target", str(args["target"])])
-    if args.get("cdp_url"):
-        argv.extend(["--cdp", str(args["cdp_url"])])
+    background = args.get("background") in {True, "true", "True", 1, "1"}
+    if background:
+        argv.append("--background")
+        # A CDP URL is only honored for an explicit hidden attach. Otherwise it
+        # can point the run at a browser the user cannot see.
+        if args.get("cdp_url"):
+            argv.extend(["--cdp", str(args["cdp_url"])])
     if args.get("watch") in {True, "true", "True", 1, "1"}:
         argv.append("--watch")
-    # Debug HUD + insight trace default ON. Pass an explicit off switch so the
-    # CLI default (also on) cannot resurrect a debug=false request.
-    if args.get("debug", True) in {True, "true", "True", 1, "1"}:
+    if args.get("debug") in {True, "true", "True", 1, "1"}:
         argv.append("--debug")
     else:
         argv.append("--no-debug")

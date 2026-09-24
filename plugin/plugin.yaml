@@ -1,11 +1,16 @@
 name: jev-driver
 version: 0.1.0
-description: "Native jev_drive tool: Jev-chosen browser actions via the local driver CLI."
+description: "Drive one visible terminal-browser tab with Jev. Requires the terminal-browser program on PATH, not a skill."
 author: Marius
 kind: standalone
 license: MIT
+homepage: https://github.com/nedzen/jev-terminal-browser-driver
 python_runtime: external
 pip_dependencies: []
-requires_env: []
+requires_env:
+  - name: OPENROUTER_API_KEY
+    description: "OpenRouter key used for Jev decisions and for text typed into fields."
+    url: "https://openrouter.ai/keys"
+    secret: true
 provides_tools:
   - jev_drive

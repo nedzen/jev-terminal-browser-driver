@@ -7,6 +7,34 @@ from .readiness import REASON_WHY, done_acceptable, done_probability, page_is_sh
 from .runlog import write_event
 
 
+def _label_stem(label: str) -> str:
+    """Drop a leading count so '12 comments' still matches '13 comments'."""
+    parts = label.split(None, 1)
+    if len(parts) == 2 and parts[0].isdigit():
+        return parts[1].strip()
+    return label.strip()
+
+
+def _click_named(actions, label: str):
+    """Find the click target again. Exact label, or the same stem when the count changed."""
+    exact = []
+    stemmed = []
+    want = _label_stem(label)
+    for item in actions:
+        if item.get("kind") != "click":
+            continue
+        got = (item.get("label") or "").split(" → ")[0].strip()
+        if got == label:
+            exact.append(item)
+        elif want != label and _label_stem(got) == want:
+            stemmed.append(item)
+    if exact:
+        return exact[0]
+    if len(stemmed) == 1:
+        return stemmed[0]
+    return None
+
+
 def _why(status, decision, history, reason=None):
     if reason in REASON_WHY:
         return REASON_WHY[reason]
@@ -67,7 +95,7 @@ class DriveAgent(Agent):
                         "why": str(exc),
                     }
                 )
-                recovered = self._retry_fill(decision)
+                recovered = self._retry_fill(decision) or self._retry_click(decision)
                 if recovered is not None:
                     self._unexecuted_key = None
                     self._unexecuted_count = 0
@@ -179,6 +207,63 @@ class DriveAgent(Agent):
         )
         return self.snapshot()
 
+    def _retry_click(self, decision: dict):
+        """The page changed during the decision. Click the same label on a fresh read."""
+        if (decision or {}).get("operation") != "CLICK":
+            return None
+        label = self._decision_label(decision)
+        if not label:
+            return None
+        state = self.state
+        browser = state.get("browser")
+        if browser is None:
+            return None
+        action = None
+        for _ in range(2):
+            page = browser._observe_once(screenshot=False)
+            action = _click_named(page.get("actions") or [], label)
+            if action is None:
+                return None
+            try:
+                browser.act(action, page)
+                break
+            except StalePage:
+                action = None
+        if action is None:
+            write_event(
+                {
+                    "event": "blocked",
+                    "goal": state.get("goal"),
+                    "reason": "click_not_sent",
+                    "label": label,
+                    "why": REASON_WHY["click_not_sent"],
+                }
+            )
+            return None
+        state["page"] = browser.observe(screenshot=getattr(self, "screenshots", False))
+        history = state.setdefault("history", [])
+        history.append(
+            {
+                "step": len(history) + 1,
+                "action": (action.get("label") or label).split(" → ")[0].strip(),
+                "kind": "click",
+                "operation": "CLICK",
+                "page_changed": True,
+                "usage": {},
+            }
+        )
+        state["decision"] = None
+        state["status"] = "ready"
+        write_event(
+            {
+                "event": "retry_click",
+                "goal": state.get("goal"),
+                "label": label,
+                "why": "Clicked the same control after the page changed.",
+            }
+        )
+        return self.snapshot()
+
     def _note_unexecuted(self, exc: BaseException | None = None) -> bool:
         """Count decisions that raised before anything was performed. Two on the same target stops the run."""
         decision = (self.state.get("decisions") or [None])[-1] or {}
@@ -196,6 +281,8 @@ class DriveAgent(Agent):
         message = str(exc or "")
         if "covered" in message:
             reason = "covered_target"
+        elif operation == "CLICK":
+            reason = "click_not_sent"
         elif "Field changed" in message:
             reason = "field_changed"
         else:
@@ -215,7 +302,7 @@ class DriveAgent(Agent):
         return True
 
     def _reject_weak_done(self):
-        """Do not finish on a low-confidence DONE, a chrome shell, or a Follow directory."""
+        """Do not finish on a low-confidence DONE or on a page that is still only labels."""
         state = self.state
         decision = state.get("decision")
         page = state.get("page") or {}

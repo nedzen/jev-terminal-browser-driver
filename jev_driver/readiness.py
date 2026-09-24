@@ -2,30 +2,14 @@
 
 from __future__ import annotations
 
-import re
-
-# Lines X paints before the timeline exists. Matching is case-insensitive.
-_CHROME_LINES = {
-    "to view keyboard shortcuts, press question mark",
-    "view keyboard shortcuts",
-    "top",
-    "latest",
-    "people",
-    "media",
-    "lists",
-    "search timeline",
-    "see new posts",
-    "show more",
-}
-
-_FOLLOW_LINE = re.compile(r"(?im)^follow$")
 DONE_MIN = 0.6
 
 REASON_WHY = {
-    "shell": "Stopped: the page was still only the search chrome. Here is the visible text.",
+    "shell": "Stopped: the page was still only short labels, not a document. Here is the visible text.",
     "weak_done": "Model chose DONE with low confidence. The goal is not confirmed. Use the visible text.",
     "covered_target": "Stopped: the target was covered and nothing was typed.",
     "field_changed": "Stopped: the field changed before the text could be typed.",
+    "click_not_sent": "Stopped: the click was chosen but the page changed before it was sent.",
     "stale_page": "Stopped: the page kept changing before the action could run.",
     "unsupported": "This driver does not take screenshots. Here is the visible text.",
     "model_blocked": (
@@ -35,22 +19,25 @@ REASON_WHY = {
 }
 
 
+def _is_sentence(line: str) -> bool:
+    words = line.split()
+    if len(words) < 4:
+        return False
+    return line.endswith((".", "!", "?")) or ". " in line or "! " in line or "? " in line
+
+
 def page_is_shell(text: str | None) -> bool:
-    """True when the visible text is only the chrome around a timeline, not the timeline."""
+    """True when the visible text is empty or only short labels, with no sentence yet.
+
+    This is not a site list. Any page that has not drawn a sentence is treated
+    as not ready, whether that is a nav bar, a spinner, or an empty result chrome.
+    """
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
     if not lines:
         return True
-    body = [line for line in lines if line.lower() not in _CHROME_LINES]
-    if not body:
-        return True
-    body_text = " ".join(body)
-    return len(body_text) < 40 and len(lines) >= 3 and len(body) <= 2
-
-
-def page_is_follow_directory(text: str | None) -> bool:
-    """A list of accounts with Follow buttons, not posts. Posts carry a middle-dot timestamp."""
-    raw = text or ""
-    return len(_FOLLOW_LINE.findall(raw)) >= 3 and "·" not in raw
+    if any(_is_sentence(line) for line in lines):
+        return False
+    return len(lines) >= 3
 
 
 def done_probability(decision: dict | None) -> float:
@@ -73,7 +60,7 @@ def done_acceptable(decision: dict | None, page: dict | None) -> bool:
     if done_probability(decision) < DONE_MIN:
         return False
     text = (page or {}).get("text") or ""
-    if page_is_shell(text) or page_is_follow_directory(text):
+    if page_is_shell(text):
         return False
     return True
 

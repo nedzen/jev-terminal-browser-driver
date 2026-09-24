@@ -50,7 +50,7 @@ class Discovery:
     http_origin: str
     source: str
     auto_launched: bool = False
-    visibility: str = "headless"
+    visibility: str = "terminal-browser-pane"
 
 
 LAST: Discovery | None = None
@@ -262,18 +262,33 @@ def discover(
     launch_url: str = "about:blank",
     auto_provision: bool = True,
     watch: bool = False,
+    background: bool = False,
 ) -> Discovery:
-    """TUI-only discovery. Stores the result on LAST for cdp_port / tab-open.
+    """Visible terminal-browser pane, unless background=True.
 
-    Order: explicit CDP URL → running terminal-browser pane → provision a
-    visible pane (split right, HERDR_* scrubbed). No headless fallback: if a
-    visible pane cannot be produced, raise.
+    Default order: a running terminal-browser pane, then `terminal-browser open
+    --split right`. Environment CDP URLs are ignored on that path so a leftover
+    `JEV_CDP_URL` cannot hide the browser. background=True does not launch a
+    hidden browser; it only attaches to an explicit CDP URL the caller supplies.
     """
     global LAST
-    raw = (explicit or os.environ.get("JEV_CDP_URL") or os.environ.get("BROWSER_CDP_URL") or "").strip()
+    raw = ""
+    if background:
+        raw = (explicit or os.environ.get("JEV_CDP_URL") or os.environ.get("BROWSER_CDP_URL") or "").strip()
+        if not raw:
+            raise WatchUnavailable(
+                "background=true does not launch a hidden browser. "
+                "Pass cdp_url for a browser you already started, or leave background off "
+                "to open a visible terminal-browser pane."
+            )
     if raw:
         ws = normalize_cdp_url(raw)
-        LAST = Discovery(ws_url=ws, http_origin=ws_to_http_origin(ws), source="explicit")
+        LAST = Discovery(
+            ws_url=ws,
+            http_origin=ws_to_http_origin(ws),
+            source="explicit",
+            visibility="background",
+        )
         return LAST
     found = _terminal_browser_discovery() or _daemon_db_discovery()
     if found:

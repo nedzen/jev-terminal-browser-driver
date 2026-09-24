@@ -84,9 +84,9 @@ with why and a short page excerpt.
 After navigate (and after click/select/fill), `Browser.observe` may re-read
 the page up to 3 times if the action count is still low or visible text is
 still growing (`HYDRATE_*` class attributes; tests inject a zero sleep).
-A page that is only search chrome ("Top Latest People Media Lists") is not
-ready: reading continues for up to 8 rounds. A `DONE` below 0.6, or a `DONE`
-on that chrome or on a Follow-button directory, is not success. A covered
+A page with no sentence yet, only short labels, is not ready: reading
+continues for up to 8 rounds. A `DONE` below 0.6, or a `DONE` on that
+label-only page, is not success. A covered
 fill target is focused and typed into. Fill freshness follows that field,
 not the rest of the page, so a changing feed does not cancel a search box.
 Once a field holds text, `Press Enter` is offered as its own action. Jev
@@ -102,7 +102,7 @@ with a &lt; 0.1 gap to the runner-up.
 
 ### Debug HUD
 
-`--debug` defaults on (`--no-debug` / `debug: false` turns it off). It injects
+`--debug` is off unless the user asks (`debug: true`). It injects
 `jev_driver/hud.js` into the **owned** tab only. The overlay is `aria-hidden`
 and `inert`, so snapshot.js does not index it.
 

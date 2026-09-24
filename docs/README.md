@@ -13,7 +13,7 @@ Chromium and the Hermes desktop preview are not part of the product.
 | Doc | What it covers |
 |---|---|
 | `../README.md` | Install, CLI, plugin fields, the visible-or-fail discovery rule |
-| `../SKILL.md` | What the Hermes agent should do: when to call `jev_drive`, debug on, pitfalls |
+| `../plugin/__init__.py` | The `jev_drive` description the agent actually sees |
 | `architecture.md` | Execution chain, decision protocol, CDP transport, current discovery ladder, safety model |
 | `research/TUI_ONLY_DISCOVERY_FIX.md` | Why the headless ladder was removed, and the HERDR-scrub / daemon-DB mechanism |
 

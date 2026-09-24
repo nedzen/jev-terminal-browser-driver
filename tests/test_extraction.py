@@ -142,10 +142,14 @@ def test_handler_passes_debug_flag():
     assert "--debug" in argv
     assert "--no-debug" not in argv
     argv = handler.build_argv({"goal": "g"})
-    assert "--debug" in argv
-    argv = handler.build_argv({"goal": "g", "debug": False})
     assert "--no-debug" in argv
     assert "--debug" not in argv
+    assert "--background" not in argv
+    argv = handler.build_argv({"goal": "g", "debug": False, "cdp_url": "http://127.0.0.1:9"})
+    assert "--cdp" not in argv
+    argv = handler.build_argv({"goal": "g", "background": True, "cdp_url": "http://127.0.0.1:9"})
+    assert "--background" in argv
+    assert "--cdp" in argv
 
 
 def test_hud_payload_names_candidates():
@@ -230,18 +234,16 @@ def test_compact_result_copies_degenerate():
     assert out["degenerate"] is True
 
 
-SHELL = "To view keyboard shortcuts, press question mark\nView keyboard shortcuts\nTop\nLatest\nPeople\nMedia\nLists"
+SHELL = "Menu\nHome\nSearch\nAbout\nHelp"
 
 
 def test_shell_page_is_not_treated_as_content():
-    from jev_driver.readiness import done_acceptable, page_is_follow_directory, page_is_shell, unsupported_goal
+    from jev_driver.readiness import done_acceptable, page_is_shell, unsupported_goal
 
     assert page_is_shell(SHELL)
+    assert page_is_shell("")
     assert not page_is_shell("Home\nOpen the Widget page.\nWidget\nUnrelated")
     assert not page_is_shell("ready")
-    follows = "Ada\nFollow\nBea\nFollow\nCid\nFollow\n"
-    assert page_is_follow_directory(follows)
-    assert not page_is_follow_directory(follows + "\nAda · 4m\nhello")
     assert not done_acceptable({"operation_probabilities": {"DONE": 0.34}}, {"text": "A real post. " * 20})
     assert done_acceptable({"operation_probabilities": {"DONE": 0.9}}, {"text": "A real post about Jev. " * 8})
     assert unsupported_goal("Take a screenshot of the results") == "unsupported"
@@ -361,6 +363,50 @@ def test_two_unexecuted_types_stop(monkeypatch):
     assert agent._note_unexecuted(StalePage("Page changed since this decision. Observe again.")) is True
     assert agent.state["stop_reason"] == "stale_page"
     assert agent.state["status"] == "blocked"
+
+
+def test_stale_click_retries_the_same_like(monkeypatch):
+    from jev_driver.drive_agent import _click_named
+
+    monkeypatch.setattr("jev_driver.drive_agent.write_event", lambda event: None)
+    agent = DriveAgent.__new__(DriveAgent)
+    agent.screenshots = False
+    clicked = {}
+
+    def act(action, page, text=None):
+        clicked["label"] = action["label"]
+
+    browser = Mock()
+    browser.act = act
+    page = {
+        "url": "https://x.com/home",
+        "title": "Home",
+        "text": "govi",
+        "actions": [{"id": "e1", "kind": "click", "node": 3, "label": "13 comments", "role": "button"}],
+        "fingerprint": "f",
+    }
+    browser._observe_once = Mock(return_value=page)
+    browser.observe = Mock(return_value=page)
+    agent.state = {
+        "goal": "Click Like",
+        "page": {"url": "https://x.com/home", "title": "Home", "text": "govi", "actions": []},
+        "browser": browser,
+        "history": [],
+        "decisions": [
+            {
+                "operation": "CLICK",
+                "target": "1",
+                "request": {"questions": {"click_target": {"criteria": {"1": "[1] 12 comments; button"}}}},
+            }
+        ],
+        "decision": None,
+        "status": "predicted",
+    }
+    assert _click_named(page["actions"], "12 comments")["label"] == "13 comments"
+    snap = agent._retry_click(agent.state["decisions"][-1])
+    assert snap["status"] == "ready"
+    assert clicked["label"] == "13 comments"
+    assert agent.state["history"][-1]["kind"] == "click"
 
 
 def test_stale_fill_retries_on_the_same_label(monkeypatch):

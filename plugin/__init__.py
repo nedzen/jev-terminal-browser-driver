@@ -5,17 +5,23 @@ from __future__ import annotations
 from .handler import check_jev_drive, handle_jev_drive
 
 DESCRIPTION = (
-    "Drive a visible terminal-browser tab from Hermes TUI. One viewport at a "
-    "time: forms, wizards, filters, logins, in-view navigation. Jev picks the "
-    "operation and target, then acts. Not for scan/collect/rank over long pages "
-    "(e.g. artificialanalysis.ai leaderboards) — use fetch/HTML/API. "
-    "Do not ask it to take a screenshot. After it types, Press Enter is a separate "
-    "action. Debug is on unless debug=false: the tab shows labeled candidates and why "
-    "the run stopped, and the tool result includes an insights trace. "
-    "Reuses the driver's own tab: a url navigates that tab instead of opening "
-    "another one. A new tab is opened only when that tab is gone (30 min). "
-    "watch=true only changes "
-    "takeover: stop if the user changes the page. The pane is visible either way."
+    "Drive one visible browser tab. Call this tool and stop. Do not open another "
+    "browser tool, do not take a screenshot, and do not read this plugin's source. "
+    "One viewport: forms, wizards, filters, logins, and in-view clicks. "
+    "Pass url to navigate the driver's own tab. Omit url to stay on the current page. "
+    "A new tab is opened only when that tab is gone. "
+    "background defaults false and must stay false unless the user asks for a hidden "
+    "browser; it does not launch one, it only attaches to cdp_url. "
+    "debug defaults false. Pass debug=true only when the user asks to see scores "
+    "on the page. "
+    "Read reason and page_text before deciding the tool failed. "
+    "model_blocked: this target was refused, the tool can still click. "
+    "click_not_sent or stale_page: the click was chosen and not sent; call the same goal once more. "
+    "field_changed: the text field changed before typing. "
+    "shell or weak_done: the page was not ready. "
+    "unsupported: the goal asked for a screenshot; page_text is the result. "
+    "Not for scan/collect/rank over long pages. "
+    "watch=true only stops if the user changes the page. The pane is visible either way."
 )
 
 PARAMETERS = {
@@ -39,7 +45,19 @@ PARAMETERS = {
             "minimum": 1,
             "maximum": 30,
         },
-        "cdp_url": {"type": "string", "description": "Explicit CDP websocket or http://host:port discovery URL."},
+        "cdp_url": {
+            "type": "string",
+            "description": "CDP URL to attach. Ignored unless background is true.",
+        },
+        "background": {
+            "type": "boolean",
+            "description": (
+                "Attach to cdp_url instead of the visible pane. Off by default. "
+                "Set true only when the user asks for a hidden browser. "
+                "Does not launch a hidden browser."
+            ),
+            "default": False,
+        },
         "watch": {
             "type": "boolean",
             "description": (
@@ -58,11 +76,10 @@ PARAMETERS = {
         "debug": {
             "type": "boolean",
             "description": (
-                "Debug overlay plus an insights trace in the tool result "
-                "(operation, labeled targets, confidence, why it stopped). "
-                "Default true. Pass false to turn both off."
+                "Draw score outlines on the page and include an insight trace. "
+                "Default false. Pass true only when the user asks to see the scores."
             ),
-            "default": True,
+            "default": False,
         },
     },
 }

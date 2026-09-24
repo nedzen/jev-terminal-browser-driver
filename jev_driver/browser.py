@@ -589,7 +589,7 @@ def _insert_fill(call, text: str) -> None:
 
 
 def _focus_covered_field(evaluate, action) -> bool:
-    """Focus a fill target the hit-test could not click. X's search box is often covered."""
+    """Focus a fill target the hit-test could not click. The field is often covered by its own label."""
     try:
         focused = evaluate(
             """(action => {

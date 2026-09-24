@@ -46,16 +46,25 @@ and the CDP transport contract live in
 
 ## Install
 
-Requirements: macOS (or Linux), Python ≥ 3.12, [uv](https://docs.astral.sh/uv/),
-a running [terminal-browser](https://terminal-browser.dev) instance, and an
-OpenRouter API key.
+Requirements: macOS or Linux, Python ≥ 3.12, [uv](https://docs.astral.sh/uv/),
+the [terminal-browser](https://terminal-browser.dev) **program** on `PATH`
+(not the terminal-browser skill), and `OPENROUTER_API_KEY`.
+
+From Hermes, once this repo is installed as the `jev-driver` plugin, call the
+`jev_drive` tool. The browser opens as a visible pane. Pass `debug: true` only
+when you want score outlines. Pass `background: true` with `cdp_url` only when
+you want to attach to a browser you already started hidden. This driver does
+not launch a hidden browser.
 
 ```bash
-git clone <this-repo> jev-terminal-browser-driver
+git clone https://github.com/nedzen/jev-terminal-browser-driver
 cd jev-terminal-browser-driver
 uv sync
-# auth: DECISION_GATE_API_KEY, else OPENROUTER_API_KEY in env or ~/.hermes/.env
+# OPENROUTER_API_KEY in the environment or ~/.hermes/.env
 ```
+
+The plugin finds `scripts/drive.py` next to itself. It does not look in
+`~/Projects`.
 
 ## Usage
 
@@ -168,15 +177,15 @@ automated.
 | [docs/README.md](docs/README.md) | Docs index |
 | [docs/research/](docs/research/) | One current note (`TUI_ONLY_DISCOVERY_FIX.md`); the rest is historical |
 | [docs/archive/iteration-1-cli/](docs/archive/iteration-1-cli/) | Pre-plugin iteration record (live-ops notes, N-way bench) |
-| [SKILL.md](SKILL.md) | Hermes skill contract (when to use, pitfalls) |
+| [docs/maintainer-notes.md](docs/maintainer-notes.md) | Maintainer notes. Not loaded by Hermes. |
+| [docs/plugin-catalog-entry.yaml](docs/plugin-catalog-entry.yaml) | Draft catalog entry. Not submitted. |
 | [HANDOFF.md](HANDOFF.md) | Session-continuation state (status, pitfalls, TODO) |
 
-## Hermes skill
+## What the agent sees
 
-`SKILL.md` is a Hermes Agent skill (`description` ≤ 60 chars, when-to-use
-vs plain `terminal-browser action` snapshots, pitfalls, verification). The
-key instruction: the agent runs `scripts/drive.py` and reads JSON lines — it
-never pulls the element table or a screenshot into its context.
+The agent contract is the `jev_drive` tool description. There is no skill to
+enable, and the agent should not read the plugin source. `terminal-browser`
+is the installed program that draws the pane. Its skill is not a dependency.
 
 ## Local models (future work)
 

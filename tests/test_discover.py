@@ -20,10 +20,29 @@ def test_explicit_skips_terminal_browser(monkeypatch):
     tb = Mock(side_effect=AssertionError("tb should not run"))
     monkeypatch.setattr(disc, "_terminal_browser_discovery", tb)
     monkeypatch.setattr(disc, "normalize_cdp_url", lambda raw: "ws://127.0.0.1:9/devtools/browser/x")
-    found = disc.discover(explicit="http://127.0.0.1:9")
+    found = disc.discover(explicit="http://127.0.0.1:9", background=True)
     assert found.source == "explicit"
+    assert found.visibility == "background"
     assert found.ws_url.endswith("/devtools/browser/x")
     tb.assert_not_called()
+
+
+def test_explicit_cdp_is_ignored_without_background(monkeypatch):
+    monkeypatch.setenv("JEV_CDP_URL", "http://127.0.0.1:9")
+    monkeypatch.setattr(
+        disc,
+        "_terminal_browser_discovery",
+        lambda: disc.Discovery("ws://127.0.0.1:50785/devtools/browser/a", "http://127.0.0.1:50785", "terminal-browser"),
+    )
+    found = disc.discover(explicit="http://127.0.0.1:9")
+    assert found.source == "terminal-browser"
+    assert found.visibility == "terminal-browser-pane"
+
+
+def test_background_without_cdp_does_not_launch(monkeypatch):
+    monkeypatch.setattr(disc, "_provision_terminal_browser", Mock(side_effect=AssertionError("no launch")))
+    with pytest.raises(disc.WatchUnavailable, match="does not launch a hidden browser"):
+        disc.discover(background=True)
 
 
 def test_running_terminal_browser_wins(monkeypatch):
