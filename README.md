@@ -1,9 +1,9 @@
 # jev-terminal-browser-driver
 
-<!-- VIDEO: drag docs/demo.mp4 into the GitHub web editor while editing this
-README, then replace the HTML comment below with the generated
-https://github.com/user-attachments/assets/... URL on its own line. -->
-<!-- PASTE-VIDEO-URL-HERE -->
+https://github.com/user-attachments/assets/f2273688-e330-4390-8287-baf96705ad40
+
+*Real run: Google Flights, Zürich to London, one-way, Oct 15 2026. 14
+autonomous ticks, 8.4 s, about $0.0025 in Jev spend, zero screenshots.*
 
 A Hermes plugin that drives a real, visible browser tab with
 [Jev](https://docs.typesafe.ai/introduction), a typed-decision model from
