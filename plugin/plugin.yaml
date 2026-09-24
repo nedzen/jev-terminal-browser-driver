@@ -8,14 +8,19 @@ homepage: https://github.com/nedzen/jev-terminal-browser-driver
 python_runtime: external
 pip_dependencies: []
 requires_env:
-  - name: OPENROUTER_API_KEY
-    description: "OpenRouter key used for Jev decisions and for text typed into fields."
-    url: "https://openrouter.ai/keys"
+  - name: TYPESAFE_API_KEY
+    description: "TypeSafe key for Jev decisions at api.typesafe.ai."
+    url: "https://typesafe.ai"
     secret: true
 provides_tools:
   - jev_drive
   - jev_read
 config_schema:
+  api_key:
+    type: secret
+    env: TYPESAFE_API_KEY
+    label: TypeSafe API key
+    description: "Sent as the bearer token to api.typesafe.ai. Not stored in config.yaml."
   debug:
     type: bool
     default: false

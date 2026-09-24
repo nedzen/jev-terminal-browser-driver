@@ -37,7 +37,7 @@ def _read_key_from_env_file(path: Path) -> bool:
     if not path.is_file():
         return False
     for line in path.read_text().splitlines():
-        if line.startswith("OPENROUTER_API_KEY=") or line.startswith("DECISION_GATE_API_KEY="):
+        if line.startswith(("OPENROUTER_API_KEY=", "DECISION_GATE_API_KEY=", "TYPESAFE_API_KEY=")):
             val = line.split("=", 1)[1].strip().strip('"').strip("'")
             if val:
                 return True
@@ -45,7 +45,7 @@ def _read_key_from_env_file(path: Path) -> bool:
 
 
 def has_decision_key() -> bool:
-    for var in ("DECISION_GATE_API_KEY", "OPENROUTER_API_KEY"):
+    for var in ("DECISION_GATE_API_KEY", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY"):
         if os.environ.get(var, "").strip():
             return True
     homes = [Path.home() / ".hermes" / ".env"]

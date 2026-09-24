@@ -21,8 +21,8 @@ scripts/drive.py
   → Agent(url, goal)                            # jev-ultrafast agent.py, verbatim
        Browser.observe   → snapshot.js run in-page via CDP Runtime.evaluate
                            (element table + ≤6K visible text + freshness guards)
-       model.choose      → POST openrouter.ai/api/alpha/decisions
-                           {model: typesafe/jev-1.13, state, questions}
+       model.choose      → POST api.typesafe.ai/v1/systemone
+                           {model: jev-1.13.0, state, questions}
                            one request, independent heads:
                              operation ∈ CLICK|TYPE_TEXT|SELECT|SCROLL_UP|
                                          SCROLL_DOWN|WAIT|DONE|BLOCKED

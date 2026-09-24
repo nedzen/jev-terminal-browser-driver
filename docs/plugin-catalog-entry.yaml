@@ -21,4 +21,4 @@ capabilities:
   provides_hooks: []
   provides_middleware: []
   requires_env:
-    - OPENROUTER_API_KEY
+    - TYPESAFE_API_KEY

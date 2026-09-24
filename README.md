@@ -48,7 +48,7 @@ and the CDP transport contract live in
 
 Requirements: macOS or Linux, Python ≥ 3.12, [uv](https://docs.astral.sh/uv/),
 the [terminal-browser](https://terminal-browser.dev) **program** on `PATH`
-(not the terminal-browser skill), and `OPENROUTER_API_KEY`.
+(not the terminal-browser skill), and `TYPESAFE_API_KEY`.
 
 From Hermes, once this repo is installed as the `jev-driver` plugin, call the
 `jev_drive` tool. The browser opens as a visible pane. Pass `debug: true` only
@@ -60,7 +60,7 @@ not launch a hidden browser.
 git clone https://github.com/nedzen/jev-terminal-browser-driver
 cd jev-terminal-browser-driver
 uv sync
-# OPENROUTER_API_KEY in the environment or ~/.hermes/.env
+# TYPESAFE_API_KEY in the environment, ~/.hermes/.env, or Plugins settings
 ```
 
 The plugin finds `scripts/drive.py` next to itself. It does not look in

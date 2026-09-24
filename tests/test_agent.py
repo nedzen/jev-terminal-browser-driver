@@ -88,12 +88,12 @@ def test_all_heads_are_one_request_and_only_matching_head_executes(monkeypatch):
             },
         }
 
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test")
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test")
     monkeypatch.setattr(model, "post_json", post)
     d = model.choose(page(), "Find a book", [])
     assert len(calls) == 1
-    assert calls[0][0] == "https://openrouter.ai/api/alpha/decisions"
-    assert "typesafe.ai" not in calls[0][0]
+    assert calls[0][0] == "https://api.typesafe.ai/v1/systemone"
+    assert calls[0][1]["model"] == "jev-1.13.0"
     assert d["operation"] == "TYPE_TEXT" and d["target"] == "1" and d["choice"] == "e1"
     assert set(calls[0][1]["questions"]) == {"operation", "click_target", "type_text_target"}
     assert isinstance(calls[0][1]["questions"]["click_target"]["criteria"]["1"], str)
@@ -165,7 +165,7 @@ def test_quoted_task_text_still_uses_the_llm(monkeypatch):
 
 def test_missing_text_credential_stops_before_guessing(monkeypatch):
     monkeypatch.delenv("TEXT_MODEL_API_KEY", raising=False)
-    monkeypatch.setattr(model, "load_openrouter_key", lambda: None)
+    monkeypatch.setattr(model, "load_text_key", lambda: None)
     with pytest.raises(ValueError, match="TEXT_MODEL_API_KEY"):
         model.field_text({"goal": 'Enter "Zurich"'})
 
