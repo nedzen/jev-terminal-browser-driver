@@ -18,6 +18,7 @@ underneath the plugin and is what the plugin shells out to.
 
 | Doc | Verdict it established |
 |---|---|
+| `research/TUI_ONLY_DISCOVERY_FIX.md` | Why runs were invisible/herdr-nested/headless-403; the visible-pane, HERDR-scrubbed, daemon-DB fix (branch `fix/tui-only`, f320105) |
 | `research/DESKTOP_PLUGIN_RESEARCH.md` | Desktop app = same local Python backend; plugin loader parity TUI/Desktop; agent-browser engine facts |
 | `research/DESKTOP_BUTTON_RESEARCH.md` | Desktop plugin UI surface (panes/palette/statusBar chips); preview toolbar is NOT pluggable; upstream slot PR deferred |
 | `research/VISIBLE_BROWSER_RESEARCH.md` | Visibility verdicts: preview.open emit = the desktop path; true-drive into the webview forbidden-by-design; TUI watch via `terminal-browser open --split` |
