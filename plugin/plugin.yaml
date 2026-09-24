@@ -14,9 +14,10 @@ requires_env:
     secret: true
 provides_tools:
   - jev_drive
+  - jev_read
 config_schema:
   debug:
     type: bool
     default: false
     label: Debug overlay
-    description: "Show the bottom-right Jev panel on the driven tab: intent, ranked hits, steps, and spend. A jev_drive debug argument still overrides this for one call."
+    description: "Show the bottom-right Jev panel on every jev_drive run. The model cannot turn this off."

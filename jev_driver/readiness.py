@@ -12,6 +12,7 @@ REASON_WHY = {
     "click_not_sent": "Stopped: the click was chosen but the page changed before it was sent.",
     "stale_page": "Stopped: the page kept changing before the action could run.",
     "unsupported": "This driver does not take screenshots. Here is the visible text.",
+    "extract": "jev_drive only clicks the current view. Call jev_read to collect structured data.",
     "model_blocked": (
         "Model chose BLOCKED. Here is the visible text; do not open another browser tool for the same look."
     ),
@@ -69,4 +70,6 @@ def unsupported_goal(goal: str | None) -> str | None:
     text = (goal or "").lower()
     if "screenshot" in text or "screen shot" in text or "take a picture" in text:
         return "unsupported"
+    if any(word in text for word in ("extract", "scrape", "as json", "return json", "collect all")):
+        return "extract"
     return None

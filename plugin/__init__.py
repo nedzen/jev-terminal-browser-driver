@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .handler import check_jev_drive, handle_jev_drive
+from .handler import check_jev_drive, handle_jev_drive, handle_jev_read
 
 DESCRIPTION = (
     "Drive one visible browser tab. Call this tool and stop. Do not open another "
@@ -12,15 +12,14 @@ DESCRIPTION = (
     "A new tab is opened only when that tab is gone. "
     "background defaults false and must stay false unless the user asks for a hidden "
     "browser; it does not launch one, it only attaches to cdp_url. "
-    "debug follows the plugin setting unless this call passes debug. "
-    "Pass debug=true only when the user asks to see the overlay. "
+    "The debug overlay is a plugin setting. This tool has no debug argument. "
     "Read reason and page_text before deciding the tool failed. "
     "model_blocked: this target was refused, the tool can still click. "
     "click_not_sent or stale_page: the click was chosen and not sent; call the same goal once more. "
     "field_changed: the text field changed before typing. "
     "shell or weak_done: the page was not ready. "
     "unsupported: the goal asked for a screenshot; page_text is the result. "
-    "Not for scan/collect/rank over long pages. "
+    "Not for scan/collect/rank or returning JSON. Use jev_read for that. "
     "watch=true only stops if the user changes the page. The pane is visible either way."
 )
 
@@ -73,13 +72,6 @@ PARAMETERS = {
             "minimum": 1,
             "maximum": 900,
         },
-        "debug": {
-            "type": "boolean",
-            "description": (
-                "Show the debug overlay and include an insight trace for this call. "
-                "Omit to use the plugin debug setting. Pass true only when the user asks."
-            ),
-        },
     },
 }
 
@@ -93,12 +85,49 @@ SCHEMA = {
     "parameters": PARAMETERS,
 }
 
+READ_DESCRIPTION = (
+    "Collect structured data from the same visible tab jev_drive uses. "
+    "Do not ask jev_drive to extract or return JSON. "
+    "Omit script to get an outline of articles, headings, times, and links. "
+    "Then call again with script: a JavaScript function body that returns JSON-serializable data. "
+    "scrolls moves down the page before the script runs (max 15) so one call can cover a long feed. "
+    "Pass url to navigate that tab first. Omit url to read the current page."
+)
+
+READ_PARAMETERS = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "url": {"type": "string", "description": "Navigate the driver's tab here before reading. Omit to stay."},
+        "script": {
+            "type": "string",
+            "description": "JavaScript function body. Must return JSON-serializable data. Omit for an outline.",
+        },
+        "scrolls": {
+            "type": "integer",
+            "description": "How many viewport scrolls to run before reading. Default 0, max 15.",
+            "default": 0,
+            "minimum": 0,
+            "maximum": 15,
+        },
+        "timeout_s": {
+            "type": "integer",
+            "description": "Subprocess timeout in seconds (default 300, hard cap 900).",
+            "default": 300,
+            "minimum": 1,
+            "maximum": 900,
+        },
+    },
+}
+
+READ_SCHEMA = {"name": "jev_read", "description": READ_DESCRIPTION, "parameters": READ_PARAMETERS}
+
 
 def apply_debug_setting(payload: dict, setting) -> dict:
-    """Use the plugin setting when this call does not pass debug."""
+    """The plugin setting is the only debug switch. A model-supplied flag is ignored."""
     out = dict(payload)
-    if "debug" not in out:
-        out["debug"] = bool(setting)
+    out.pop("debug", None)
+    out["debug"] = bool(setting)
     return out
 
 
@@ -116,4 +145,13 @@ def register(ctx) -> None:
         check_fn=check_jev_drive,
         description=DESCRIPTION,
         emoji="⚡",
+    )
+    ctx.register_tool(
+        name="jev_read",
+        toolset="jev",
+        schema=READ_SCHEMA,
+        handler=handle_jev_read,
+        check_fn=check_jev_drive,
+        description=READ_DESCRIPTION,
+        emoji="📄",
     )

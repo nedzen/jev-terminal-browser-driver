@@ -252,6 +252,7 @@ def test_shell_page_is_not_treated_as_content():
     assert not done_acceptable({"operation_probabilities": {"DONE": 0.34}}, {"text": "A real post. " * 20})
     assert done_acceptable({"operation_probabilities": {"DONE": 0.9}}, {"text": "A real post about Jev. " * 8})
     assert unsupported_goal("Take a screenshot of the results") == "unsupported"
+    assert unsupported_goal("Extract tweets and return as JSON") == "extract"
     assert unsupported_goal("Click Latest") is None
 
 

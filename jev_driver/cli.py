@@ -275,12 +275,13 @@ def main(argv=None) -> int:
         print(json.dumps(rec), flush=True)
         write_event(trace_fields(snap, rec, goal=args.goal))
 
-    if unsupported_goal(args.goal):
+    refused = unsupported_goal(args.goal)
+    if refused:
         snap = agent.snapshot()
         snap["status"] = "blocked"
-        snap["stop_reason"] = "unsupported"
+        snap["stop_reason"] = refused
         agent.state["status"] = "blocked"
-        agent.state["stop_reason"] = "unsupported"
+        agent.state["stop_reason"] = refused
         rec = tick_record(snap, debug=args.debug)
         rec["page_text"] = ((snap.get("page") or {}).get("text") or "")[:2000]
         emit(snap, rec)

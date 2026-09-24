@@ -229,10 +229,21 @@ def test_max_steps_and_timeout_clamped(home):
     assert handler.clamp_timeout(9999) == 900
 
 
-def test_debug_setting_fills_only_when_omitted():
-    assert plugin.apply_debug_setting({"goal": "g"}, True)["debug"] is True
-    assert plugin.apply_debug_setting({"goal": "g", "debug": False}, True)["debug"] is False
-    assert plugin.apply_debug_setting({"goal": "g"}, False)["debug"] is False
+def test_debug_setting_ignores_the_model_flag():
+    assert "debug" not in plugin.SCHEMA["parameters"]["properties"]
+    assert plugin.apply_debug_setting({"goal": "g", "debug": False}, True)["debug"] is True
+    assert plugin.apply_debug_setting({"goal": "g", "debug": True}, False)["debug"] is False
+
+
+def test_read_expression_scrolls_then_runs_the_body():
+    from jev_driver.page_read import read_expression
+
+    outline = read_expression(None, 2)
+    assert "scrollBy" in outline
+    assert "outline" in outline
+    scripted = read_expression("return document.title", 99)
+    assert "return document.title" in scripted
+    assert "i < 15" in scripted
 
 
 def test_driver_home_walks_up_to_drive_py(monkeypatch):

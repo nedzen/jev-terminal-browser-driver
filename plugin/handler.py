@@ -264,3 +264,51 @@ def run_drive(args: dict, *, popen=subprocess.Popen, kill_group=_kill_group) -> 
 def handle_jev_drive(args: dict | None = None, **kwargs) -> str:
     payload = args if isinstance(args, dict) else kwargs
     return json.dumps(run_drive(payload))
+
+
+def build_read_argv(args: dict) -> list[str]:
+    try:
+        scrolls = int(args.get("scrolls", 0) or 0)
+    except (TypeError, ValueError):
+        scrolls = 0
+    scrolls = max(0, min(scrolls, 15))
+    argv = ["uv", "run", "python", "scripts/read.py", "--json"]
+    if args.get("url"):
+        argv.extend(["--url", str(args["url"])])
+    if args.get("script"):
+        argv.extend(["--script", str(args["script"])])
+    argv.extend(["--scrolls", str(scrolls)])
+    if args.get("target"):
+        argv.extend(["--target", str(args["target"])])
+    return argv
+
+
+def run_read(args: dict, *, popen=subprocess.Popen, kill_group=_kill_group) -> dict:
+    home = driver_home()
+    if not (home / "scripts" / "read.py").is_file():
+        return {"success": False, "error": f"read.py missing under {home}"}
+    timeout_s = clamp_timeout(args.get("timeout_s", DEFAULT_TIMEOUT))
+    proc = popen(
+        build_read_argv(args),
+        cwd=str(home),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+        env=os.environ.copy(),
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        kill_group(proc)
+        return {"success": False, "status": "blocked", "error": "timeout"}
+    rows = parse_json_lines(stdout or "")
+    if rows:
+        return rows[-1]
+    tail = (stderr or "").strip().splitlines()[-8:]
+    return {"success": False, "error": "read failed" + (": " + " | ".join(tail) if tail else "")}
+
+
+def handle_jev_read(args: dict | None = None, **kwargs) -> str:
+    payload = args if isinstance(args, dict) else kwargs
+    return json.dumps(run_read(payload))
