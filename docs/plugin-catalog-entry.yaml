@@ -5,10 +5,10 @@ name: jev-driver
 repo: https://github.com/nedzen/jev-terminal-browser-driver
 sha: "0000000000000000000000000000000000000000"
 description: >
-  Drive one visible terminal-browser pane with Jev. Clicks, types, and likes
-  in the user's logged-in browser. The terminal-browser program must be on
-  PATH. It is not a Hermes skill. Debug outlines and hidden-browser attach
-  are off unless the user asks.
+  Drive and read one visible terminal-browser pane with Jev typed decisions.
+  Clicks, types, and follows links in the user's logged-in browser, and reads
+  pages as outlines or JSON. The terminal-browser program must be on PATH.
+  Debug overlay is a plugin setting.
 maintainer: nedzen
 tier: community
 category: web
@@ -18,6 +18,7 @@ platforms: [macos, linux]
 capabilities:
   provides_tools:
     - jev_drive
+    - jev_read
   provides_hooks: []
   provides_middleware: []
   requires_env:

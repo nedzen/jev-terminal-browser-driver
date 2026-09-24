@@ -2,215 +2,161 @@
 
 <!-- VIDEO: drag docs/demo.mp4 into the GitHub web editor while editing this
 README, then replace the HTML comment below with the generated
-https://github.com/user-attachments/assets/... URL on its own line.
-The caption below assumes the video sits right above it. -->
+https://github.com/user-attachments/assets/... URL on its own line. -->
 <!-- PASTE-VIDEO-URL-HERE -->
 
-*Real run — Google Flights, Zürich → London, one-way, Oct 15 2026: 14
-autonomous ticks, 8.4 s, ~$0.0025 in Jev spend, zero screenshots.*
+A Hermes plugin that drives a real, visible browser tab with
+[Jev](https://docs.typesafe.ai/introduction), a typed-decision model from
+TypeSafe. No screenshots, no accessibility dumps, no 50K-token snapshots in
+your agent's context. Each decision costs a fraction of a cent and takes
+about half a second.
 
-**Drive a real browser with a cheap typed-decision model — no screenshots, no
-a11y dumps, no 50K-token snapshots.**
+The browser is [terminal-browser](https://terminal-browser.dev), a Chromium
+drawn in your terminal. You watch every click as it happens, in your own
+logged-in session.
 
-A port of [browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast)'s
-agent loop to [terminal-browser](https://terminal-browser.dev) (a Chromium
-rendered in your terminal), with all decisions answered by
-[Jev](https://docs.typesafe.ai/introduction) (`typesafe/jev-1.13`) via
-**OpenRouter's decisions API** — no TypeSafe API key required.
+## What the agent gets
 
-One CLI call runs a full observe → choose → act → re-observe loop and prints
-one compact JSON line per tick. Your agent's context receives ~200 bytes per
-step instead of an element dump.
+Two tools:
 
-```
-{"status": "ready", "url": "…/flights/search?tfs=…", "last_action": "Search",
- "elapsed_ms": 8378, "usage": {"input_tokens": 4173, "output_tokens": 312,
- "cost": 0.000175266}}
-```
+- **`jev_drive`** clicks, types, selects, and scrolls until a goal is done:
+  open a menu, fill a form, search, follow a link. It returns `status`
+  (`done` or `blocked`), the `actions` it took, `why`, a `reason` when it
+  stopped early, and the visible `page_text`.
+- **`jev_read`** reads the same tab without clicking. With no script it
+  returns an outline of articles, headings, times, and links. With a script
+  (an expression, a function, or a body with `return`) it returns JSON.
+  `scrolls` covers a long feed in one call.
 
-Real run (Google Flights, Zürich → London, one-way, Oct 15 2026): the loop
-filled both comboboxes, switched Round trip → One way, picked the date in the
-calendar, and hit Search — **14 ticks, 8.4 s, ~$0.0025 in Jev spend**, zero
-screenshots, zero snapshots in the agent's context.
-
-## How it works (summary)
-
-The pipeline: `drive.py` sets a tab lease → the verbatim upstream `Agent` loop
-runs `snapshot.js` in-page (element table + ≤6K visible text), asks Jev via
-OpenRouter's decisions API (operation + target in one request, independent
-heads, strict probability validation), acts via hit-tested raw CDP input, and
-repeats until `DONE`/`BLOCKED` or the tick budget. A small LLM writes text
-only for `TYPE_TEXT`. The full execution chain, the browser-discovery ladder,
-and the CDP transport contract live in
-[docs/architecture.md](docs/architecture.md).
+The agent never sees element tables. The contract it reads is the two tool
+descriptions in [`plugin/__init__.py`](plugin/__init__.py).
 
 ## Install
 
-Requirements: macOS or Linux, Python ≥ 3.12, [uv](https://docs.astral.sh/uv/),
-the [terminal-browser](https://terminal-browser.dev) **program** on `PATH`
-(not the terminal-browser skill), and `TYPESAFE_API_KEY`.
-
-From Hermes, once this repo is installed as the `jev-driver` plugin, call the
-`jev_drive` tool. The browser opens as a visible pane. Pass `debug: true` only
-when you want score outlines. Pass `background: true` with `cdp_url` only when
-you want to attach to a browser you already started hidden. This driver does
-not launch a hidden browser.
+Requirements: macOS or Linux, Python 3.12+, [uv](https://docs.astral.sh/uv/),
+the [terminal-browser](https://terminal-browser.dev) program on `PATH`, a
+kitty-graphics terminal (kitty, ghostty, wezterm, tmux, cmux; not iTerm2 or
+Terminal.app), and a TypeSafe API key. An OpenRouter key is optional and only
+needed for typing into fields.
 
 ```bash
 git clone https://github.com/nedzen/jev-terminal-browser-driver
 cd jev-terminal-browser-driver
 uv sync
-# TYPESAFE_API_KEY in the environment, ~/.hermes/.env, or Plugins settings
-```
-
-The plugin finds `scripts/drive.py` next to itself. It does not look in
-`~/Projects`.
-
-## Usage
-
-```bash
-# One-tick smoke test on a local fixture
-uv run python scripts/drive.py \
-  --goal 'Click the Widget link' \
-  --url "file://$(pwd)/fixtures/click.html" \
-  --tab new --max-steps 5
-
-# A real multi-step task
-uv run python scripts/drive.py \
-  --goal 'Search one-way flights from Zurich to London departing October 15, 2026, one adult, economy. Stop when matching flight options are visible.' \
-  --url 'https://www.google.com/travel/flights?hl=en' \
-  --tab new --max-steps 14
-
-# Attach to a specific tab you own (explicit opt-in)
-uv run python scripts/drive.py --goal '...' --target <cdpTargetId>
-```
-
-Each tick prints `{"status", "url", "last_action", "elapsed_ms", "usage", "why"}`.
-With `--debug` it also prints `insight`.
-Exit `0` on `done`, `1` on `blocked`/error/budget. **Model `DONE` is not
-success** — check the URL or page text independently.
-
-## Hermes plugin
-
-The same loop is a native Hermes tool `jev_drive` (toolset `jev`) for
-`hermes --tui`. The plugin process never imports `jev_driver`; it shells out
-to `uv run python scripts/drive.py --json`. Desktop preview and headless
-Chromium are out of scope.
-
-```bash
-./scripts/install_plugin.sh            # ~/.hermes/plugins/jev-driver
-./scripts/install_plugin.sh work       # also ~/.hermes/profiles/work/plugins/
+./scripts/install_plugin.sh            # links into ~/.hermes/plugins/jev-driver
+./scripts/install_plugin.sh work       # also a named Hermes profile
 hermes plugins enable jev-driver
 ```
 
-Named profiles do **not** inherit the default-home plugin dir — symlink each
-profile you care about. `plugins.enabled` is per home.
+Then open **Plugins → jev-driver** in Hermes and set:
 
-Discovery is visible-or-fail. Order: explicit `--cdp` / `JEV_CDP_URL` →
-a running terminal-browser pane (`ls` or the daemon SQLite record, so a
-no-TTY Hermes subprocess can still see the pane) → `terminal-browser open
-<url> --split right --no-merge` with every `HERDR_*` variable stripped, so
-the split lands in the real terminal (cmux, ghostty, …) instead of a nested
-herdr pane. If that cannot happen, the tool returns `blocked` and names the
-reason. It never falls through to headless Chromium. It never calls
-`Target.closeTarget` on a TUI tab.
+| Setting | What it does |
+|---|---|
+| TypeSafe API key | Required. Jev decisions. Stored in `~/.hermes/.env` as `TYPESAFE_API_KEY`, never in `config.yaml`. |
+| OpenRouter API key (typing) | Optional. Writes the text for form fields (`inception/mercury-2.5`). Without it the driver clicks but does not type. |
+| Debug overlay | Shows the Jev panel and target outlines in the page. The model cannot turn it on or off. |
 
-`debug` is off unless Plugins settings or `debug: true` / `--debug` turn it on.
-The owned tab then gets a collapsible bottom-right panel plus outlines:
-chosen element in green, other candidates in red. The tool result adds `why`
-and `insights` (operation, labeled target, confidence, top probabilities).
-Model `DONE` is still not success.
+Restart the Hermes session after changing plugin settings.
 
-Tool fields: `goal` (required), optional `url` (navigates the driver's
-existing tab; a new tab only if that tab is gone), `target`, `max_steps`
-(cap 30), `cdp_url`, `timeout_s`, `debug` (omit to use the plugin setting), `watch`.
-`watch: true` does not change visibility; it yields if the user changes the
-page. Prefer `jev_drive` over pasting snapshots into chat. Each run appends
-to `~/.cache/jev-driver/drive.jsonl` and `drive.log` (goal, ranked hits,
-blocked reason).
+## Debug overlay
 
-terminal-browser needs a kitty-graphics terminal (kitty, ghostty, wezterm,
-tmux, vscode, cmux, supacode — not iTerm2/Terminal.app). Installing it does
-not install a terminal. If opening the pane fails, the error includes
-terminal-browser's own diagnostics.
+With the setting on, the driven tab gets a frosted panel in the bottom-right
+corner:
 
-Omit `--url` / `url` to stay on the current page of that same tab. The final
-tool result includes `page_text` (visible snapshot text, max 2000 chars) on
-`done`/`blocked`, and `browser.log` is the path of the JSONL log.
+- Header: a status dot (blue running, green done, amber blocked), the step
+  count, the next operation, and its confidence. Click it to expand or
+  collapse. The choice is remembered across pages and runs.
+- Goal, why the run stopped, a timeline of every step (with typed text and
+  whether the page changed), the candidate targets, the operation mix, and
+  token spend.
+- On the page: a green ring and pill on the chosen target, dashed rings with
+  a rank badge on up to three runner-ups. Rings follow the page as it
+  scrolls.
 
-### Offline tests
+The overlay is its own layer. It never restyles page elements and is hidden
+from the driver's own snapshot.
+
+## Logs
+
+Every run, read, action, recovery, and stop is appended to:
+
+- `~/.cache/jev-driver/drive.log`, one readable line per event with the ranked
+  operations and targets
+- `~/.cache/jev-driver/drive.jsonl`, the same events as JSON
 
 ```bash
-uv run pytest        # offline; no network, no live browser
+tail -f ~/.cache/jev-driver/drive.log
 ```
 
-## Measured performance
+Lines to look for: `run` (goal, url, tab continuity), `act`, `stale` (the page
+moved before input), `retry_click`, `look_further` (scrolled or waited after
+BLOCKED), `blocked`/`done` with a `reason`, `continuity` (why a remembered tab
+was not reused), and `handler` (timeouts and crashes).
 
-| Scenario | Result |
-|---|---|
-| N-way click choice, N ≈ 20 (20 cases) | 20/20 correct, p50 451 ms, ~2.5K in-tokens, ~$0.0001/decision |
-| N-way click choice, N ≈ 120 (8 cases) | 8/8 correct, p50 514 ms, ~10.7K in-tokens, ~$0.00045/decision |
-| Google Flights end-to-end (14 ticks) | 8.4 s wall, ~$0.0025 total Jev spend |
-| Context cost per tick (agent side) | one ~200-byte JSON line |
+## How a run works
 
-No 32K context overflow observed at N=120 — the single-request multi-question
-body with truncated criteria labels holds. (A two-call operation/target
-fallback exists in the design but is not shipped; it is only needed if a live
-overflow survives truncation.)
+1. The plugin handler runs `uv run python scripts/drive.py --json` in this
+   repo. Hermes never imports the driver.
+2. The driver attaches to the driver's own tab in the visible pane, or opens
+   one. Without `url` it stays on the current page.
+3. Each tick reads the viewport in-page (`snapshot.js`: interactive elements
+   plus up to 6K of visible text), asks Jev for one operation and one target,
+   and sends real CDP mouse and keyboard input to that element.
+4. A small text model writes the value for `TYPE_TEXT` only.
+5. The loop stops on DONE, BLOCKED, or the step budget.
 
-## Safety model (summary)
+Guards that are code, not prompt:
 
-The driver shares a Chromium with your other tabs. Enforced in code, not
-prompts: tab lease with denylist (`--tab new` default, `--target` opt-in),
-detach-only close, no focus stealing, no viewport override, target filtering
-(non-`page`/`chrome://`/`devtools://`/extensions/workers skipped), and never
-`terminal-browser shutdown`. Full list with the crash stories behind each rule:
-[docs/architecture.md](docs/architecture.md) § Safety model. Shared
-cookies/profile: don't point the driver at logged-in sessions you don't want
-automated.
+- A click is sent only if its target is unchanged. Ticking like counts and
+  relative times do not count as changes.
+- A covered target is scrolled into view once before giving up.
+- BLOCKED on a page that is still loading waits for it. BLOCKED elsewhere
+  scrolls down up to three times to look for the target.
+- A toggle it already clicked (Like to Liked) is never clicked back.
+- The same link is not followed twice, except pagination.
+- A low-confidence DONE on a loading page is rejected.
 
-## Docs index
+Full detail: [docs/architecture.md](docs/architecture.md).
 
-| Doc | Covers |
-|---|---|
-| [docs/architecture.md](docs/architecture.md) | Execution chain, decision protocol, discovery ladder, CDP transport, safety model, visibility surfaces |
-| [docs/README.md](docs/README.md) | Docs index |
-| [docs/research/](docs/research/) | One current note (`TUI_ONLY_DISCOVERY_FIX.md`); the rest is historical |
-| [docs/archive/iteration-1-cli/](docs/archive/iteration-1-cli/) | Pre-plugin iteration record (live-ops notes, N-way bench) |
-| [docs/maintainer-notes.md](docs/maintainer-notes.md) | Maintainer notes. Not loaded by Hermes. |
-| [docs/plugin-catalog-entry.yaml](docs/plugin-catalog-entry.yaml) | Draft catalog entry. Not submitted. |
-| [HANDOFF.md](HANDOFF.md) | Session-continuation state (status, pitfalls, TODO) |
+## Command line
 
-## What the agent sees
+The driver also runs without Hermes:
 
-The agent contract is the `jev_drive` tool description. There is no skill to
-enable, and the agent should not read the plugin source. `terminal-browser`
-is the installed program that draws the pane. Its skill is not a dependency.
+```bash
+export TYPESAFE_API_KEY=...
+uv run python scripts/drive.py --json --debug \
+  --url 'https://en.wikipedia.org/wiki/Main_Page' \
+  --goal "Search for 'string trimmer' and open that article. Done when it is showing."
 
-## Local models (future work)
+uv run python scripts/read.py --json --script "document.title"
+```
 
-Because every decision is a single request to a configurable
-`DECISION_GATE_URL`, pointing it at a local typed-decision server (e.g. a
-Laya/oMLX endpoint on localhost, as supported by
-[decision-gate](https://github.com/nedzen/decision-gate)) should work with a
-URL/model swap — free and private per decision at 0.03 s latency.
+Model DONE is not proof. Check `final_url` or `page_text`.
 
-**This use-case is not addressed yet.** The N-way operation/target choice
-protocol (choice heads with object criteria, full probability distributions)
-is a materially harder contract than decision-gate's binary gating, and we
-have not validated that a local model can carry it at the accuracy this
-driver needs. We may address it in the future; until then, Jev on OpenRouter
-is the only supported decision backend.
+## Tests
+
+```bash
+uv run pytest     # offline: no network, no browser, never touches ~/.cache
+uv run ruff check .
+```
+
+The live release checklist is [docs/test-plan.md](docs/test-plan.md): ten
+prompts to paste into Hermes, with pass criteria.
+
+## Safety
+
+The driver shares your browser profile and cookies. It only drives its own
+tab, never closes a TUI tab, never steals focus, and skips `chrome://`,
+`devtools://`, extension, and worker targets. Do not point it at sessions you
+do not want automated. Details: [docs/architecture.md](docs/architecture.md)
+§ Safety model.
 
 ## Credits
 
 Built on [browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast)
-(© 2026 Browser Use, MIT). `jev_driver/snapshot.js`, `jev_driver/agent.py`,
-and `jev_driver/questions.py` are used verbatim from upstream under the MIT
-License; `browser.py`, `model.py`, and the decision transport are reworked for
-terminal-browser and OpenRouter's decisions API. See `LICENSE` and the headers
-in those files.
+(© 2026 Browser Use, MIT). `snapshot.js` and `questions.py` are verbatim;
+`agent.py` has one noted change. See [NOTICE](NOTICE).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).

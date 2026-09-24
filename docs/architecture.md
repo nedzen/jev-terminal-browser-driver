@@ -37,8 +37,11 @@ scripts/drive.py
 ## Execution chain in detail
 
 1. **Tab lease.** `drive.py` sets a module-level lease on `jev_driver.browser`
-   *before* constructing `Agent`. Default `--tab new` opens a TUI-visible tab
-   via `terminal-browser new-tab` and attaches by `targetId`.
+   *before* constructing `Agent`. It re-attaches to the driver's own tab
+   (remembered in `~/.cache/jev-driver/last-page.json`) and navigates it only
+   when `url` names another page. Only when that tab is gone does it open a
+   TUI-visible tab via `terminal-browser new-tab`. With no `url` and no tab it
+   returns `no_page` instead of guessing.
    `Target.createTarget` is not available on this Electron. `--target <id>`
    attaches to a tab you name explicitly. The driver never attaches to tabs
    it didn't create.
@@ -47,8 +50,9 @@ scripts/drive.py
    selects, ARIA roles), assigns stable IDs (`e1…e250`), records per-element
    guards (value/checked/context) and a page marker, and reads at most 6,000
    chars of visible text. Actions are capped at 250.
-3. **Decision.** `jev_driver/model.py` posts the state + goal to OpenRouter's
-   decisions endpoint. The response must be a full probability distribution
+3. **Decision.** `jev_driver/model.py` posts the state + goal to TypeSafe
+   (`https://api.typesafe.ai/v1/systemone`, model `jev-1.13.0`, bearer
+   `TYPESAFE_API_KEY`). `DECISION_GATE_URL` overrides the endpoint. The response must be a full probability distribution
    over the offered choices (sum ≈ 1, argmax == choice) or nothing executes.
    Independent question heads are a safety property: a `CLICK` decision
    physically cannot consume a `TYPE_TEXT` or `SELECT` target id.
@@ -58,6 +62,17 @@ scripts/drive.py
    pages raise and the loop re-observes instead. After date/combobox-class
    clicks, a bounded overlay wait stabilizes the observed element set (the
    date-picker/autocomplete stall class) before the next predict.
+5. **Recovery (`jev_driver/drive_agent.py`).** Freshness is per kind: scroll,
+   wait, and DONE need only the same document; a click needs the same target
+   with numbers ignored (live counts and relative times tick constantly); a
+   fill needs the same field. A covered target is scrolled into view once.
+   BLOCKED on a loading page waits; elsewhere it scrolls up to three times to
+   look for the target. A toggle whose label or checked state changed after
+   our click is not clicked again (`toggle_undo`). A same-label link that
+   already led to a new URL is not followed again (`already_followed`),
+   except pagination. A top-ranked DONE is accepted once the run has reached a
+   new URL. After `Page.navigate` the driver waits for the new document, and
+   observation waits up to 10 s for a document that is still loading.
 5. **Loop.** `jev_driver/agent.py` (upstream, verbatim) repeats
    observe → choose → act until the model picks `DONE`/`BLOCKED` or
    `--max-steps`. Model `DONE` is *not* treated as success — verify the
@@ -195,10 +210,11 @@ prompts:
 
 ## Decision protocol notes
 
-- The TypeSafe-shaped body `{model, state, questions}` is sent to
-  OpenRouter's decisions endpoint (`typesafe/jev-1.13`); object instructions
-  and object criteria values won in the probe (HTTP 200) — no stringify
-  fallback needed.
+- The body `{model, state, questions}` goes to TypeSafe's `/v1/systemone`.
+  It started on OpenRouter's decisions endpoint (`typesafe/jev-1.13`), which
+  still works with `DECISION_GATE_URL` and `OPENROUTER_API_KEY`. Object
+  instructions and object criteria values are accepted; no stringify
+  fallback is needed.
 - Context budget: 3 target heads × ~250 rows + 6K text + rules approach but
   survive the 32K input cap at N=120 with truncated criteria labels. Do not
   raise the 250-action cap. A two-call operation/target fallback exists in

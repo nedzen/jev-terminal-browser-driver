@@ -1,0 +1,10 @@
+jev-terminal-browser-driver
+Copyright (c) 2026 Marius. MIT License, see LICENSE.
+
+This product includes code from browser-use/jev-ultrafast
+https://github.com/browser-use/jev-ultrafast
+Copyright (c) 2026 Browser Use. MIT License.
+
+  jev_driver/snapshot.js    verbatim
+  jev_driver/questions.py   verbatim
+  jev_driver/agent.py       one change, noted in its header
