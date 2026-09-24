@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 import subprocess
 import sys
 import time
@@ -9,9 +10,13 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
+from . import discover as _discover
 from .cdp import TB, cdp, cdp_port, connect, list_browsers
+from .readiness import page_is_shell
+from .runlog import write_event
 
 READ_STATE = Path(__file__).with_name("snapshot.js").read_text()
+HUD_JS = Path(__file__).with_name("hud.js").read_text()
 MARKER = f"(() => {{ const state={READ_STATE}; return state?.marker ?? null; }})()"
 
 BLOCKED_SCHEMES = ("chrome:", "chrome-untrusted:", "devtools:", "chrome-extension:")
@@ -24,6 +29,12 @@ LEASE = {
     "navigate": True,
     "create_fallback": None,
 }
+
+LAST_PAGE_PATH = Path.home() / ".cache" / "jev-driver" / "last-page.json"
+HUD_STATE_PATH = LAST_PAGE_PATH.parent / "hud.json"
+LAST_PAGE_TTL_S = 1800
+LAST_PAGE_KEYS = ("targetId", "url", "source", "browser_id", "ts")
+LAST_CONTINUITY = None
 
 
 def set_lease(*, tab="new", target_id=None, browser_key=None, navigate=True):
@@ -58,6 +69,177 @@ def _target_ok(info, *, allow_denylist):
     return True
 
 
+def _is_ephemeral_url(url):
+    text = url or ""
+    if "jev-terminal-browser-driver/fixtures/" in text:
+        return True
+    if text.startswith(("about:", "chrome:", "devtools:", "chrome-untrusted:", "chrome-extension:")):
+        return True
+    return False
+
+
+def _netloc_id(url: str) -> str:
+    """Host:port from a ws/http URL. Bracket IPv6 so [::1]:9222 round-trips."""
+    if not url:
+        return ""
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    port = parsed.port
+    if host:
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        return f"{host}:{port}" if port is not None else host
+    return (parsed.netloc or "").lower()
+
+
+def browser_identity():
+    last = _discover.LAST
+    if last is None:
+        return "", ""
+    source = last.source or ""
+    ident = _netloc_id(last.ws_url) or _netloc_id(last.http_origin)
+    return source, ident
+
+
+def _log_continuity(reason: str) -> None:
+    print(f"jev-driver: continuity {reason}", file=sys.stderr)
+    if reason != "lookup":
+        write_event({"event": "continuity", "why": reason})
+
+
+def _load_last_page():
+    if not LAST_PAGE_PATH.is_file():
+        return None
+    try:
+        data = json.loads(LAST_PAGE_PATH.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(data, dict) or any(key not in data for key in LAST_PAGE_KEYS):
+        return None
+    return data
+
+
+def _write_last_page(record: dict) -> None:
+    LAST_PAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    LAST_PAGE_PATH.write_text(json.dumps(record))
+
+
+def hud_open() -> bool:
+    """Whether the user left the debug panel expanded. Survives navigation and new runs."""
+    try:
+        return json.loads(HUD_STATE_PATH.read_text()).get("open") is True
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def save_hud_open(opened: bool) -> None:
+    try:
+        HUD_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        HUD_STATE_PATH.write_text(json.dumps({"open": bool(opened)}))
+    except OSError:
+        return
+
+
+def remember_page(target_id, url):
+    """Remember the driver's tab, including fixture URLs, so the next run can reuse it."""
+    if not target_id:
+        return
+    source, browser_id = browser_identity()
+    existing = _load_last_page()
+    if LEASE.get("tab") == "target":
+        if not existing or existing.get("targetId") != target_id:
+            return
+        existing["url"] = url or existing.get("url") or ""
+        existing["ts"] = time.time()
+        _write_last_page(existing)
+        return
+    _write_last_page(
+        {
+            "targetId": target_id,
+            "url": url or "",
+            "source": source,
+            "browser_id": browser_id,
+            "ts": time.time(),
+        }
+    )
+
+
+def find_continuable_page():
+    """Re-attach to a previously driven page when the caller omitted --url."""
+    global LAST_CONTINUITY
+    LAST_CONTINUITY = None
+    existed = LAST_PAGE_PATH.is_file()
+    remembered = _load_last_page()
+    if remembered is None:
+        if existed:
+            LAST_CONTINUITY = "dropped:legacy-schema"
+            _log_continuity("legacy-schema")
+        return None, None
+    try:
+        age = time.time() - float(remembered["ts"])
+    except (TypeError, ValueError):
+        LAST_CONTINUITY = "dropped:legacy-schema"
+        _log_continuity("legacy-schema")
+        return None, None
+    if age > LAST_PAGE_TTL_S:
+        LAST_CONTINUITY = "dropped:ttl-expired"
+        _log_continuity("ttl-expired")
+        return None, None
+    source, browser_id = browser_identity()
+    try:
+        pages = _json_pages()
+    except (OSError, json.JSONDecodeError, TimeoutError):
+        pages = []
+    by_id = {p.get("id"): p for p in pages if p.get("type") == "page" and p.get("id")}
+    remembered_id = remembered.get("targetId")
+    same_label = (remembered.get("source"), remembered.get("browser_id")) == (source, browser_id)
+    if not same_label:
+        # The connected browser still has this tab. A host-string mismatch must not open another one.
+        info = by_id.get(remembered_id) if remembered_id else None
+        url = (info or {}).get("url") or ""
+        if info and _target_ok({"type": "page", "url": url}, allow_denylist=False):
+            _log_continuity(
+                "re-attach despite label mismatch "
+                f"remembered={remembered.get('source')}:{remembered.get('browser_id')} "
+                f"connected={source}:{browser_id}"
+            )
+            LAST_CONTINUITY = "re-attach"
+            return remembered_id, url
+        LAST_CONTINUITY = "dropped:browser-mismatch"
+        _log_continuity(
+            "browser-mismatch "
+            f"remembered={remembered.get('source')}:{remembered.get('browser_id')} "
+            f"connected={source}:{browser_id}"
+        )
+        return None, None
+    if remembered_id and remembered_id in by_id:
+        info = by_id[remembered_id]
+        url = info.get("url") or ""
+        # The id is the driver's own tab, even when it is still on a fixture or an error page.
+        if _target_ok({"type": "page", "url": url}, allow_denylist=False):
+            LAST_CONTINUITY = "re-attach"
+            return remembered_id, url
+    live = []
+    for page in pages:
+        if page.get("type") != "page":
+            continue
+        url = page.get("url") or ""
+        if _is_ephemeral_url(url):
+            continue
+        if not _target_ok({"type": "page", "url": url}, allow_denylist=False):
+            continue
+        live.append(page)
+    if remembered.get("url"):
+        stem = remembered["url"].split("?")[0].split("#")[0]
+        for page in live:
+            if (page.get("url") or "").split("?")[0].split("#")[0] == stem:
+                LAST_CONTINUITY = "re-attach"
+                return page["id"], page.get("url")
+    LAST_CONTINUITY = "dropped:stale-id"
+    _log_continuity("stale-id")
+    return None, None
+
+
 def _get_targets():
     return cdp("Target.getTargets").get("targetInfos") or []
 
@@ -77,11 +259,22 @@ def _json_pages():
 
 
 def _unique_url(url):
-    sep = "&" if "?" in url else "?"
+    """Distinct new-tab URL. A fragment, so the site never sees a changed request."""
+    sep = "&" if "#" in url else "#"
     return f"{url}{sep}jev={time.time_ns()}"
 
 
-def _open_owned_tab(url):
+def _wait_new_page(before_ids, timeout=15):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        for page in _json_pages():
+            if page.get("type") == "page" and page.get("id") not in before_ids:
+                return page["id"]
+        time.sleep(0.05)
+    return None
+
+
+def _open_via_new_tab(url):
     url = _unique_url(url)
     data = list_browsers()
     key = _pick_browser_key(data)
@@ -100,21 +293,46 @@ def _open_owned_tab(url):
             "terminal-browser new-tab failed; Target.createTarget is not supported on this Electron. "
             f"{detail}"
         ) from exc
-    deadline = time.monotonic() + 15
-    while time.monotonic() < deadline:
-        for page in _json_pages():
-            if page.get("type") == "page" and page.get("id") not in before_json:
-                return page["id"], True
-        time.sleep(0.05)
-    raise RuntimeError("new-tab did not appear in CDP /json/list")
+    created = _wait_new_page(before_json)
+    if not created:
+        raise RuntimeError("new-tab did not appear in CDP /json/list")
+    return created, True
+
+
+def _open_via_chrome(url):
+    url = _unique_url(url)
+    try:
+        created = cdp("Target.createTarget", url=url, background=True)["targetId"]
+        return created, True
+    except RuntimeError as exc:
+        raise RuntimeError(
+            "Target.createTarget is not supported on this browser; "
+            "jev-driver only provisions terminal-browser panes (TUI-only scope)."
+        ) from exc
+
+
+def _open_owned_tab(url):
+    last = _discover.LAST
+    source = last.source if last else "terminal-browser"
+    if source == "terminal-browser":
+        return _open_via_new_tab(url)
+    return _open_via_chrome(url)
 
 
 class Browser:
+    HYDRATE_MIN_ACTIONS = 8
+    HYDRATE_MAX_ROUNDS = 3
+    HYDRATE_SHELL_ROUNDS = 8
+    HYDRATE_SLEEP_S = 0.4
+    sleep = staticmethod(time.sleep)
+
     def __init__(self, url):
         connect()
         self.owned = False
         self.target = None
         self.session = None
+        self.debug = False
+        self._needs_hydrate = True
         if LEASE["tab"] == "target":
             target_id = LEASE["target_id"]
             if not target_id:
@@ -136,18 +354,23 @@ class Browser:
             self.owned = False
             self.session = _attach(self.target)
             if LEASE["navigate"]:
-                self.call("Page.navigate", url=url)
+                self._keep_hud_toggle()
+                self._navigate(url)
         else:
             self.target, self.owned = _open_owned_tab(url)
             self.session = _attach(self.target)
             if LEASE["create_fallback"] and LEASE["navigate"]:
-                self.call("Page.navigate", url=url)
+                self._navigate(url)
         self.call("Emulation.setFocusEmulationEnabled", enabled=True)
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
             if self.evaluate("document.readyState") == "complete":
                 break
             time.sleep(0.02)
+        try:
+            remember_page(self.target, self.evaluate("location.href") or url)
+        except StalePage:
+            remember_page(self.target, url)
 
     def call(self, method, **params):
         return cdp(method, session_id=self.session, **params)
@@ -158,7 +381,72 @@ class Browser:
             raise StalePage("Document changed during evaluation")
         return response.get("result", {}).get("value")
 
-    def observe(self, screenshot=True):
+    def _install_hud(self):
+        """Repaint the saved panel on every new document in this tab while attached."""
+        if getattr(self, "_hud_installed", False) or not self.session:
+            return
+        source = (
+            HUD_JS
+            + "\nif (document.readyState === 'loading') {"
+            " document.addEventListener('DOMContentLoaded', () => window.__jevHudRestore()); }"
+            " else { window.__jevHudRestore(); }"
+        )
+        try:
+            self.call("Page.addScriptToEvaluateOnNewDocument", source=source)
+            self._hud_installed = True
+        except RuntimeError:
+            return
+
+    def _navigate(self, url, timeout=15):
+        """Page.navigate returns before the old document is gone. Wait for the new one."""
+        try:
+            before, href = self.evaluate("[performance.timeOrigin, location.href]")
+        except (RuntimeError, StalePage, TypeError, ValueError):
+            before, href = None, ""
+        if (href or "").split("#")[0] == url.split("#")[0] and "#" in url:
+            before = None
+        self.call("Page.navigate", url=url)
+        deadline = time.monotonic() + timeout
+        while before is not None and time.monotonic() < deadline:
+            try:
+                if self.evaluate("performance.timeOrigin") != before:
+                    return
+            except (RuntimeError, StalePage):
+                pass
+            time.sleep(0.05)
+
+    def _keep_hud_toggle(self):
+        """The user may have toggled the panel since the last paint. Save it before the document goes away."""
+        try:
+            opened = self.evaluate("window.__jevHudOpen")
+        except (RuntimeError, StalePage):
+            return
+        if isinstance(opened, bool) and opened != hud_open():
+            save_hud_open(opened)
+
+    def _hud_eval(self, expression):
+        try:
+            response = self.call("Runtime.evaluate", expression=HUD_JS + "\n" + expression, returnByValue=True)
+        except (RuntimeError, StalePage):
+            return
+        opened = (response.get("result") or {}).get("value")
+        if isinstance(opened, bool) and opened != hud_open():
+            save_hud_open(opened)
+
+    def paint_hud(self, payload):
+        if not getattr(self, "debug", False) or not self.session:
+            return
+        self._install_hud()
+        self._hud_eval("window.__jevHudPaint(" + json.dumps({**payload, "open": hud_open()}) + ");")
+
+    def restore_hud(self):
+        """Show the last saved panel without a new decision."""
+        if not getattr(self, "debug", False) or not self.session:
+            return
+        self._install_hud()
+        self._hud_eval("window.__jevHudRestore();")
+
+    def _read_page(self, screenshot=True):
         if getattr(self, "after_input", None):
             action, self.after_input = self.after_input, None
             try:
@@ -167,20 +455,31 @@ class Browser:
                     expression="""(action => new Promise(resolve => {
                       const field=window.__jevFast?.nodes.get(action.node);
                       const autocomplete=action.kind==='fill' && field?.getAttribute('role')==='combobox';
+                      const overlay=action.kind==='click' && !!(
+                        field?.getAttribute('role')==='combobox' ||
+                        field?.getAttribute('aria-haspopup') ||
+                        /date|depart|return|calendar|picker|check-in|check-out/i.test(String(action.label||''))
+                      );
                       let frames=0, stopped=false;
                       const finish=()=>{stopped=true;resolve()};
-                      setTimeout(finish,autocomplete ? 200 : 50);
+                      setTimeout(finish, overlay ? 450 : autocomplete ? 200 : 50);
+                      const visible=e=>{
+                        const r=e.getBoundingClientRect();
+                        return r.width && r.height && r.bottom>0 && r.top<innerHeight &&
+                          e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});
+                      };
                       const ready=()=>{
                         if (stopped) return;
                         const ids=(field?.getAttribute('aria-controls')||field?.getAttribute('aria-owns')||'')
                           .split(/\\s+/).filter(Boolean);
                         const roots=ids.length ? ids.map(id=>document.getElementById(id)).filter(Boolean) : [document];
                         const options=roots.flatMap(root=>[...root.querySelectorAll('[role="option"]')]);
-                        if (++frames>=2 && (!autocomplete || options.some(e=>{
-                          const r=e.getBoundingClientRect();
-                          return r.width && r.height && r.bottom>0 && r.top<innerHeight &&
-                            e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});
-                        }))) finish();
+                        const popups=[...document.querySelectorAll('[role="dialog"],[role="listbox"],[role="grid"]')];
+                        if (++frames>=2 && (
+                          (!autocomplete && !overlay) ||
+                          (autocomplete && options.some(visible)) ||
+                          (overlay && (popups.some(visible) || options.some(visible) || frames>=12))
+                        )) finish();
                         else requestAnimationFrame(ready);
                       };
                       requestAnimationFrame(ready);
@@ -190,19 +489,63 @@ class Browser:
                 )
             except RuntimeError:
                 pass
-        for attempt in range(10):
+        # A click can start a full page load. Give the next document time to exist.
+        deadline = time.monotonic() + 10
+        attempt = 0
+        while True:
             try:
                 return browser_operation(
                     {"operation": "observe", "session": self.session, "screenshot": screenshot}
                 )
             except StalePage:
-                if attempt == 9:
+                attempt += 1
+                if time.monotonic() >= deadline:
                     raise
-                time.sleep(0.02)
-        raise StalePage("Page did not settle")
+                time.sleep(0.02 if attempt < 10 else 0.15)
+
+    def _observe_once(self, screenshot=True):
+        page = self._read_page(screenshot)
+        _offer_enter(page)
+        return page
+
+    def _settle_observe(self, screenshot=True):
+        prev_len = -1
+        page = None
+        limit = max(1, int(self.HYDRATE_MAX_ROUNDS))
+        rounds = 0
+        while rounds < limit:
+            rounds += 1
+            page = self._observe_once(screenshot)
+            text = page.get("text") or ""
+            n_actions = len(page.get("actions") or [])
+            if page_is_shell(text):
+                limit = max(limit, int(self.HYDRATE_SHELL_ROUNDS))
+                if rounds >= limit:
+                    return page
+                prev_len = len(text)
+                if self.HYDRATE_SLEEP_S:
+                    self.sleep(self.HYDRATE_SLEEP_S)
+                continue
+            if n_actions >= self.HYDRATE_MIN_ACTIONS and (prev_len < 0 or len(text) <= prev_len):
+                return page
+            prev_len = len(text)
+            if self.HYDRATE_SLEEP_S:
+                self.sleep(self.HYDRATE_SLEEP_S)
+        return page
+
+    def observe(self, screenshot=True):
+        if getattr(self, "_needs_hydrate", False) and self.HYDRATE_MAX_ROUNDS > 1:
+            page = self._settle_observe(screenshot)
+            self._needs_hydrate = False
+            return page
+        return self._observe_once(screenshot)
 
     def fresh(self, page, action=None):
-        if action is not None and action["kind"] in {"click", "select"}:
+        kind = (action or {}).get("kind")
+        if kind in {"scroll", "wait", "done"}:
+            current = self.evaluate("(() => [performance.timeOrigin, location.href])()")
+            return _same_document(page, current)
+        if kind in {"click", "select", "fill"}:
             node = action["node"]
             if type(node) is not int:
                 return False
@@ -210,16 +553,49 @@ class Browser:
                 "(() => { const c=window.__jevFast; "
                 f"return c ? [c.pageKey(),c.guard(c.nodes.get({node}))] : null; }})()"
             )
-            return current == [page["page_key"], page["guards"].get(str(node))]
+            if kind == "fill":
+                return _same_field(page, node, current)
+            return _same_target(page, node, current)
         return self.evaluate(MARKER) == page["marker"]
 
     def act(self, action, page, text=None):
         if not self.fresh(page, action):
-            raise StalePage("Page changed since this decision. Observe again.")
+            kind = action.get("kind")
+            reason = "field_changed" if kind in {"click", "select", "fill"} else "page_changed"
+            write_event(
+                {
+                    "event": "stale",
+                    "kind": kind,
+                    "label": action.get("label"),
+                    "reason": reason,
+                    "why": (
+                        "The target changed before input."
+                        if reason == "field_changed"
+                        else "The page changed before input."
+                    ),
+                }
+            )
+            message = (
+                "Field changed since this decision. Observe again."
+                if reason == "field_changed"
+                else "Page changed since this decision. Observe again."
+            )
+            raise StalePage(message)
         if action["kind"] == "wait":
             time.sleep(0.1)
         result = browser_operation({"operation": "act", "session": self.session, "action": action, "text": text})
+        write_event(
+            {
+                "event": "act",
+                "kind": action.get("kind"),
+                "label": action.get("label"),
+                "via": (result or {}).get("via") if isinstance(result, dict) else action.get("kind"),
+                "typed": (text or "")[:80] or None,
+            }
+        )
         self.after_input = action if action["kind"] != "wait" else None
+        if action["kind"] in {"click", "select", "fill"}:
+            self._needs_hydrate = True
         return result
 
     def close(self):
@@ -240,6 +616,109 @@ def fingerprint(state):
     return hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()
 
 
+def _same_field(page: dict, node: int, current) -> bool:
+    """A fill is still valid when this field's identity, value, and URL are unchanged.
+
+    The feed around a search box changes constantly. That must not cancel typing.
+    """
+    if not isinstance(current, list) or len(current) < 2:
+        return False
+    page_key, guard = current
+    stored_key = page.get("page_key")
+    stored_guard = (page.get("guards") or {}).get(str(node))
+    if not isinstance(page_key, list) or not isinstance(stored_key, list):
+        return False
+    if len(page_key) < 2 or len(stored_key) < 2 or page_key[1] != stored_key[1]:
+        return False
+    if not isinstance(guard, list) or not isinstance(stored_guard, list):
+        return False
+    if len(guard) < 4 or len(stored_guard) < 4:
+        return False
+    return guard[0] == stored_guard[0] and guard[3] == stored_guard[3]
+
+
+_COUNTS = re.compile(r"\d[\d.,]*\s*[KMBkmb]?")
+
+
+def without_counts(value):
+    """Live feeds tick like counts and relative times. Those must not cancel a click."""
+    return _COUNTS.sub("#", value) if isinstance(value, str) else value
+
+
+def _same_document(page: dict, current) -> bool:
+    stored = page.get("page_key")
+    if not isinstance(current, list) or len(current) < 2:
+        return False
+    if not isinstance(stored, list) or len(stored) < 2:
+        return current[1] == page.get("url")
+    return current[0] == stored[0] and current[1] == stored[1]
+
+
+def _same_target(page: dict, node: int, current) -> bool:
+    """Same document and the same control. Scroll position and ticking numbers are ignored."""
+    if not isinstance(current, list) or len(current) < 2:
+        return False
+    page_key, guard = current
+    if not _same_document(page, page_key):
+        return False
+    stored = (page.get("guards") or {}).get(str(node))
+    if not isinstance(guard, list) or not isinstance(stored, list) or len(guard) != len(stored):
+        return False
+    return [without_counts(item) for item in guard] == [without_counts(item) for item in stored]
+
+
+def _offer_enter(page: dict | None) -> None:
+    """Press Enter is its own action once a field holds text. Jev does not imply it."""
+    if not isinstance(page, dict):
+        return
+    actions = page.get("actions")
+    if not isinstance(actions, list):
+        return
+    if any(item.get("id") == "press_enter" for item in actions):
+        return
+    if any(item.get("kind") == "fill" and str(item.get("value") or "").strip() for item in actions):
+        actions.append({"id": "press_enter", "kind": "enter", "label": "Press Enter"})
+
+
+def _insert_fill(call, text: str) -> None:
+    modifier = 4 if sys.platform == "darwin" else 2
+    call(
+        "Input.dispatchKeyEvent",
+        type="keyDown",
+        key="a",
+        code="KeyA",
+        modifiers=modifier,
+        commands=["selectAll"],
+    )
+    call(
+        "Input.dispatchKeyEvent",
+        type="keyUp",
+        key="a",
+        code="KeyA",
+        modifiers=modifier,
+    )
+    call("Input.insertText", text=text)
+
+
+def _focus_covered_field(evaluate, action) -> bool:
+    """Focus a fill target the hit-test could not click. The field is often covered by its own label."""
+    try:
+        focused = evaluate(
+            """(action => {
+              const e=window.__jevFast?.nodes.get(action.node);
+              if (!e?.isConnected || e.matches(':disabled') || e.closest('[aria-disabled="true"],[inert]')) return null;
+              if (e.readOnly || e.getAttribute('aria-readonly')==='true') return null;
+              e.focus();
+              return true;
+            })("""
+            + json.dumps(action)
+            + ")"
+        )
+    except StalePage:
+        return False
+    return focused is True
+
+
 def browser_operation(request):
     operation = request["operation"]
     session = request["session"]
@@ -258,8 +737,25 @@ def browser_operation(request):
     if operation == "act":
         action = request["action"]
         kind = action["kind"]
+        if kind == "enter":
+            for event in ("keyDown", "keyUp"):
+                call(
+                    "Input.dispatchKeyEvent",
+                    type=event,
+                    key="Enter",
+                    code="Enter",
+                    windowsVirtualKeyCode=13,
+                    nativeVirtualKeyCode=13,
+                )
+            return {"executed": action["id"], "via": "enter"}
         if kind == "scroll":
-            call("Input.dispatchMouseEvent", type="mouseWheel", x=550, y=650, deltaX=0, deltaY=action["delta"])
+            size = evaluate("({h: innerHeight, w: innerWidth})") or {}
+            height = size.get("h") or 700
+            width = size.get("w") or 1100
+            sign = 1 if (action.get("delta") or 0) > 0 else -1
+            delta = sign * int(height * 0.8)
+            x, y = width / 2, height / 2
+            call("Input.dispatchMouseEvent", type="mouseWheel", x=x, y=y, deltaX=0, deltaY=delta)
         elif kind != "wait":
             if type(action["node"]) is not int:
                 raise ValueError("Invalid observed node")
@@ -268,9 +764,17 @@ def browser_operation(request):
               if (!e?.isConnected || e.matches(':disabled') || e.closest('[aria-disabled="true"],[inert]') ||
                   !e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})) return null;
               if (action.kind==='fill' && (e.readOnly || e.getAttribute('aria-readonly')==='true')) return null;
-              const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2;
-              if (!r.width || !r.height || x<0 || y<0 || x>=innerWidth || y>=innerHeight) return null;
-              if (!e.contains(document.elementFromPoint(x,y))) return null;
+              let x=0, y=0;
+              const hit=()=>{
+                const r=e.getBoundingClientRect();
+                x=r.x+r.width/2; y=r.y+r.height/2;
+                return r.width && r.height && x>=0 && y>=0 && x<innerWidth && y<innerHeight &&
+                  e.contains(document.elementFromPoint(x,y));
+              };
+              if (!hit()) {
+                e.scrollIntoView({block:'center',inline:'nearest',behavior:'instant'});
+                if (!hit()) return null;
+              }
               if (action.kind==='select') {
                 if (e.tagName!=='SELECT' || ![...e.options].some(o=>o.value===action.value &&
                     !o.disabled && !o.closest('optgroup[disabled]'))) return null;
@@ -283,29 +787,22 @@ def browser_operation(request):
             if target is None:
                 if kind == "select":
                     raise RuntimeError("Dropdown execution was not confirmed; inspect before retrying.")
+                if kind == "fill" and _focus_covered_field(evaluate, action):
+                    _insert_fill(call, request.get("text") or "")
+                    return {"executed": action["id"], "via": "focus"}
                 raise StalePage("Target changed or is covered. Observe again.")
             if kind != "select":
                 x, y = target["x"], target["y"]
                 for event in ("mousePressed", "mouseReleased"):
                     call("Input.dispatchMouseEvent", type=event, x=x, y=y, button="left", clickCount=1)
                 if kind == "fill":
-                    call(
-                        "Input.dispatchKeyEvent",
-                        type="keyDown",
-                        key="a",
-                        code="KeyA",
-                        modifiers=4 if sys.platform == "darwin" else 2,
-                        commands=["selectAll"],
-                    )
-                    call(
-                        "Input.dispatchKeyEvent",
-                        type="keyUp",
-                        key="a",
-                        code="KeyA",
-                        modifiers=4 if sys.platform == "darwin" else 2,
-                    )
-                    call("Input.insertText", text=request["text"])
-        return {"executed": action["id"]}
+                    _insert_fill(call, request.get("text") or "")
+            via = "pointer"
+        else:
+            via = "wait"
+        if kind == "scroll":
+            via = "wheel"
+        return {"executed": action["id"], "via": via}
 
     info = evaluate(READ_STATE)
     if info is None:

@@ -1,0 +1,25 @@
+# Draft for a pull request to NousResearch/hermes-agent plugin-catalog/.
+# `hermes plugins validate .` passes on the repository root.
+# Replace sha with the commit that is actually published, then open the catalog PR.
+name: jev-driver
+repo: https://github.com/nedzen/jev-terminal-browser-driver
+sha: "0000000000000000000000000000000000000000"
+description: >
+  Drive and read one visible terminal-browser pane with Jev typed decisions.
+  Clicks, types, and follows links in the user's logged-in browser, and reads
+  pages as outlines or JSON. The terminal-browser program must be on PATH.
+  Debug overlay is a plugin setting.
+maintainer: nedzen
+tier: community
+category: web
+docs_url: https://github.com/nedzen/jev-terminal-browser-driver#readme
+version: "0.1.0"
+platforms: [macos, linux]
+capabilities:
+  provides_tools:
+    - jev_drive
+    - jev_read
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - TYPESAFE_API_KEY

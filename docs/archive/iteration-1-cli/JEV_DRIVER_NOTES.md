@@ -89,6 +89,42 @@ No 32k overflow at N=120 (~11k input). Two-call fallback not used.
 
 `snapshot.js` only indexes on-screen nodes. A 120-link single column overflowed the pane (**N≈51**). Compact `column-count` + attaching to an **existing** leftover tab (no `new-tab`, no `closeTarget`) produced **N=120** clicks at 575×1058. See `bench_nway.md`.
 
+## Hermes plugin schema (deferred catalog)
+
+Live `tool_search` for `jev_drive` returned
+`{description:'', parameters:{type:object, properties:{}, required:[]}}` even after
+load. Cause is **registration shape**, not a dropped `register_tool` kwarg.
+
+`tools/registry.py:829-856` `get_definitions()` emits
+`{"type":"function","function": {**entry.schema, "name": entry.name}}`.
+It never copies `ToolEntry.description` into that block.
+`tools/tool_search_catalog.py:90-115` then reads `function.description` and
+`function.parameters` (not the JSON Schema we originally passed as `schema`).
+
+Bundled plugins (google_meet, spotify) pass
+`{name, description, parameters: {type, properties, required}}`. We now do the
+same. The extra `description=` kwarg on `register_tool` is still set (used by
+banners) but is **not** what tool_search serves.
+
+## AGENT_BROWSER_ENGINE .env pitfall
+
+Hermes injects `~/.hermes/.env` into the session environment. A live failure
+(HQ, hermes chat -q) had `AGENT_BROWSER_ENGINE=f0246…` — a hash, not
+`chrome`/`lightpanda`. `agent-browser` then rejects every auto-launch from
+inside Hermes; terminal `drive.py` (no hash in env) still succeeded.
+
+`discover._child_env()` (c93ae07, 29bd660) copies `os.environ` and **pops**
+`AGENT_BROWSER_ENGINE` unless it is exactly `chrome` or `lightpanda`. Child
+`get cdp-url` / `open` use that env. Do not set the var to an engine id hash.
+
+## Hermes plugin (feature/hermes-plugin)
+
+- Symlink: `~/.hermes/plugins/jev-driver` → repo `plugin/`.
+- `plugins.enabled` includes `jev-driver` in default `~/.hermes/config.yaml` (left installed).
+- Offline tests: 45 passed (`uv run pytest`). Auto-provision ladder covered by `tests/test_discover.py`.
+- `hermes plugins list` was started; it spun up local llama-server and dumped the full catalog (truncated before user plugins in the captured head). Discovery of the symlink is filesystem-confirmed.
+- HQ verified a real `hermes chat -q` jev_drive call returns `success`/`done` after the `AGENT_BROWSER_ENGINE` hash scrub.
+
 ## What we will not do
 
 - `terminal-browser shutdown`

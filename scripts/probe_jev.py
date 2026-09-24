@@ -14,14 +14,14 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-URL = os.environ.get("DECISION_GATE_URL", "https://openrouter.ai/api/alpha/decisions")
-MODEL = os.environ.get("DECISION_GATE_MODEL", "typesafe/jev-1.13")
+URL = os.environ.get("DECISION_GATE_URL", "https://api.typesafe.ai/v1/systemone")
+MODEL = os.environ.get("DECISION_GATE_MODEL", "jev-1.13.0")
 ROOT = Path(__file__).resolve().parents[1]
 NOTES = ROOT / "JEV_DRIVER_NOTES.md"
 
 
 def load_key() -> str:
-    for var in ("DECISION_GATE_API_KEY", "OPENROUTER_API_KEY"):
+    for var in ("DECISION_GATE_API_KEY", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY"):
         k = os.environ.get(var, "").strip()
         if k:
             return k

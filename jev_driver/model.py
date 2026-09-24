@@ -1,4 +1,4 @@
-"""Jev (OpenRouter decisions) makes choices; a small OpenAI-compatible model writes field values."""
+"""Jev on TypeSafe makes choices; a separate chat model writes field values."""
 
 import json
 import math
@@ -11,25 +11,65 @@ import httpx
 from .questions import NEXT_ACTION, TARGET, TEXT_VALUE
 
 CLIENT = httpx.Client(http2=True, timeout=25)
-DECISIONS_URL = os.environ.get("DECISION_GATE_URL", "https://openrouter.ai/api/alpha/decisions")
-DECISIONS_MODEL = os.environ.get("DECISION_GATE_MODEL", "typesafe/jev-1.13")
+DEFAULT_BASE = "https://api.typesafe.ai"
+DEFAULT_MODEL = "jev-1.13.0"
 LABEL_MAX = 80
 VALUE_MAX = 40
+_DECISION_KEYS = ("DECISION_GATE_API_KEY", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY")
+_TEXT_KEYS = ("TEXT_MODEL_API_KEY", "OPENROUTER_API_KEY")
 
 
-def load_openrouter_key():
-    for var in ("DECISION_GATE_API_KEY", "OPENROUTER_API_KEY", "TYPESAFE_API_KEY"):
-        key = os.environ.get(var)
-        if key:
-            return key
-    env = Path.home() / ".hermes" / ".env"
-    if env.exists():
-        for line in env.read_text().splitlines():
-            if line.startswith("OPENROUTER_API_KEY="):
+def decisions_url() -> str:
+    explicit = os.environ.get("DECISION_GATE_URL", "").strip()
+    if explicit:
+        return explicit
+    base = os.environ.get("TYPESAFE_BASE_URL", DEFAULT_BASE).strip().rstrip("/")
+    if base.endswith("/v1/systemone"):
+        return base
+    return base + "/v1/systemone"
+
+
+def _env_files():
+    homes = [Path.home() / ".hermes" / ".env"]
+    hermes_home = os.environ.get("HERMES_HOME", "").strip()
+    if hermes_home:
+        homes.append(Path(hermes_home).expanduser() / ".env")
+    return homes
+
+
+def _key_from_env_files(names: tuple[str, ...]) -> str | None:
+    for name in names:
+        prefix = name + "="
+        for path in _env_files():
+            if not path.is_file():
+                continue
+            for line in path.read_text().splitlines():
+                if not line.startswith(prefix):
+                    continue
                 val = line.split("=", 1)[1].strip().strip('"').strip("'")
                 if val:
                     return val
     return None
+
+
+def _key_from_environ(names: tuple[str, ...]) -> str | None:
+    for name in names:
+        val = os.environ.get(name, "").strip()
+        if val:
+            return val
+    return None
+
+
+def load_decision_key() -> str | None:
+    url = decisions_url()
+    names = _DECISION_KEYS
+    if "openrouter.ai" in url:
+        names = ("DECISION_GATE_API_KEY", "OPENROUTER_API_KEY", "TYPESAFE_API_KEY")
+    return _key_from_environ(names) or _key_from_env_files(names)
+
+
+def load_text_key() -> str | None:
+    return _key_from_environ(_TEXT_KEYS) or _key_from_env_files(_TEXT_KEYS)
 
 
 def post_json(url, key, body):
@@ -132,7 +172,7 @@ def choose(state, goal, history):
             "instructions": {"goal": goal, "operation": operation, "rules": [NEXT_ACTION, TARGET]},
         }
     body = {
-        "model": os.environ.get("DECISION_GATE_MODEL", DECISIONS_MODEL),
+        "model": os.environ.get("DECISION_GATE_MODEL") or os.environ.get("TYPESAFE_DEFAULT_MODEL") or DEFAULT_MODEL,
         "state": {
             "page": {k: state[k] for k in ("url", "title", "text")},
             "elements": elements,
@@ -142,11 +182,11 @@ def choose(state, goal, history):
         },
         "questions": questions,
     }
-    key = load_openrouter_key()
+    key = load_decision_key()
     if not key:
-        raise RuntimeError("Set DECISION_GATE_API_KEY or OPENROUTER_API_KEY; no action executed.")
+        raise RuntimeError("Set TYPESAFE_API_KEY; no action executed.")
     started = time.perf_counter()
-    result = post_json(os.environ.get("DECISION_GATE_URL", DECISIONS_URL), key, body)
+    result = post_json(decisions_url(), key, body)
     operation_answer = validate_choice(result["answers"].get("operation", {}), operations)
     operation = operation_answer["choice"]
     target = None
@@ -187,9 +227,12 @@ def field_context(goal, action, page, history):
 
 
 def field_text(context):
-    key = os.environ.get("TEXT_MODEL_API_KEY") or load_openrouter_key()
+    key = load_text_key()
     if not key:
-        raise ValueError("TYPE_TEXT needs TEXT_MODEL_API_KEY; no text is hardcoded or guessed by the executor.")
+        raise ValueError(
+            "Typing needs OPENROUTER_API_KEY (Plugins > jev-driver > OpenRouter API key) or TEXT_MODEL_API_KEY. "
+            "No text was typed."
+        )
     base = os.environ.get("TEXT_MODEL_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
     model = os.environ.get("TEXT_MODEL", "inception/mercury-2.5")
     reasoning = {"thinking": {"type": "disabled"}} if "api.deepseek.com/" in base else {"reasoning": {"effort": "low"}}
