@@ -7,6 +7,12 @@ DONE_MIN = 0.6
 REASON_WHY = {
     "shell": "Stopped: the page was still only short labels, not a document. Here is the visible text.",
     "weak_done": "Model chose DONE with low confidence. The goal is not confirmed. Use the visible text.",
+    # Kept under runlog's 200-char string cap, so the reason reaches the log and the agent
+    # verbatim instead of arriving clipped.
+    "low_confidence": (
+        "Stopped: two ticks in a row decided with no real preference. The second was discarded, "
+        "so nothing was clicked or typed on it. Read the visible text and drive again deliberately."
+    ),
     "covered_target": "Stopped: the target was covered and nothing was typed.",
     "field_changed": "Stopped: the field changed before the text could be typed.",
     "click_not_sent": "Stopped: the click was chosen but the page changed before it was sent.",
