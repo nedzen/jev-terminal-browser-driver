@@ -215,6 +215,20 @@ prompts:
   still works with `DECISION_GATE_URL` and `OPENROUTER_API_KEY`. Object
   instructions and object criteria values are accepted; no stringify
   fallback is needed.
+- **The wire is redacted; the log's size caps are not.** Page text, element
+  labels and the goal are third-party content, and a credential rendered into
+  any of them (a filled token field, `api_key=…` in a settings dump) would
+  otherwise be shipped to the provider. Both request bodies — `choose` and
+  `field_text` — go through `runlog.redact_for_wire` first, which applies the
+  run log's secret vocabulary and nothing else: no string clip, no list cap,
+  no depth truncation, because clipping the evidence would shorten the prompt
+  the decision is made from while still reporting success. The `request`
+  recorded on a decision is the scrubbed body that actually went out.
+- The reported `model` id is validated against a bounded plain-identifier
+  pattern before the answer is acted on. It is provider-controlled and is
+  recorded as provenance and rendered by the CLI, so free text in that slot is
+  a provider writing into the run log. A missing or malformed id refuses the
+  response instead of being recorded; the refusal does not echo the value.
 - Context budget: 3 target heads × ~250 rows + 6K text + rules approach but
   survive the 32K input cap at N=120 with truncated criteria labels. Do not
   raise the 250-action cap. A two-call operation/target fallback exists in

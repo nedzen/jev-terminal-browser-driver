@@ -213,8 +213,12 @@ version for an agent driving the test itself.
 The driver shares your browser profile and cookies. It only drives its own
 tab, never closes a TUI tab, never steals focus, and skips `chrome://`,
 `devtools://`, extension, and worker targets. Do not point it at sessions you
-do not want automated. Details: [docs/architecture.md](docs/architecture.md)
-§ Safety model.
+do not want automated.
+
+Page text and element labels are sent to the model that makes the decision, so
+credentials that happen to be visible in them (`api_key=…`, a filled token
+field) are redacted out of the request before it leaves the machine. Details:
+[docs/architecture.md](docs/architecture.md) § Safety model.
 
 ## Credits
 
