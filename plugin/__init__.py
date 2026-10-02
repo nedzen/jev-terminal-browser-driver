@@ -24,6 +24,7 @@ DESCRIPTION = (
     "Do not repeat a goal that was blocked twice; report what page_text shows. "
     "background must stay false unless the user asks for a hidden browser. "
     "time_budget_s stops a run after N seconds of deciding; timeout_s stays the outer kill. "
+    "deny_names takes regular expressions: an element whose name matches one is never offered. "
     "The debug overlay is a plugin setting, not an argument."
 )
 
@@ -86,6 +87,14 @@ PARAMETERS = {
             ),
             "minimum": 1,
             "maximum": 900,
+        },
+        "deny_names": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "Regular expressions. An element whose name matches one is never offered to the "
+                "model, so it cannot be chosen, clicked, or typed into. Omit for no denylist."
+            ),
         },
     },
 }

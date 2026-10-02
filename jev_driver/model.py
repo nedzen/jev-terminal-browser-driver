@@ -4,11 +4,13 @@ import hashlib
 import json
 import math
 import os
+import re
 import time
 from pathlib import Path
 
 import httpx
 
+from . import runlog
 from .questions import NEXT_ACTION, TARGET, TEXT_VALUE
 
 CLIENT = httpx.Client(http2=True, timeout=25)
@@ -28,6 +30,14 @@ CALIBRATION_SURFACE = "typesafe_cloud"
 NOT_EXECUTED = "not-executed"
 _DECISION_KEYS = ("DECISION_GATE_API_KEY", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY")
 _TEXT_KEYS = ("TEXT_MODEL_API_KEY", "OPENROUTER_API_KEY")
+# What a model id is allowed to look like: `jev-1.13.0`, `local`,
+# `inception/mercury-2.5`. Anchored and free of whitespace and control
+# characters, because the value is provider-supplied and is echoed into the run
+# log and the CLI's rendering of it. The pattern cannot bound its own length, so
+# `_MODEL_ID_MAX` does: a provider must not be able to write an unbounded string
+# into our records by choosing a long id.
+_MODEL_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*(/[A-Za-z0-9][A-Za-z0-9._+-]*)?")
+_MODEL_ID_MAX = 128
 # Fixed name/prompt pairs: the digest must not depend on dict order, and a
 # prompt swapped between names must not collide with its neighbour.
 _SPEC_NAMES = ("NEXT_ACTION", "TARGET", "TEXT_VALUE")
@@ -188,6 +198,25 @@ def validate_choice(answer, ids):
     return {**answer, "choice": chosen}
 
 
+def validate_response_model(answer):
+    """The model id the backend reported, or a refusal to act on its answer.
+
+    A well-formed id is part of the response contract, not decoration: the value
+    is provider-controlled and is recorded as provenance and rendered by the CLI,
+    so free text in that slot is a provider writing into the run log. Anything
+    outside the pattern (or a missing id, which used to escape as a bare
+    KeyError) means the answer is not the response this contract describes, and
+    no decision is acted on.
+
+    The offending value is not echoed: it is untrusted, and a refusal message
+    reaches the same log.
+    """
+    name = answer.get("model") if isinstance(answer, dict) else None
+    if not isinstance(name, str) or len(name) > _MODEL_ID_MAX or not _MODEL_ID_RE.fullmatch(name):
+        raise RuntimeError("Model provider returned an unexpected model id; no action executed.")
+    return name
+
+
 def sole_candidate_answer(candidates):
     """The only legal answer for a head with one candidate, and its tag.
 
@@ -199,8 +228,47 @@ def sole_candidate_answer(candidates):
     return {"choice": index, "confidence": 1.0, "probabilities": {index: 1.0}}
 
 
-def action_space(actions):
-    """One index per observed element; each operation has its own valid target choices."""
+# Element names this run refuses to act on, as compiled regexes. Installed once
+# per run by cli.main: agent.py is upstream-verbatim and cannot pass arguments
+# into action_space, so the denylist lives here where both callers read it.
+DENY_NAMES: tuple = ()
+
+
+def set_deny_names(patterns=()) -> tuple:
+    """Install this run's denylist, compiled once. A bad pattern raises before any decision."""
+    global DENY_NAMES
+    compiled = []
+    for pattern in patterns or ():
+        try:
+            compiled.append(re.compile(pattern))
+        except (re.error, TypeError):
+            raise ValueError(f"deny_names pattern {str(pattern)[:60]!r} is not a valid regular expression.") from None
+    DENY_NAMES = tuple(compiled)
+    return DENY_NAMES
+
+
+def denied(action, patterns) -> bool:
+    """True when this element's name is denied. Accepts compiled patterns or raw strings.
+
+    Empty labels are never denied: snapshot.js always offers a non-empty name
+    (label or role fallback), so an empty label means a malformed action, not a
+    safe one. If snapshot ever offers truly unlabeled controls, revisit this.
+    """
+    label = str(action.get("label") or "")
+    return bool(label) and any(re.search(pattern, label) for pattern in patterns)
+
+
+def action_space(actions, deny_names=None):
+    """One index per observed element; each operation has its own valid target choices.
+
+    An element whose name matches the denylist is dropped before anything is
+    indexed: no element, no target, no control. The model therefore cannot choose
+    it, and the executor never looks up an id it was never offered. ``deny_names``
+    defaults to this run's DENY_NAMES, installed by set_deny_names.
+    """
+    patterns = DENY_NAMES if deny_names is None else deny_names
+    if patterns:
+        actions = [action for action in actions if not denied(action, patterns)]
     elements, indices, targets, controls = [], {}, {}, {}
     operations = {"click": "CLICK", "fill": "TYPE_TEXT", "select": "SELECT"}
     for action in actions:
@@ -288,8 +356,16 @@ def choose(state, goal, history):
     key = load_decision_key()
     if not key and not explicit_endpoint("DECISION_GATE_URL"):
         raise RuntimeError("Set TYPESAFE_API_KEY; no action executed.")
+    # Credential guard on the wire: page text, element labels and goal text are
+    # all third-party content, and a session token rendered into any of them
+    # would otherwise be handed to the model in a request nobody reviewed. The
+    # recorded `request` below is the body actually sent, so the audit trail
+    # cannot describe a different one. Scrubbed before the clock starts: it is
+    # our work, not the provider's latency.
+    body = runlog.redact_for_wire(body)
     started = time.perf_counter()
     result = post_json(decisions_url(), key, body)
+    validate_response_model(result)
     operation_answer = validate_choice(result["answers"].get("operation", {}), operations)
     operation = operation_answer["choice"]
     target = None
@@ -426,22 +502,27 @@ def field_text(context):
     for attempt in range(3):
         content = None
         try:
+            # Same wire guard as `choose`: the goal, the field label and the page
+            # text all come from the page being driven, so a credential in any of
+            # them must not be shipped to the text provider.
             result = post_json(
                 base + "/chat/completions",
                 key,
-                {
-                    "model": model,
-                    "max_tokens": 1024,
-                    "response_format": {"type": "json_object"},
-                    **reasoning,
-                    "messages": [
-                        {"role": "system", "content": TEXT_VALUE},
-                        {
-                            "role": "user",
-                            "content": json.dumps(context),
-                        },
-                    ],
-                },
+                runlog.redact_for_wire(
+                    {
+                        "model": model,
+                        "max_tokens": 1024,
+                        "response_format": {"type": "json_object"},
+                        **reasoning,
+                        "messages": [
+                            {"role": "system", "content": TEXT_VALUE},
+                            {
+                                "role": "user",
+                                "content": json.dumps(context),
+                            },
+                        ],
+                    }
+                ),
             )
             # Request failures (retryable RuntimeError from post_json) and
             # structurally malformed 200s (missing choices/message/content)

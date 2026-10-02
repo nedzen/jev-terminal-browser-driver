@@ -229,6 +229,16 @@ def test_done_tick_names_done_and_keeps_its_own_usage():
     assert rec["insight"]["target"] is None
 
 
+def test_a_trimmed_action_list_is_reported_on_the_tick_row():
+    """snapshot.js caps the list at 250; a blocked run must not read as an empty page."""
+    snap = {"status": "ready", "page": {"url": "https://example.test/", "omitted_actions": 37}, "history": []}
+    assert tick_record(snap).get("omitted_actions") == 37
+    snap["page"]["omitted_actions"] = 0
+    assert "omitted_actions" not in tick_record(snap)
+    snap["page"].pop("omitted_actions")
+    assert "omitted_actions" not in tick_record(snap)
+
+
 def test_compact_result_copies_degenerate():
     out = handler.compact_result(
         [

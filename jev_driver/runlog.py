@@ -15,6 +15,11 @@ browser-use/jev-ultrafast#141):
 
 The caller's event dict is never mutated, so logging the same event twice
 produces the same record (idempotent).
+
+The same secret vocabulary is available to callers that must not put a
+credential on the wire: ``redact_for_wire`` redacts without the size caps,
+because a request body has to stay intact to be a valid request (see its
+docstring).
 """
 
 from __future__ import annotations
@@ -74,19 +79,26 @@ def _clip(text: str) -> str:
     return text if len(text) <= MAX_STRING else text[: MAX_STRING - 1] + "…"
 
 
-def _scrub_text(text: str) -> str:
-    """Redact secret-looking values in free text, then cap the length.
+def _redact_secrets(text: str) -> str:
+    """Drop secret-looking values from free text. Length is not touched.
 
     Assignments first: `Authorization: Bearer sk-...` then becomes
     `Authorization=[redacted]` in one step. The bare-credential pass runs on
     what is left, so it never leaves a half-consumed `[redacted]` behind.
+
+    Split from `_scrub_text` so a caller that wants the vocabulary without the
+    log's size policy (`redact_for_wire`) does not have to reinvent it.
     """
     try:
         out = _SECRET_ASSIGN_RE.sub(lambda m: f"{m.group('k')}={REDACTED}", text)
-        out = _BEARER_RE.sub(f"\\1 {REDACTED}", out)
+        return _BEARER_RE.sub(f"\\1 {REDACTED}", out)
     except Exception:
-        return _clip(text)
-    return _clip(out)
+        return text
+
+
+def _scrub_text(text: str) -> str:
+    """Redact secret-looking values in free text, then cap the length."""
+    return _clip(_redact_secrets(text))
 
 
 def _sanitize(value, key: str = "", depth: int = 0, seen=frozenset()) -> object:
@@ -143,6 +155,56 @@ def _record(event) -> dict:
     record = {"ts": _stamp()}
     record.update({key: value for key, value in sanitized.items() if key != "ts"})
     return record
+
+
+# Nesting a wire payload is walked to. Bodies the driver builds sit about seven
+# deep, so this is a backstop against a pathological structure, not a policy.
+MAX_WIRE_DEPTH = 12
+
+
+def redact_for_wire(value, key: str = "", depth: int = 0) -> object:
+    """A redacted copy of an outgoing request body. Never raises, never caps.
+
+    `_sanitize` is the wrong tool for a request. Its size caps exist so a
+    runaway page dump cannot bloat a log; applied to a body they would truncate
+    the page text to 200 characters and drop half the elements the model is
+    being asked to choose between — a guard that quietly breaks the product it
+    protects. This shares the secret vocabulary and leaves everything else
+    intact, so the only thing that changes on the wire is a credential's value.
+    """
+    if key and _SECRET_KEY_RE.search(key):
+        return REDACTED
+    if isinstance(value, str):
+        return _redact_secrets(value)
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, dict):
+        if depth >= MAX_WIRE_DEPTH:
+            return "[truncated]"
+        try:
+            items = list(value.items())
+        except Exception:
+            return _redact_secrets(str(value))
+        out = {}
+        for raw_key, item in items:
+            try:
+                child = _one_line(raw_key, MAX_STRING)
+            except Exception:
+                child = f"<unserializable {type(raw_key).__name__}>"
+            out[child] = redact_for_wire(item, key=child, depth=depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        if depth >= MAX_WIRE_DEPTH:
+            return "[truncated]"
+        try:
+            items = list(value)
+        except Exception:
+            return _redact_secrets(str(value))
+        return [redact_for_wire(item, key=key, depth=depth + 1) for item in items]
+    try:
+        return _redact_secrets(str(value))
+    except Exception:
+        return f"<unserializable {type(value).__name__}>"
 
 
 def _ranked(pairs) -> str:
