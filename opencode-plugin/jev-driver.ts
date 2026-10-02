@@ -114,6 +114,13 @@ const READ_PARAMETERS = {
       minimum: 0,
       maximum: 15,
     },
+    background: {
+      type: "boolean",
+      description:
+        "Attach to cdp_url instead of the visible pane. Off by default. Set true only when the user asks for a hidden browser. Does not launch a hidden browser.",
+      default: false,
+    },
+    cdp_url: { type: "string", description: "CDP URL to attach. Ignored unless background is true." },
     timeout_s: {
       type: "integer",
       description: "Subprocess timeout in seconds (default 300, hard cap 900).",
@@ -188,6 +195,10 @@ function buildReadArgv(args: Args): string[] {
   if (args.script) argv.push("--script", String(args.script));
   argv.push("--scrolls", String(scrolls));
   if (args.target) argv.push("--target", String(args.target));
+  if (truthy(args.background)) {
+    argv.push("--background");
+    if (args.cdp_url) argv.push("--cdp", String(args.cdp_url));
+  }
   argv.push(truthy(args.debug) ? "--debug" : "--no-debug");
   return argv;
 }

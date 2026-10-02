@@ -256,6 +256,26 @@ def test_valid_budgets_pass_through(home):
     assert captured["argv"][captured["argv"].index("--max-steps") + 1] == "30"
 
 
+def test_read_background_attach_forwarded(home):
+    (home / "scripts" / "read.py").write_text("# read\n")
+    captured = {}
+
+    def popen(argv, **kwargs):
+        captured["argv"] = argv
+        return FakeProc(stdout=json.dumps({"success": True, "url": "x"}), returncode=0)
+
+    out = handler.run_read(
+        {"background": True, "cdp_url": "http://127.0.0.1:1"}, popen=popen
+    )
+    assert "--background" in captured["argv"]
+    assert captured["argv"][captured["argv"].index("--cdp") + 1] == "http://127.0.0.1:1"
+    assert out["url"] == "x"
+
+    # No CDP URL without explicit background attach.
+    handler.run_read({"cdp_url": "http://127.0.0.1:1"}, popen=popen)
+    assert "--cdp" not in captured["argv"]
+
+
 def test_result_carries_verification_and_stop_taxonomy(home):
     done = handler.compact_result([{"status": "done", "url": "x"}], 0)
     assert done["verified"] is None

@@ -339,6 +339,12 @@ def build_read_argv(args: dict) -> list[str]:
     argv.extend(["--scrolls", str(scrolls)])
     if args.get("target"):
         argv.extend(["--target", str(args["target"])])
+    if args.get("background") in {True, "true", "True", 1, "1"}:
+        argv.append("--background")
+        # Same rule as jev_drive: a CDP URL is only honored for an explicit
+        # hidden attach, never for the visible pane.
+        if args.get("cdp_url"):
+            argv.extend(["--cdp", str(args["cdp_url"])])
     argv.append("--debug" if args.get("debug") in {True, "true", "True", 1, "1"} else "--no-debug")
     return argv
 
