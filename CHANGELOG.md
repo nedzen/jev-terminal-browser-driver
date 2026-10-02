@@ -6,6 +6,14 @@ All notable user-facing changes, newest first. Version numbers follow
 
 ## 1.0.0
 
+### Changed since tag (unreleased: token epic, on `feat/tokens`)
+
+- **insights trace explicit-only on MCP** (~1.8KB/call saved by default):
+  the ranked operations/targets trace rides an explicit opt-in
+  (`WWWDRIVE_DEBUG=1`); the debug overlay default is unchanged.
+- **`WWWDRIVE_REQUEST_DEDUP` opt-in**: request-assembly de-duplication
+  (bench −17.5/−21.4% input, accuracy flat), env-gated, default off.
+
 ### Renamed
 
 - The product is **wwwdrive**. The MCP server reports `wwwdrive`, the Hermes

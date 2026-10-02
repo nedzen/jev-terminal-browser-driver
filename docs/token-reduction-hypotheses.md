@@ -1,9 +1,11 @@
 # Token-reduction hypotheses (browsing ingestion)
 
 Goal: minimize tokens an agent ingests while browsing, without degrading
-task accuracy. Status: HYPOTHESES — none implemented. Each needs A/B
-measurement on the frozen bench (bench_nway.py + Wikipedia task) against
-`metrics.json` per-tick input/output tokens before touching production.
+task accuracy. Status: HYPOTHESES — H1 (request de-dup) and H2 (insights
+explicit-only) implemented on `feat/tokens`; H4+ remain hypotheses. Each
+needs A/B measurement on the frozen bench (bench_nway.py + Wikipedia task)
+against `metrics.json` per-tick input/output tokens before touching
+production.
 
 ## Baseline (already in place)
 
@@ -68,13 +70,25 @@ H1 + H2 first (no model-behavior risk), each independently: implement,
 measure on bench + live Wikipedia task, confirm success rate flat, commit
 separately. H4 as a measured experiment only. Rest after.
 
-## Measurement contract (locked 2026-10-03)
+## Measurement contract (locked 2026-10-03, refined same day)
 
 Gate on (a) caller-ingested payload tokens — result bytes per drive call
 (the doc's actual goal: "tokens an agent ingests") — plus (b) suite green
 and decision-sequence equivalence. Driver Jev totals are diagnosis only:
 ±32% run-to-run swing on identical action sequences makes them unusable
 as a gate. H2 measured: 4,862 → 3,030 B per drive call (~458 tok).
+
+Hard rules (owner directives):
+
+- Jev-side spend is NOT optimized. Only tokens returned to the agent count.
+- The request side has a HARD CEILING, not a target (owner-provided
+  TypeSafe specs 2026-10-03): 64,000 tokens per API call total;
+  state + longest question capped at 32,000. Our assembly (6000-char
+  page text, 250 candidates, 80/40 label/value) sits far below it —
+  verified headroom, not a constraint in practice today.
+- Quality is absolute: any decision-sequence or end-state difference vs
+  baseline = revert. No tuning around a regression, ever. Token wins never
+  buy accuracy losses.
 
 ## Follow-ups
 
