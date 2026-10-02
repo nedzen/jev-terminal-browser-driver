@@ -42,7 +42,6 @@ import json
 import os
 import time
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 
 from . import runlog
@@ -164,10 +163,6 @@ def _book(fn, *args, **kwargs) -> None:
         return
 
 
-def _stamp() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
 class _Timer:
     """One running total, max and count -- the only shape a timing takes."""
 
@@ -203,7 +198,7 @@ class Metrics:
 
     def __init__(self) -> None:
         self._run_id = uuid.uuid4().hex
-        self._started_at = _stamp()
+        self._started_at = runlog._stamp()
         self._goal_hash: str | None = None
         self._jev = _Timer()
         self._text = _Timer()
@@ -300,7 +295,7 @@ class Metrics:
             self._finished = True
             self._status = _status(status)
             self._error = _error_kind(error) or ("budget" if self._stop == _BUDGET_STOP else None)
-            self._finished_at = _stamp()
+            self._finished_at = runlog._stamp()
         return self.snapshot()
 
     def snapshot(self) -> dict:

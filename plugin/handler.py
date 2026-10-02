@@ -80,19 +80,6 @@ def terminal_browser_installed() -> bool:
     return bool(shutil.which("terminal-browser")) or Path(TB).is_file()
 
 
-def terminal_browser_running() -> bool:
-    try:
-        out = subprocess.check_output([TB, "ls", "--all", "--json"], text=True, timeout=2, stderr=subprocess.DEVNULL)
-        data = json.loads(out)
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
-        return False
-    return any(b.get("cdpPort") for b in (data.get("browsers") or []))
-
-
-def agent_browser_daemon_present() -> bool:
-    return False
-
-
 def check_jev_drive() -> bool:
     home = driver_home()
     if not (home / "scripts" / "drive.py").is_file():

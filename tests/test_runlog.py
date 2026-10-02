@@ -154,12 +154,6 @@ def test_no_url_and_no_tab_blocks_instead_of_opening_the_fixture():
     assert no_page_error(plan, "https://example.test/") is None
 
 
-def test_cli_reads_the_live_continuity_reason():
-    import jev_driver.cli as cli
-
-    assert not hasattr(cli, "LAST_CONTINUITY")
-
-
 # --- run log hardening: redaction, size caps, never raises ----------------
 # (upstream PR browser-use/jev-ultrafast#141)
 

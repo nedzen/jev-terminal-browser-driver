@@ -8,6 +8,7 @@ import json
 import subprocess
 
 import pytest
+from conftest import Clock
 
 from jev_driver import agent as loop
 from jev_driver import cli, drive_agent
@@ -21,18 +22,6 @@ GOAL = "Open the widget panel"
 ACTION = {"id": "e1", "kind": "click", "label": "Open Widget", "role": "button", "value": "", "node": 7}
 
 
-class Clock:
-    """Monotonic clock the test drives by hand, so no wall time is spent."""
-
-    def __init__(self, start=1000.0):
-        self.now = float(start)
-
-    def perf_counter(self):
-        return self.now
-
-    def advance(self, seconds):
-        self.now += float(seconds)
-        return self.now
 
 
 class _Time:

@@ -2,7 +2,6 @@
 short-circuit paths as test_plugin_handler (missing goal), or monkeypatched
 run_drive/run_read."""
 
-import importlib.util
 import json
 import subprocess
 import sys
@@ -15,17 +14,9 @@ from plugin import handler
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def load_mcp():
-    spec = importlib.util.spec_from_file_location("jev_mcp", ROOT / "scripts" / "mcp.py")
-    assert spec and spec.loader
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 @pytest.fixture()
-def mcp():
-    return load_mcp()
+def mcp(load_mcp):
+    return load_mcp("jev_mcp")
 
 
 @pytest.fixture(autouse=True)
