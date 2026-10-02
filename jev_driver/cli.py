@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import browser as browser_mod
+from . import processes as proc_mod
 from .browser import _log_continuity, find_continuable_page, set_lease
 from .cdp import connect
 from .discover import WatchUnavailable, discover
@@ -234,6 +235,21 @@ def degenerate(decision) -> bool:
     return top < 0.6 and gap < 0.1
 
 
+def _record_processes(goal) -> None:
+    """Write the close-time process evidence: what this run spawned, and whether
+    anything it started is still running after the detach-only close.
+
+    Never raises and never returns a value. It runs from a `finally` block, where
+    an exception would replace the run's exit code — accounting must be able to
+    lose evidence, not the result. A zombie is not a leak, so the check reads the
+    process state and not just `kill(pid, 0)`.
+    """
+    try:
+        write_event(proc_mod.process_evidence(goal=goal))
+    except Exception:
+        return
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Drive a terminal-browser tab with Jev decisions.")
     parser.add_argument("--goal", default=None)
@@ -296,6 +312,9 @@ def main(argv=None) -> int:
         return 1
     url = args.url
     launch = url or DEFAULT_FIXTURE.as_uri()
+    # Spawn accounting starts here, so the count is about THIS run and not about
+    # the process lifetime — one MCP server serves many runs per process.
+    proc_mod.reset_spawns()
     try:
         found = discover(
             explicit=args.cdp_url,
@@ -306,6 +325,12 @@ def main(argv=None) -> int:
     except WatchUnavailable as exc:
         print(json.dumps({"status": "blocked", "error": str(exc)}), flush=True)
         return 1
+    if found.auto_launched:
+        # This run provisioned the pane, so it started one browser process. The
+        # pid belongs to terminal-browser's own fork and is not ours to learn
+        # here, which is exactly the case the close-time check can only answer
+        # with a command-pattern scan.
+        proc_mod.note_spawn("terminal-browser")
     connect(found.ws_url)
     visibility = "background" if args.background else "terminal-browser-pane"
     continuable = (None, None)
@@ -347,6 +372,11 @@ def main(argv=None) -> int:
         if continuity:
             meta["continuity"] = continuity
         print(json.dumps(meta), flush=True)
+    # Name the code that produced this run, in the run log's own directory and
+    # in the run's evidence line. Additive: a tree that cannot be hashed or a log
+    # directory that cannot be written is reported inside the manifest, never
+    # raised, and the run goes on unchanged.
+    manifest = proc_mod.write_version_manifest()
     write_event(
         {
             "event": "run",
@@ -356,6 +386,7 @@ def main(argv=None) -> int:
             "target_id": plan["target_id"],
             "source": found.source,
             "visibility": visibility,
+            "version": manifest,
         }
     )
     agent_cls = WatchAgent if args.watch else DriveAgent
@@ -427,6 +458,7 @@ def main(argv=None) -> int:
     finally:
         if agent is not None:
             agent.close()
+        _record_processes(args.goal)
 
 
 if __name__ == "__main__":

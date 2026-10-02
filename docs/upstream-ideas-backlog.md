@@ -33,6 +33,8 @@ Mirrored in plugin/handler.py and opencode-plugin/jev-driver.ts.
 
 ## Tier 3 — observability
 
+DONE (Batch C): RunMetrics aggregate + metrics.json; spawn/orphan accounting + version_manifest; decision provenance + question-spec hashes; timeline hardening was Batch A. Remaining: none.
+
 5. **Startup preflight + no-browser status check** (PR #141 preflight.py).
    ~30-line pure function (keys present? terminal-browser on PATH?),
    called in DriveAgent/CLI startup, plus a status tool in scripts/mcp.py
@@ -53,6 +55,8 @@ Mirrored in plugin/handler.py and opencode-plugin/jev-driver.ts.
    runlog write path. Copy their credential-redaction test.
 
 ## Tier 4 — decision-layer shims (local-backend future-proofing)
+
+DONE (Batch C): per-head deterministic bypass with mixed/deterministic tagging; tolerant validation (0.05, decision/choice dual key) + optional bearer. Paging deferred until a backend needs it. Remaining: none.
 
 10. **Single-candidate deterministic bypass** (PR #126). len==1 target skips
     the paid call; tag stage deterministic / combined mixed so fake 1.0
