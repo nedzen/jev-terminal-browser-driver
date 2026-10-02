@@ -12,6 +12,7 @@ import pytest
 import plugin
 from jev_driver.cli import tick_record
 from plugin import handler
+from plugin.core import env as core_env
 
 
 class FakeProc:
@@ -45,7 +46,9 @@ def home(monkeypatch, tmp_path):
     (tmp_path / "fixtures").mkdir()
     (tmp_path / "fixtures" / "click.html").write_text("<a>Widget</a>")
     monkeypatch.setenv("WWWDRIVE_HOME", str(tmp_path))
-    monkeypatch.setattr(handler, "LOG_DIR", tmp_path / "logs")
+    # core.env owns the constant; the handler only re-exports it, so patching
+    # the handler's copy would leave the writer reading the real ~/.cache.
+    monkeypatch.setattr(core_env, "LOG_DIR", tmp_path / "logs")
     return tmp_path
 
 

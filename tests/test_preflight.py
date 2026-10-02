@@ -431,7 +431,9 @@ def test_registration_guard_catches_every_call_style(call):
 
 
 def test_preflight_does_not_import_the_plugin():
-    """jev_driver stays independent: the Hermes side must not be a dependency."""
+    """preflight must answer on its own: the MCP status tool imports it for the
+    checks, and a status that needed the Hermes shell could not report a
+    Hermes shell that is missing."""
     source = Path(pf.__file__).read_text()
     assert "from plugin" not in source and "import plugin" not in source
 

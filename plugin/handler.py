@@ -1,209 +1,63 @@
-"""Stdlib-only subprocess wrapper. Hermes loads this; it must not import jev_driver."""
+"""Hermes shell around the stdlib-only core: subprocess in, JSON out.
+
+Hermes loads this module without jev_driver, so every rule that is not about
+spawning lives in plugin/core (also stdlib-only) and this file re-exports it.
+What stays here is the part that is genuinely the adapter's: argv construction,
+the subprocess lifecycle, and the JSON payload the tool returns. If a rule has to
+be enforced for both this tool and the driver's own CLI, it belongs in core.
+"""
 
 from __future__ import annotations
 
 import json
 import os
-import re
-import shutil
 import signal
 import subprocess
 import time
-from pathlib import Path
 
-MAX_STEPS_CAP = 30
-TIMEOUT_CAP = 900
-TIME_BUDGET_CAP = 900
-DEFAULT_MAX_STEPS = 12
-DEFAULT_TIMEOUT = 300
-PAGE_TEXT_LIMIT = 2000
-TB = os.environ.get("TERMINAL_BROWSER", str(Path.home() / ".local" / "bin" / "terminal-browser"))
-LOG_DIR = Path.home() / ".cache" / "wwwdrive"
+from .core.budgets import (
+    DEFAULT_MAX_STEPS,
+    DEFAULT_TIMEOUT,
+    MAX_STEPS_CAP,
+    TIME_BUDGET_CAP,
+    TIMEOUT_CAP,
+    budget,
+    deny_names,
+)
+from .core.env import (
+    LOG_DIR,
+    TB,
+    check_drive,
+    driver_home,
+    has_decision_key,
+    log_handler_event,
+    terminal_browser_installed,
+)
+from .core.result import PAGE_TEXT_LIMIT, compact_result, parse_json_lines
 
-
-def log_handler_event(tool: str, error: str, stderr: str = "") -> None:
-    """Record failures the driver process could not log itself: timeouts and crashes."""
-    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    tail = " | ".join((stderr or "").strip().splitlines()[-8:])[:1500]
-    record = {"ts": stamp, "event": "handler", "tool": tool, "error": error, "stderr": tail or None}
-    try:
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-        with (LOG_DIR / "drive.jsonl").open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-        line = f"{stamp} handler tool={tool} error={error}"
-        if tail:
-            line += f"\n  stderr: {tail[:400]}"
-        with (LOG_DIR / "drive.log").open("a", encoding="utf-8") as handle:
-            handle.write(line + "\n")
-    except OSError:
-        return
-
-
-def driver_home() -> Path:
-    """Directory that contains scripts/drive.py.
-
-    Walks up from this file so a catalog install works without a checkout at
-    ~/Projects. WWWDRIVE_HOME overrides it; JEV_DRIVER_HOME is still read as a
-    fallback so pre-1.0 configs keep working.
-    """
-    env = os.environ.get("WWWDRIVE_HOME", "").strip() or os.environ.get("JEV_DRIVER_HOME", "").strip()
-    if env:
-        return Path(env).expanduser()
-    here = Path(__file__).resolve().parent
-    for candidate in (here, *here.parents):
-        if (candidate / "scripts" / "drive.py").is_file():
-            return candidate
-    return here
-
-
-def _read_key_from_env_file(path: Path) -> bool:
-    if not path.is_file():
-        return False
-    for line in path.read_text().splitlines():
-        if line.startswith(("OPENROUTER_API_KEY=", "DECISION_GATE_API_KEY=", "TYPESAFE_API_KEY=")):
-            val = line.split("=", 1)[1].strip().strip('"').strip("'")
-            if val:
-                return True
-    return False
-
-
-def has_decision_key() -> bool:
-    for var in ("DECISION_GATE_API_KEY", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY"):
-        if os.environ.get(var, "").strip():
-            return True
-    homes = [Path.home() / ".hermes" / ".env"]
-    hermes_home = os.environ.get("HERMES_HOME", "").strip()
-    if hermes_home:
-        homes.append(Path(hermes_home).expanduser() / ".env")
-    return any(_read_key_from_env_file(path) for path in homes)
-
-
-def terminal_browser_installed() -> bool:
-    return bool(shutil.which("terminal-browser")) or Path(TB).is_file()
-
-
-def check_drive() -> bool:
-    home = driver_home()
-    if not (home / "scripts" / "drive.py").is_file():
-        return False
-    if not shutil.which("uv") and not (home / ".venv").exists():
-        return False
-    if not has_decision_key():
-        return False
-    # TUI-only: the driver provisions a visible terminal-browser pane itself,
-    # so presence of the binary is enough — no running browser required.
-    return terminal_browser_installed()
-
-
-def parse_json_lines(text: str) -> list[dict]:
-    rows = []
-    for line in (text or "").splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            rows.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
-    return rows
-
-
-def _sum_usage(rows: list[dict]) -> dict:
-    total = {"input_tokens": 0, "output_tokens": 0, "cost": 0.0}
-    for row in rows:
-        usage = row.get("usage") or {}
-        if not isinstance(usage, dict):
-            continue
-        total["input_tokens"] += int(usage.get("input_tokens") or 0)
-        total["output_tokens"] += int(usage.get("output_tokens") or 0)
-        total["cost"] += float(usage.get("cost") or 0)
-    return total
-
-
-def _stopped_reason(status: str, reason, error) -> str:
-    """Uniform stop taxonomy (upstream browser-use/jev-ultrafast#3).
-
-    done -> model_done; budget exhaustion -> action_budget/time_budget;
-    anything else blocked -> model_blocked; hard failures -> error.
-    The legacy `reason` field keeps the granular detail.
-    """
-    if error == "timeout":
-        return "time_budget"
-    if error == "cancelled":
-        return "cancelled"
-    if status == "done":
-        return "model_done"
-    if reason == "max_steps":
-        return "action_budget"
-    if status == "error":
-        return "error"
-    return "model_blocked"
-
-
-def compact_result(rows: list[dict], exit_code: int, error: str | None = None, *, insights: bool = True) -> dict:
-    """Fold the tick rows into the one result an agent reads.
-
-    ``insights`` is the ranked operations/targets trace, not the overlay: a
-    human watching the pane wants the overlay by default, but this trace is
-    payload the agent pays for, so adapters pass ``insights=False`` unless
-    debug was explicitly asked for. Dropping it changes nothing else in the
-    result, and debug-on still gets the trace byte-identical.
-    """
-    meta = next((r for r in rows if r.get("event") == "browser"), {})
-    ticks = [r for r in rows if r.get("status")]
-    last = ticks[-1] if ticks else {}
-    status = last.get("status") or ("error" if error else "blocked")
-    error = error or last.get("error")
-    if status not in {"done", "blocked", "error"}:
-        status = "blocked"
-    actions = [t.get("last_action") for t in ticks if t.get("last_action")]
-    browser = {
-        "source": meta.get("source"),
-        "cdp_url": meta.get("cdp_url"),
-        "auto_launched": bool(meta.get("auto_launched")),
-        "visibility": meta.get("visibility")
-        or ("terminal-browser-pane" if meta.get("source") == "terminal-browser" else "unknown"),
-    }
-    if meta.get("continuity"):
-        browser["continuity"] = meta["continuity"]
-    if meta.get("log"):
-        browser["log"] = meta["log"]
-    success = exit_code == 0 and status == "done" and not error
-    out = {
-        "success": success,
-        "status": "error" if error and status != "blocked" else status,
-        "final_url": last.get("url"),
-        "actions": actions,
-        "ticks": len(ticks),
-        "usage": _sum_usage(ticks),
-        "browser": browser,
-        "error": error,
-    }
-    if last.get("page_text") is not None:
-        text = last["page_text"]
-        out["page_text"] = text[:PAGE_TEXT_LIMIT] if isinstance(text, str) else text
-    if last.get("why"):
-        out["why"] = last["why"]
-    if last.get("reason"):
-        out["reason"] = last["reason"]
-    if last.get("final_view") is not None:
-        out["final_view"] = last["final_view"]
-    if last.get("omitted_actions") is not None:
-        out["omitted_actions"] = last["omitted_actions"]
-    # DONE is a model choice, never an independent verification.
-    out["verified"] = None
-    if out["status"] == "done":
-        out["outcome_verification"] = "unverified - DONE choice by model without independent check"
-    else:
-        out["outcome_verification"] = "not_applicable"
-    out["stopped_reason"] = _stopped_reason(out["status"], out.get("reason"), out.get("error"))
-    if insights:
-        rows_insights = [t["insight"] for t in ticks if isinstance(t.get("insight"), dict)]
-        if rows_insights:
-            out["insights"] = rows_insights
-    if any(t.get("degenerate") for t in ticks):
-        out["degenerate"] = True
-    return out
+__all__ = [
+    "DEFAULT_MAX_STEPS",
+    "DEFAULT_TIMEOUT",
+    "LOG_DIR",
+    "MAX_STEPS_CAP",
+    "PAGE_TEXT_LIMIT",
+    "TB",
+    "TIMEOUT_CAP",
+    "TIME_BUDGET_CAP",
+    "build_argv",
+    "build_read_argv",
+    "check_drive",
+    "compact_result",
+    "driver_home",
+    "handle_drive",
+    "handle_read",
+    "has_decision_key",
+    "log_handler_event",
+    "parse_json_lines",
+    "run_drive",
+    "run_read",
+    "terminal_browser_installed",
+]
 
 
 def _kill_group(proc: subprocess.Popen) -> None:
@@ -271,48 +125,6 @@ def build_argv(args: dict) -> list[str]:
     return argv
 
 
-def _budget(value, lo: int, hi: int, name: str, default: int) -> int:
-    """Strict budget validation: reject (don't silently clamp) so the caller
-    knows the budget it got. Missing/None falls back to the default.
-    Integral floats (12.0) are accepted for JSON cross-adapter parity."""
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        raise ValueError(f"{name} must be an integer {lo}..{hi}; no action executed.")
-    if isinstance(value, float) and value.is_integer():
-        value = int(value)
-    if not isinstance(value, int) or not (lo <= value <= hi):
-        raise ValueError(f"{name} must be an integer {lo}..{hi}; no action executed.")
-    return value
-
-
-def _deny_names(value) -> list[str]:
-    """The denylist as a list of patterns, or a pre-spawn rejection.
-
-    A pattern that does not compile, an empty one (it would deny every name and
-    leave the run nothing to drive), or a list that is not made of strings is a
-    malformed argument, not something to clamp quietly: the caller is told
-    instead of getting a browser opened against a denylist nobody asked for.
-    """
-    if value is None:
-        return []
-    bad = "deny_names must be a list of regular expressions; no action executed."
-    if isinstance(value, str) or not isinstance(value, (list, tuple)):
-        raise ValueError(bad)
-    patterns = []
-    for item in value:
-        if not isinstance(item, str) or not item.strip():
-            raise ValueError(bad)
-        try:
-            re.compile(item)
-        except re.error:
-            raise ValueError(
-                f"deny_names pattern {item[:60]!r} is not a valid regular expression; no action executed."
-            ) from None
-        patterns.append(item)
-    return patterns
-
-
 def run_drive(args: dict, *, popen=subprocess.Popen, kill_group=_kill_group) -> dict:
     home = driver_home()
     if not args.get("goal") or not str(args.get("goal")).strip():
@@ -322,16 +134,16 @@ def run_drive(args: dict, *, popen=subprocess.Popen, kill_group=_kill_group) -> 
     try:
         validated = {
             **args,
-            "max_steps": _budget(args.get("max_steps"), 1, MAX_STEPS_CAP, "max_steps", DEFAULT_MAX_STEPS),
+            "max_steps": budget(args.get("max_steps"), 1, MAX_STEPS_CAP, "max_steps", DEFAULT_MAX_STEPS),
             # Strict, like every other budget: rejected before the spawn, and
             # integral floats (45.0) accepted for cross-adapter parity.
-            "time_budget_s": _budget(args.get("time_budget_s"), 1, TIME_BUDGET_CAP, "time_budget_s", None),
+            "time_budget_s": budget(args.get("time_budget_s"), 1, TIME_BUDGET_CAP, "time_budget_s", None),
             # Rejected before the spawn for the same reason a budget is: a pattern
             # that cannot compile is the caller's to fix, and a run opened against
             # a denylist nobody meant to set is a browser nobody asked for.
-            "deny_names": _deny_names(args.get("deny_names")),
+            "deny_names": deny_names(args.get("deny_names")),
         }
-        timeout_s = _budget(args.get("timeout_s"), 1, TIMEOUT_CAP, "timeout_s", DEFAULT_TIMEOUT)
+        timeout_s = budget(args.get("timeout_s"), 1, TIMEOUT_CAP, "timeout_s", DEFAULT_TIMEOUT)
     except ValueError as exc:
         return compact_result([], 1, error=str(exc))
     # The insight trace is opt-in per adapter; a caller that says nothing keeps
@@ -409,9 +221,9 @@ def run_read(args: dict, *, popen=subprocess.Popen, kill_group=_kill_group) -> d
     try:
         validated = {
             **args,
-            "scrolls": _budget(args.get("scrolls"), 0, 15, "scrolls", 0),
+            "scrolls": budget(args.get("scrolls"), 0, 15, "scrolls", 0),
         }
-        timeout_s = _budget(args.get("timeout_s"), 1, TIMEOUT_CAP, "timeout_s", DEFAULT_TIMEOUT)
+        timeout_s = budget(args.get("timeout_s"), 1, TIMEOUT_CAP, "timeout_s", DEFAULT_TIMEOUT)
     except ValueError as exc:
         return {"success": False, "error": str(exc)}
     proc = popen(

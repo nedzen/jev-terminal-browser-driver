@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from plugin.core.result import build_tick_row
+
 from . import browser as browser_mod
 from . import model as model_mod
 from . import processes as proc_mod
@@ -124,7 +126,15 @@ def trace_fields(snap: dict, rec: dict, *, goal: str) -> dict:
     return fields
 
 
-def tick_record(snap: dict, *, debug: bool = False) -> dict:
+def tick_record(snap: dict, *, debug: bool = False, **overrides) -> dict:
+    """One tick row, assembled by plugin.core.result.build_tick_row.
+
+    The driver reads a tick here and an agent reads the folded result there, so
+    the row is built by the same builder that folds it. `overrides` are the
+    caller's fields (a max_steps budget, a time_budget stop, a final re-read);
+    they win over the snapshot's and go through the same builder, which is what
+    keeps the two sides from drifting.
+    """
     history = snap.get("history") or []
     decisions = snap.get("decisions") or []
     last = history[-1] if history else None
@@ -152,27 +162,20 @@ def tick_record(snap: dict, *, debug: bool = False) -> dict:
         why = f"{last.get('operation') or last.get('kind') or 'acted'} {last.get('action') or ''}".strip()
         if bit:
             why += f" ({bit})"
-    rec = {
-        "status": snap.get("status"),
-        "url": page.get("url"),
-        "last_action": last_action,
-        "elapsed_ms": snap.get("elapsed_ms"),
-        "usage": usage,
+    fields = {
+        "why": why,
+        "reason": reason,
+        "error": TAKEOVER_REASON if snap.get("takeover") else None,
+        # snapshot.js caps the action list at 250; when it trims, say so. A
+        # blocked run then reads as "the model could not see these", not "the
+        # page had none".
+        "omitted_actions": page.get("omitted_actions"),
+        "degenerate": True if degenerate(decision) else None,
     }
-    if why:
-        rec["why"] = why
-    if reason:
-        rec["reason"] = reason
-    # snapshot.js caps the action list at 250; when it trims, say so. A blocked
-    # run then reads as "the model could not see these", not "the page had none".
-    if page.get("omitted_actions"):
-        rec["omitted_actions"] = page["omitted_actions"]
-    if rec["status"] in {"done", "blocked"} or reason:
-        rec["page_text"] = (page.get("text") or "")[:2000]
-    if snap.get("takeover"):
-        rec["error"] = TAKEOVER_REASON
-    if degenerate(decision):
-        rec["degenerate"] = True
+    # Page text only on a stopping tick: mid-run it is 2K chars the agent pays
+    # for on every step and never reads.
+    if overrides.get("status") or snap.get("status") in {"done", "blocked"} or reason:
+        fields["page_text"] = page.get("text") or ""
     if debug and (decision or last):
         labels = _target_labels(decision)
         operation = (decision or {}).get("operation") or (last or {}).get("operation")
@@ -180,7 +183,7 @@ def tick_record(snap: dict, *, debug: bool = False) -> dict:
         target = labels.get(target_key)
         if not target and operation in {"CLICK", "TYPE_TEXT", "SELECT"}:
             target = (last or {}).get("action")
-        rec["insight"] = {
+        fields["insight"] = {
             "operation": operation,
             "confidence": (decision or {}).get("confidence"),
             "target": target,
@@ -189,7 +192,19 @@ def tick_record(snap: dict, *, debug: bool = False) -> dict:
             "top_targets": _top_probs((decision or {}).get("target_probabilities"), labels),
             "page_changed": None if last is None else last.get("page_changed"),
         }
-    return rec
+    # An override that is None means "nothing to override": the snapshot's own
+    # value stands. Empty values are real values and do override.
+    fields.update({key: value for key, value in overrides.items() if value is not None})
+    return build_tick_row(
+        {
+            "status": overrides.get("status") or snap.get("status"),
+            "url": page.get("url"),
+            "last_action": last_action,
+            "elapsed_ms": snap.get("elapsed_ms"),
+            "usage": usage,
+        },
+        **fields,
+    )
 
 
 def _final_view(snap: dict, browser) -> dict:
@@ -520,8 +535,7 @@ def main(argv=None) -> int:
             snap["stop_reason"] = refused
             agent.state["status"] = "blocked"
             agent.state["stop_reason"] = refused
-            rec = tick_record(snap, debug=args.debug)
-            rec["page_text"] = ((snap.get("page") or {}).get("text") or "")[:2000]
+            rec = tick_record(snap, debug=args.debug, page_text=((snap.get("page") or {}).get("text") or ""))
             emit(snap, rec)
             return 1
 
@@ -531,28 +545,38 @@ def main(argv=None) -> int:
             snap = agent.snapshot()
             while agent.state["status"] not in {"done", "blocked"}:
                 if steps >= args.max_steps:
-                    rec = {**tick_record(snap, debug=args.debug), "status": "blocked", "error": "max-steps"}
-                    rec["reason"] = "max_steps"
-                    rec["why"] = REASON_WHY["max_steps"]
                     kinds = {item.get("kind") for item in snap.get("history") or []}
+                    why = REASON_WHY["max_steps"]
                     if kinds and kinds <= {"scroll", "wait"}:
-                        rec["why"] = REASON_WHY["scroll_only"]
+                        why = REASON_WHY["scroll_only"]
+                    rec = tick_record(
+                        snap,
+                        debug=args.debug,
+                        status="blocked",
+                        error="max-steps",
+                        reason="max_steps",
+                        why=why,
+                        page_text=(snap.get("page") or {}).get("text") or "",
+                    )
                     if args.debug and isinstance(rec.get("insight"), dict):
-                        rec["insight"]["why"] = rec["why"]
-                    rec["page_text"] = ((snap.get("page") or {}).get("text") or "")[:2000]
+                        rec["insight"]["why"] = why
                     emit(snap, rec)
                     return 1
                 snap = agent.command("tick")
                 steps += 1
-                rec = tick_record(snap, debug=args.debug)
-                if snap.get("stop_reason") == "time_budget":
+                budget_stop = snap.get("stop_reason") == "time_budget"
+                rec = tick_record(
+                    snap,
+                    debug=args.debug,
                     # The stop taxonomy reads error=="timeout" as stopped_reason
                     # time_budget, so an in-loop deadline reports like the outer
                     # timeout_s kill — without killing anything.
-                    rec["error"] = "timeout"
-                    rec["why"] = TIME_BUDGET_WHY
-                if rec.get("status") == "done":
-                    rec["final_view"] = _final_view(snap, (agent.state or {}).get("browser"))
+                    error="timeout" if budget_stop else None,
+                    why=TIME_BUDGET_WHY if budget_stop else None,
+                    final_view=_final_view(snap, (agent.state or {}).get("browser"))
+                    if snap.get("status") == "done"
+                    else None,
+                )
                 emit(snap, rec)
             code = 0 if agent.state["status"] == "done" else 1
             return code

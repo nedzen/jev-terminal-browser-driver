@@ -4,6 +4,52 @@ How `drive` / `drive.py` works: the execution chain, the decision
 protocol, the CDP transport, and the safety model. Paths relative to the repo
 root unless noted.
 
+## The plugin/driver boundary
+
+```
+plugin/                      Hermes loads this; jev_driver is NOT importable here
+  __init__.py                tool schemas + register(ctx)
+  handler.py                 subprocess adapter: argv, the child, the JSON payload
+  core/                      the stdlib-only leaf, imported by BOTH sides
+    env.py                   driver_home, has_decision_key, terminal_browser_installed,
+                             check_drive, LOG_DIR, log_handler_event
+    budgets.py               caps + budget()/deny_names(): reject, never clamp
+    result.py                build_tick_row() and compact_result(), one field table
+scripts/drive.py → jev_driver/cli.py  (imports plugin.core.result to emit ticks)
+scripts/mcp.py   → plugin.handler + jev_driver.preflight (MCP adapter)
+```
+
+The dependency runs one way. Hermes loads `plugin/` without `jev_driver`
+installed, so nothing under `plugin/core/` may import outside the standard
+library and `plugin/`; `tests/test_core.py` walks the ASTs to keep that true.
+`jev_driver` importing `plugin.core.result` is the allowed direction — core is
+stdlib-only, so it costs the driver no dependency.
+
+`plugin/handler.py` is a shell: every rule it used to own now lives in core,
+and it re-exports the public names (`compact_result`, `driver_home`,
+`TIME_BUDGET_CAP`, …) because callers and tests hold those names.
+
+### One result builder, one field table
+
+A tick row (what the driver prints) and the agent result (what `compact_result`
+folds those rows into) are two views of a single declaration, `PASSTHROUGH` in
+`plugin/core/result.py`. `build_tick_row` and `compact_result` both read it, so a
+field added there is carried by both with no second edit.
+
+This is a bug class, not a style preference: `final_view` and
+`omitted_actions` were each added to the row and nearly dropped on the way into
+the result, each needing a separate regression test to notice.
+`tests/test_core.py::test_a_novel_declared_field_survives_the_round_trip` pins
+the property itself — a field nobody has written a case for still arrives.
+
+A tick row carries `status`, `url`, `last_action`, `elapsed_ms`, `usage` plus
+whatever `TICK_OPTIONAL` declares. `cli.tick_record(snap, **overrides)` passes
+caller-owned fields (a `max_steps` budget, a `time_budget` stop, a final
+re-read) through the same builder; an override of `None` means "nothing to
+override" and leaves the snapshot's value alone. `degenerate` and `insight` are
+row-only — the result aggregates them across ticks rather than copying the last
+row's copy.
+
 ## Envelope
 
 `drive` is a **one-viewport click-path actor**: forms, wizards, filters,

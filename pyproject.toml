@@ -13,7 +13,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["jev_driver"]
+# plugin ships too: jev_driver.cli imports plugin.core.result to build tick rows,
+# so a wheel without it would install a console script that cannot start.
+packages = ["jev_driver", "plugin"]
 
 [dependency-groups]
 dev = ["pytest>=8.4,<9", "ruff>=0.14,<1"]

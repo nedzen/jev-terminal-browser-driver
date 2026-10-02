@@ -8,10 +8,16 @@ call, nothing written to disk. The result is statuses and a fix hint, never key
 material — a key is reported as present or missing, and its value is never read
 into the result.
 
-Mirrors the checks behind plugin/handler.py (has_decision_key,
-terminal_browser_installed, check_drive) so `status` and the Hermes
-gate agree. handler.py keeps its own copy on purpose: Hermes loads it without
-jev_driver, so neither module may import the other.
+Mirrors the checks behind the Hermes gate (has_decision_key,
+terminal_browser_installed, check_drive) so `status` and the gate agree. Those
+three now live in plugin/core/env.py, which is stdlib-only and importable from
+here; the checks are kept spelled out locally rather than imported, because the
+MCP status tool must answer with no browser and no paid call, and a status that
+could not answer would be the worst possible failure for a gate.
+
+The duplication is deliberate and pinned by tests/test_preflight.py: the two
+answers must agree, and they are read from different places (a PATH probe for
+the binary vs. a file check) so a shared helper would hide which one answered.
 """
 
 from __future__ import annotations
