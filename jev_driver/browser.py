@@ -256,11 +256,6 @@ def _attach(target_id):
     return cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
 
 
-def _tui_target_ids(data=None):
-    data = data or list_browsers()
-    return {t["targetId"] for b in data.get("browsers") or [] for t in b.get("tabs") or []}
-
-
 def _json_pages():
     with urllib.request.urlopen(f"http://127.0.0.1:{cdp_port()}/json/list", timeout=5) as resp:
         return json.loads(resp.read())

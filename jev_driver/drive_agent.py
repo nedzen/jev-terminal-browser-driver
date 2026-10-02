@@ -7,7 +7,7 @@ from .agent import Agent
 from .browser import StalePage, without_counts
 from .metrics import Metrics, instrument_browser
 from .model import action_space, field_context, field_text
-from .readiness import REASON_WHY, done_acceptable, done_probability, page_is_shell
+from .readiness import REASON_WHY, degenerate, done_acceptable, done_probability, page_is_shell
 from .runlog import write_event
 
 TIME_BUDGET_WHY = (
@@ -42,6 +42,14 @@ def _click_named(actions, label: str):
     if len(stemmed) == 1:
         return stemmed[0]
     return None
+
+
+def label_of(text, fallback, width=60) -> str:
+    """A criterion's readable label: drop the "[KEY]" prefix and the ";" tail, clipped to width."""
+    raw = str(text or fallback or "")
+    if raw.startswith("[") and "]" in raw:
+        raw = raw.split("]", 1)[1]
+    return raw.split(";")[0].strip()[:width]
 
 
 def _why(status, decision, history, reason=None):
@@ -697,11 +705,8 @@ class DriveAgent(Agent):
         op_key = (decision.get("operation") or "").lower() + "_target"
         criteria = (questions.get(op_key) or {}).get("criteria") or {}
 
-        def label_of(index):
-            text = str(criteria.get(index) or label_by_index.get(index) or index)
-            if text.startswith("[") and "]" in text:
-                text = text.split("]", 1)[1]
-            return text.split(";")[0].strip()[:60]
+        def index_label(index):
+            return label_of(criteria.get(index), label_by_index.get(index) or index, 60)
 
         target_key = decision.get("target")
         target_probs = decision.get("target_probabilities") or {}
@@ -715,7 +720,7 @@ class DriveAgent(Agent):
                 marks.append(
                     {
                         "node": node,
-                        "label": label_of(index),
+                        "label": index_label(index),
                         "p": round(float(prob), 3),
                         "chosen": index == target_key,
                     }
@@ -734,11 +739,8 @@ class DriveAgent(Agent):
                 }
             )
         op_probs = decision.get("operation_probabilities") or {}
-        ranked = sorted((float(v) for v in op_probs.values()), reverse=True)
-        top = ranked[0] if ranked else 0.0
-        gap = top - (ranked[1] if len(ranked) > 1 else 0.0)
         operation = decision.get("operation") or decision.get("choice") or ""
-        target_label = label_of(target_key) if target_key else ""
+        target_label = index_label(target_key) if target_key else ""
         if operation in {"DONE", "BLOCKED", "WAIT", "SCROLL_UP", "SCROLL_DOWN"}:
             target_label = ""
         last = ((state.get("history") or [None])[-1]) or {}
@@ -765,10 +767,10 @@ class DriveAgent(Agent):
             "target_label": target_label,
             "last_action": last.get("action") or "",
             "why": why,
-            "degenerate": bool(op_probs) and top < 0.6 and gap < 0.1,
+            "degenerate": degenerate(decision),
             "ops": _ranked(op_probs),
             "targets": [
-                [label_of(key), round(float(val), 3)]
+                [index_label(key), round(float(val), 3)]
                 for key, val in sorted(target_probs.items(), key=lambda kv: -float(kv[1] or 0))[:6]
             ],
             "steps": steps,

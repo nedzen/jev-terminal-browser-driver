@@ -13,10 +13,10 @@ from . import processes as proc_mod
 from .browser import _log_continuity, find_continuable_page, set_lease
 from .cdp import connect, list_browsers
 from .discover import WatchUnavailable, discover
-from .drive_agent import TIME_BUDGET_WHY, DriveAgent, _why
+from .drive_agent import TIME_BUDGET_WHY, DriveAgent, _why, label_of
 from .preflight import preflight
 from .questions import MAX_STEPS
-from .readiness import REASON_WHY, unsupported_goal
+from .readiness import REASON_WHY, degenerate, unsupported_goal
 from .runlog import JSONL_PATH, write_event
 from .takeover import TAKEOVER_REASON, WatchAgent
 
@@ -25,18 +25,11 @@ DEFAULT_FIXTURE = (ROOT / "fixtures" / "click.html").resolve()
 TIME_BUDGET_CAP = 900  # same ceiling as the outer timeout_s kill
 
 
-def _criterion_label(text, fallback):
-    raw = str(text or fallback or "")
-    if raw.startswith("[") and "]" in raw:
-        raw = raw.split("]", 1)[1]
-    return raw.split(";")[0].strip()[:80]
-
-
 def _target_labels(decision):
     questions = ((decision or {}).get("request") or {}).get("questions") or {}
     op_key = ((decision or {}).get("operation") or "").lower() + "_target"
     criteria = (questions.get(op_key) or {}).get("criteria") or {}
-    return {key: _criterion_label(text, key) for key, text in criteria.items()}
+    return {key: label_of(text, key, 80) for key, text in criteria.items()}
 
 
 def _top_probs(probs, labels=None, limit=4):
@@ -221,18 +214,6 @@ def _final_view(snap: dict, browser) -> dict:
         "url": fresh.get("url"),
         "title": fresh.get("title"),
     }
-
-
-def degenerate(decision) -> bool:
-    if not decision:
-        return False
-    probs = decision.get("operation_probabilities") or {}
-    if not probs:
-        return False
-    ranked = sorted(probs.values(), reverse=True)
-    top = ranked[0]
-    gap = top - (ranked[1] if len(ranked) > 1 else 0)
-    return top < 0.6 and gap < 0.1
 
 
 def _record_processes(goal) -> None:

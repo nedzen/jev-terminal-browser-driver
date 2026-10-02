@@ -6,8 +6,7 @@ schemas, so drift is structurally impossible — these tests pin that import
 relationship instead of duplicating schema text.
 """
 
-import importlib.util
-from pathlib import Path
+import pytest
 
 from plugin import (
     DESCRIPTION,
@@ -19,19 +18,14 @@ from plugin import (
 )
 from plugin.handler import TIME_BUDGET_CAP
 
-ROOT = Path(__file__).resolve().parents[1]
+
+@pytest.fixture()
+def mcp_mod(load_mcp):
+    return load_mcp("jev_mcp_parity")
 
 
-def load_mcp():
-    spec = importlib.util.spec_from_file_location("jev_mcp_parity", ROOT / "scripts" / "mcp.py")
-    assert spec and spec.loader
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-def test_mcp_serves_canonical_schemas():
-    mod = load_mcp()
+def test_mcp_serves_canonical_schemas(mcp_mod):
+    mod = mcp_mod
     tools = {t["name"]: t for t in mod._tool_list()}
     assert set(tools) == {"jev_drive", "jev_read", "jev_status"}
     assert tools["jev_drive"]["inputSchema"] == PARAMETERS
@@ -53,11 +47,11 @@ def test_time_budget_offered_with_the_same_bounds():
     assert "time_budget_s" not in READ_PARAMETERS["properties"]  # jev_read never drives
 
 
-def test_status_tool_parity():
+def test_status_tool_parity(mcp_mod):
     """jev_status: canonical empty-object schema, same checks as preflight."""
     from jev_driver.preflight import CHECKS, FIXES
 
-    mod = load_mcp()
+    mod = mcp_mod
     tools = {t["name"]: t for t in mod._tool_list()}
     assert tools["jev_status"]["inputSchema"] == STATUS_PARAMETERS
     assert STATUS_PARAMETERS == {"type": "object", "additionalProperties": False, "properties": {}}

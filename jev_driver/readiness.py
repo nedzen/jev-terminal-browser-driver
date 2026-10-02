@@ -86,6 +86,19 @@ def done_acceptable(decision: dict | None, page: dict | None) -> bool:
     return True
 
 
+def degenerate(decision: dict | None) -> bool:
+    """True when the operation spread carries no real preference: a low top and a narrow gap."""
+    if not decision:
+        return False
+    probs = decision.get("operation_probabilities") or {}
+    if not probs:
+        return False
+    ranked = sorted(probs.values(), reverse=True)
+    top = ranked[0]
+    gap = top - (ranked[1] if len(ranked) > 1 else 0)
+    return top < 0.6 and gap < 0.1
+
+
 def unsupported_goal(goal: str | None) -> str | None:
     text = (goal or "").lower()
     if "screenshot" in text or "screen shot" in text or "take a picture" in text:

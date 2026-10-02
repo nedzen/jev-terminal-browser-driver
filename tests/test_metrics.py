@@ -12,6 +12,7 @@ import threading
 from unittest.mock import Mock
 
 import pytest
+from conftest import Clock
 
 from jev_driver import agent as loop
 from jev_driver import drive_agent
@@ -62,18 +63,6 @@ def _timer(name):
         "avg_ms": 0.0,
     }
 
-
-class Clock:
-    """Monotonic clock the test drives by hand, so no wall time is spent."""
-
-    def __init__(self, start=1000.0):
-        self.now = float(start)
-
-    def perf_counter(self):
-        return self.now
-
-    def advance(self, seconds):
-        self.now += float(seconds)
 
 
 class _Time:

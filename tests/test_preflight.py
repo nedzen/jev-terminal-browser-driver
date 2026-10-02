@@ -4,7 +4,6 @@ No browser, no model call, no paid anything: these checks are exactly what runs
 when nothing is installed, so that is the state under test.
 """
 
-import importlib.util
 import json
 import os
 import subprocess
@@ -22,12 +21,9 @@ ROOT = Path(__file__).resolve().parents[1]
 KEY_VARS = ("DECISION_GATE_API_KEY", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY")
 
 
-def load_mcp():
-    spec = importlib.util.spec_from_file_location("jev_mcp_preflight", ROOT / "scripts" / "mcp.py")
-    assert spec and spec.loader
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+@pytest.fixture()
+def mcp_mod(load_mcp):
+    return load_mcp("jev_mcp_preflight")
 
 
 @pytest.fixture(autouse=True)
@@ -281,8 +277,8 @@ def test_check_does_not_launch_a_browser(monkeypatch):
 # --- MCP jev_status --------------------------------------------------------
 
 
-def test_tools_list_includes_status():
-    tools = {t["name"]: t for t in load_mcp()._tool_list()}
+def test_tools_list_includes_status(mcp_mod):
+    tools = {t["name"]: t for t in mcp_mod._tool_list()}
     assert "jev_status" in tools
     assert tools["jev_status"]["inputSchema"] == STATUS_PARAMETERS
     assert tools["jev_status"]["inputSchema"]["properties"] == {}
@@ -290,14 +286,14 @@ def test_tools_list_includes_status():
     assert tools["jev_status"]["description"]
 
 
-def test_tools_list_via_dispatch():
-    res = load_mcp().dispatch({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+def test_tools_list_via_dispatch(mcp_mod):
+    res = mcp_mod.dispatch({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
     names = {t["name"] for t in res["result"]["tools"]}
     assert {"jev_drive", "jev_read", "jev_status"} <= names
 
 
-def test_call_status_works_with_no_browser(monkeypatch):
-    mod = load_mcp()
+def test_call_status_works_with_no_browser(monkeypatch, mcp_mod):
+    mod = mcp_mod
     monkeypatch.setattr(mod.h, "run_drive", lambda payload: pytest.fail("status launched a drive"))
     monkeypatch.setattr(mod.h, "run_read", lambda payload: pytest.fail("status launched a read"))
     res = mod.dispatch(
@@ -310,9 +306,9 @@ def test_call_status_works_with_no_browser(monkeypatch):
     assert "driver_key" not in body
 
 
-def test_call_status_never_leaks_a_key(monkeypatch):
+def test_call_status_never_leaks_a_key(monkeypatch, mcp_mod):
     monkeypatch.setenv("TYPESAFE_API_KEY", "sk-mcp-secret")
-    res = load_mcp().dispatch(
+    res = mcp_mod.dispatch(
         {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "jev_status", "arguments": {}}}
     )
     text = res["result"]["content"][0]["text"]
@@ -320,9 +316,9 @@ def test_call_status_never_leaks_a_key(monkeypatch):
     assert json.loads(text)["decision_key"] == "ok"
 
 
-def test_call_status_takes_no_arguments():
+def test_call_status_takes_no_arguments(mcp_mod):
     """The schema is closed and empty, so arguments are irrelevant either way."""
-    mod = load_mcp()
+    mod = mcp_mod
     res = mod.dispatch(
         {
             "jsonrpc": "2.0",
