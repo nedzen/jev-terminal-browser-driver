@@ -21,7 +21,9 @@ Client config (Claude Code / OpenCode / Crush / Hermes / anything speaking MCP):
 
 Like the Hermes plugin, a client-supplied `debug` flag is ignored: only the
 WWWDRIVE_DEBUG env var controls the overlay (JEV_DEBUG still works as a
-fallback).
+fallback). The ranked operations/targets insight trace is stricter still: it
+is only in the result when WWWDRIVE_DEBUG explicitly turns debug on, since an
+unset var is a default rather than a request to spend the caller's context.
 
 Serial by design: one tools/call runs at a time; while a 300-900s drive is
 in flight the server cannot read stdin, so notifications/cancelled is only
@@ -72,6 +74,19 @@ def debug_default() -> bool:
     return raw.lower() not in {"0", "false", "no"}
 
 
+def insights_default() -> bool:
+    """Whether the ranked operations/targets trace rides along in the result.
+
+    Explicit opt-in only, and deliberately stricter than :func:`debug_default`:
+    the overlay is a panel a human asked to watch, while the trace is payload
+    the calling agent pays for on every drive. An unset env var is a default,
+    not a request, so the trace waits for WWWDRIVE_DEBUG=1 (or JEV_DEBUG=1).
+    Turning it off is unchanged -- WWWDRIVE_DEBUG=0 still drops both.
+    """
+    raw = os.environ.get("WWWDRIVE_DEBUG", "").strip() or os.environ.get("JEV_DEBUG", "").strip()
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
 def _tool_list() -> list[dict]:
     return [
         {"name": "drive", "description": DESCRIPTION, "inputSchema": PARAMETERS},
@@ -82,7 +97,10 @@ def _tool_list() -> list[dict]:
 
 def _call_tool(name: str, arguments: dict) -> dict:
     if name == "drive":
-        payload = apply_debug_setting(arguments, debug_default())
+        # Overlay and insight trace are separate switches: the pane keeps its
+        # on-by-default overlay, the result only carries the trace when debug
+        # was explicitly turned on.
+        payload = apply_debug_setting({**arguments, "insights": insights_default()}, debug_default())
         result = h.run_drive(payload)
         # "blocked" is a normal outcome (page state), not a protocol error.
         # Only "error" marks the call failed for MCP clients.

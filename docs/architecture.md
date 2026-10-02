@@ -122,9 +122,16 @@ with a &lt; 0.1 gap to the runner-up.
 
 What it shows: a green outline on the chosen element, red outlines on the other candidates, and a bottom-right panel (backdrop blur) that collapses to a one-line chip. Expanded, it shows the goal, why, ranked operations, ranked hits, recent steps, and token spend. The same trace is also written to `~/.cache/wwwdrive/drive.log`.
 
-The same facts are copied into each tick as `insight` and aggregated on the
-plugin result as `insights` plus a final `why`. A `DONE` tick reports
-`last_action: DONE` and that decision's own token usage, not the previous click.
+Under `--debug` the same facts are copied into each tick as `insight` and
+aggregated on the result as `insights` plus a final `why`. Gating today is
+MCP-only: `scripts/mcp.py` passes `insights` from an explicit opt-in
+(`WWWDRIVE_DEBUG=1`), and the default result carries everything else
+unchanged. The Hermes native path and the CLI always include the trace —
+neither the plugin `debug` setting nor `--debug` gates it (a uniform gate
+is an open follow-up, not this change). The ranked facts themselves always
+reach `~/.cache/wwwdrive/drive.log`, so nothing is lost from the evidence
+path. A `DONE` tick reports `last_action: DONE` and that decision's own
+token usage, not the previous click.
 
 ### Takeover (watch mode)
 
