@@ -1,12 +1,12 @@
 # Architecture
 
-How `jev_drive` / `drive.py` works: the execution chain, the decision
+How `drive` / `drive.py` works: the execution chain, the decision
 protocol, the CDP transport, and the safety model. Paths relative to the repo
 root unless noted.
 
 ## Envelope
 
-`jev_drive` is a **one-viewport click-path actor**: forms, wizards, filters,
+`drive` is a **one-viewport click-path actor**: forms, wizards, filters,
 logins, in-view navigation. Verified successes (click fixture, Google Flights
 form flow) are all single-viewport. Aggregation/extraction over long
 multi-viewport pages ("scan, collect, rank" — e.g. artificialanalysis.ai
@@ -38,7 +38,7 @@ scripts/drive.py
 
 1. **Tab lease.** `drive.py` sets a module-level lease on `jev_driver.browser`
    *before* constructing `Agent`. It re-attaches to the driver's own tab
-   (remembered in `~/.cache/jev-driver/last-page.json`) and navigates it only
+   (remembered in `~/.cache/wwwdrive/last-page.json`) and navigates it only
    when `url` names another page. Only when that tab is gone does it open a
    TUI-visible tab via `terminal-browser new-tab`. With no `url` and no tab it
    returns `no_page` instead of guessing.
@@ -80,7 +80,7 @@ scripts/drive.py
 
 ### Session continuity
 
-The driver keeps one tab. `~/.cache/jev-driver/last-page.json` holds
+The driver keeps one tab. `~/.cache/wwwdrive/last-page.json` holds
 `{targetId, url, source, browser_id, ts}` for the tab it created, including
 fixture pages. The next run re-attaches to that target when it is still
 alive, in the same browser, and younger than 30 minutes. Passing `url`
@@ -90,7 +90,7 @@ gone. Explicit `--target` still wins. A dead id is not replaced by an
 unrelated tab; if another live tab has the same URL stem, that tab is
 reused, otherwise a new tab is opened.
 
-Runs append to `~/.cache/jev-driver/drive.jsonl` and `drive.log`: the goal,
+Runs append to `~/.cache/wwwdrive/drive.jsonl` and `drive.log`: the goal,
 each tick's ranked operations and labeled targets, and a `blocked` record
 with why and a short page excerpt.
 
@@ -117,10 +117,10 @@ with a &lt; 0.1 gap to the runner-up.
 
 ### Debug HUD
 
-`--debug` follows the Hermes plugin setting `plugins.entries.jev-driver.settings.debug` unless a call passes `debug` explicitly. It injects
+`--debug` follows the Hermes plugin setting `plugins.entries.wwwdrive.settings.debug` unless a call passes `debug` explicitly. It injects
 `jev_driver/hud.js` into the **owned** tab only. The overlay root is `aria-hidden`, so snapshot.js does not index it. It is not `inert`, so the corner panel can be clicked.
 
-What it shows: a green outline on the chosen element, red outlines on the other candidates, and a bottom-right panel (backdrop blur) that collapses to a one-line chip. Expanded, it shows the goal, why, ranked operations, ranked hits, recent steps, and token spend. The same trace is also written to `~/.cache/jev-driver/drive.log`.
+What it shows: a green outline on the chosen element, red outlines on the other candidates, and a bottom-right panel (backdrop blur) that collapses to a one-line chip. Expanded, it shows the goal, why, ranked operations, ranked hits, recent steps, and token spend. The same trace is also written to `~/.cache/wwwdrive/drive.log`.
 
 The same facts are copied into each tick as `insight` and aggregated on the
 plugin result as `insights` plus a final `why`. A `DONE` tick reports

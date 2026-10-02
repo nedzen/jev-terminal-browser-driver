@@ -1,5 +1,9 @@
 # DEBUG FINDINGS — jev_drive hard-BLOCKED on data-extraction goals (2026-09-21)
 
+> **Historical (pre-1.0.0).** Written before the rename to `wwwdrive`; the
+> product, tool, and path names below are the ones in force when it was
+> written. Kept as the record, not as the contract.
+
 Debugged live against `https://artificialanalysis.ai/models` (multi-section, 19,416px-tall
 SPA leaderboard). Every `jev_drive` call returned `status: "blocked"`. Full per-tick trace
 captured via a direct `Agent` run (script: `~/.hermes/cache/scratch/jev_trace.py`).

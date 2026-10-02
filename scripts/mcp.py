@@ -1,24 +1,27 @@
 #!/usr/bin/env python3
-"""MCP stdio server exposing jev_drive / jev_read / jev_status to any
-MCP-capable agent.
+"""MCP stdio server exposing drive / read / status to any MCP-capable agent.
+
+Server name `wwwdrive`; the tools are bare names under that namespace, so
+clients that namespace MCP tools see `mcp__wwwdrive__drive` and friends.
 
 Stdlib only. The Hermes adapter under plugin/ is untouched: this imports its
 tool schemas and subprocess handlers (never jev_driver's browser loop) and
 serves the same CLI contract over MCP. The one jev_driver import is the
-stdlib-only preflight leaf behind jev_status. Core stays in scripts/drive.py +
+stdlib-only preflight leaf behind status. Core stays in scripts/drive.py +
 scripts/read.py.
 
 Run:
     uv run --directory <repo> python scripts/mcp.py
     # debug overlay on:
-    JEV_DEBUG=1 uv run --directory <repo> python scripts/mcp.py
+    WWWDRIVE_DEBUG=1 uv run --directory <repo> python scripts/mcp.py
 
-Client config (Claude Code / OpenCode / Crush via MCP):
+Client config (Claude Code / OpenCode / Crush / Hermes / anything speaking MCP):
     {"command": "uv", "args": ["run", "--directory", "<repo>",
      "python", "scripts/mcp.py"]}
 
 Like the Hermes plugin, a client-supplied `debug` flag is ignored: only the
-JEV_DEBUG env var controls the overlay.
+WWWDRIVE_DEBUG env var controls the overlay (JEV_DEBUG still works as a
+fallback).
 
 Serial by design: one tools/call runs at a time; while a 300-900s drive is
 in flight the server cannot read stdin, so notifications/cancelled is only
@@ -49,7 +52,8 @@ from plugin import (  # noqa: E402
 )
 from plugin import handler as h  # noqa: E402
 
-SERVER_VERSION = "0.1.0"  # synced with plugin.yaml version
+SERVER_NAME = "wwwdrive"
+SERVER_VERSION = "1.0.0"  # synced with plugin.yaml version
 SUPPORTED_PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07")
 
 PARSE_ERROR = -32700
@@ -60,20 +64,24 @@ INTERNAL_ERROR = -32603
 
 
 def debug_default() -> bool:
-    """Overlay on unless explicitly disabled: JEV_DEBUG=0/false/no opts out."""
-    return os.environ.get("JEV_DEBUG", "").strip().lower() not in {"0", "false", "no"}
+    """Overlay on unless explicitly disabled: WWWDRIVE_DEBUG=0/false/no opts out.
+
+    JEV_DEBUG is still read, so pre-1.0 client configs keep the same behavior.
+    """
+    raw = os.environ.get("WWWDRIVE_DEBUG", "").strip() or os.environ.get("JEV_DEBUG", "").strip()
+    return raw.lower() not in {"0", "false", "no"}
 
 
 def _tool_list() -> list[dict]:
     return [
-        {"name": "jev_drive", "description": DESCRIPTION, "inputSchema": PARAMETERS},
-        {"name": "jev_read", "description": READ_DESCRIPTION, "inputSchema": READ_PARAMETERS},
-        {"name": "jev_status", "description": STATUS_DESCRIPTION, "inputSchema": STATUS_PARAMETERS},
+        {"name": "drive", "description": DESCRIPTION, "inputSchema": PARAMETERS},
+        {"name": "read", "description": READ_DESCRIPTION, "inputSchema": READ_PARAMETERS},
+        {"name": "status", "description": STATUS_DESCRIPTION, "inputSchema": STATUS_PARAMETERS},
     ]
 
 
 def _call_tool(name: str, arguments: dict) -> dict:
-    if name == "jev_drive":
+    if name == "drive":
         payload = apply_debug_setting(arguments, debug_default())
         result = h.run_drive(payload)
         # "blocked" is a normal outcome (page state), not a protocol error.
@@ -82,14 +90,14 @@ def _call_tool(name: str, arguments: dict) -> dict:
             "content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}],
             "isError": result.get("status") == "error",
         }
-    if name == "jev_read":
+    if name == "read":
         payload = apply_debug_setting(arguments, debug_default())
         result = h.run_read(payload)
         return {
             "content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}],
             "isError": not result.get("success", False),
         }
-    if name == "jev_status":
+    if name == "status":
         # A missing dependency is the answer, not a failure: no browser, no model call.
         return {
             "content": [{"type": "text", "text": json.dumps(preflight(), ensure_ascii=False)}],
@@ -145,7 +153,7 @@ def dispatch(msg: dict):
                 "result": {
                     "protocolVersion": version,
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "jev-driver", "version": SERVER_VERSION},
+                    "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
                 },
             }
         if method == "tools/list":

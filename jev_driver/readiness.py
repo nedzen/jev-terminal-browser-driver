@@ -20,7 +20,7 @@ REASON_WHY = {
         " (it now shows a different label or state). Check the page before driving again."
     ),
     "unsupported": "This driver does not take screenshots. Here is the visible text.",
-    "extract": "jev_drive only clicks the current view. Call jev_read to collect structured data.",
+    "extract": "drive only clicks the current view. Call read to collect structured data.",
     "model_blocked": (
         "Model chose BLOCKED. Here is the visible text; do not open another browser tool for the same look."
     ),
@@ -31,7 +31,7 @@ REASON_WHY = {
     ),
     "scroll_only": (
         "Stopped: only scrolled, and the goal had no end state to reach. "
-        "The page is below. Use jev_read with scrolls to look at more of it."
+        "The page is below. Use read with scrolls to look at more of it."
     ),
 }
 

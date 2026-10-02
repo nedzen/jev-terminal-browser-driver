@@ -1,5 +1,9 @@
 # Jev driver notes
 
+> **Historical (pre-1.0.0).** Written before the rename to `wwwdrive`; the
+> product, tool, and path names below are the ones in force when it was
+> written. Kept as the record, not as the contract.
+
 Working notes for the terminal-browser Jev driver. Probe recorded **before** the model adapter.
 
 ## How to run

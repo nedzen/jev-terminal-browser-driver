@@ -415,7 +415,7 @@ def field_text(context):
     base = (endpoint or "https://openrouter.ai/api/v1").rstrip("/")
     if not key and not endpoint:
         raise ValueError(
-            "Typing needs OPENROUTER_API_KEY (Plugins > jev-driver > OpenRouter API key) or TEXT_MODEL_API_KEY. "
+            "Typing needs OPENROUTER_API_KEY (Plugins > wwwdrive > OpenRouter API key) or TEXT_MODEL_API_KEY. "
             "No text was typed."
         )
     model = os.environ.get("TEXT_MODEL", "inception/mercury-2.5")

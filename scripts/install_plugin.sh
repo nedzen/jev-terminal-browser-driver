@@ -15,21 +15,26 @@ link_into() {
   echo "linked $dest -> $SRC"
 }
 
-link_into "${HERMES_HOME:-$HOME/.hermes}/plugins/jev-driver"
+link_into "${HERMES_HOME:-$HOME/.hermes}/plugins/wwwdrive"
 for profile in "$@"; do
-  link_into "$HOME/.hermes/profiles/$profile/plugins/jev-driver"
+  link_into "$HOME/.hermes/profiles/$profile/plugins/wwwdrive"
 done
 
 cat <<'EOF'
 
 Enable in that home's config (plugins are opt-in):
 
-  hermes plugins enable jev-driver
+  hermes plugins enable wwwdrive
 
-If the CLI has no enable subcommand, add jev-driver to plugins.enabled in
+If the CLI has no enable subcommand, add wwwdrive to plugins.enabled in
 that profile's config.yaml. Named profiles (~/.hermes/profiles/<name>) have
 their own plugins/ and do NOT inherit ~/.hermes/plugins — pass the profile
 name as an argument to this script.
+
+The 1.0.0 rename is a clean break: the plugin directory is now wwwdrive and
+the tools are drive / read / status. Nothing links the old jev-driver
+directory, so remove ~/.hermes/plugins/jev-driver (and any per-profile copy)
+and re-run this script, then re-enter your settings under Plugins -> wwwdrive.
 
 Desktop uses the same Python plugin loader as the TUI (local hermes serve).
 EOF

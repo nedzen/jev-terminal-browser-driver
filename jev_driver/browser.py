@@ -38,7 +38,7 @@ LEASE = {
     "create_fallback": None,
 }
 
-LAST_PAGE_PATH = Path.home() / ".cache" / "jev-driver" / "last-page.json"
+LAST_PAGE_PATH = Path.home() / ".cache" / "wwwdrive" / "last-page.json"
 HUD_STATE_PATH = LAST_PAGE_PATH.parent / "hud.json"
 LAST_PAGE_TTL_S = 1800
 LAST_PAGE_KEYS = ("targetId", "url", "source", "browser_id", "ts")
@@ -110,7 +110,7 @@ def browser_identity():
 
 
 def _log_continuity(reason: str) -> None:
-    print(f"jev-driver: continuity {reason}", file=sys.stderr)
+    print(f"wwwdrive: continuity {reason}", file=sys.stderr)
     if reason != "lookup":
         write_event({"event": "continuity", "why": reason})
 
@@ -310,7 +310,7 @@ def _open_via_chrome(url):
     except RuntimeError as exc:
         raise RuntimeError(
             "Target.createTarget is not supported on this browser; "
-            "jev-driver only provisions terminal-browser panes (TUI-only scope)."
+            "wwwdrive only provisions terminal-browser panes (TUI-only scope)."
         ) from exc
 
 

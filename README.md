@@ -1,37 +1,43 @@
-# jev-terminal-browser-driver
+# wwwdrive
 
 https://github.com/user-attachments/assets/f2273688-e330-4390-8287-baf96705ad40
 
 *Real run: Google Flights, Zürich to London, one-way, Oct 15 2026. 14
 autonomous ticks, 8.4 s, about $0.0025 in Jev spend, zero screenshots.*
 
-A Hermes plugin that drives a real, visible browser tab with
-[Jev](https://docs.typesafe.ai/introduction), a typed-decision model from
-TypeSafe. No screenshots, no accessibility dumps, no 50K-token snapshots in
-your agent's context. Each decision costs a fraction of a cent and takes
-about half a second.
+**wwwdrive drives a real, visible browser tab for any agent that speaks MCP**
+— Hermes, OpenCode, omp, Grok, Claude Code/Crush, anything with an MCP client.
+One stdlib-only stdio server, zero per-host code: register one command and the
+tools are there.
 
 The browser is [terminal-browser](https://terminal-browser.dev), a Chromium
 drawn in your terminal. You watch every click as it happens, in your own
-logged-in session.
+logged-in session. Each decision is made by
+[Jev](https://docs.typesafe.ai/introduction), a typed-decision model from
+TypeSafe: a fraction of a cent and about half a second, instead of a
+screenshot, an accessibility dump, or a 50K-token snapshot in your agent's
+context.
 
 ## What the agent gets
 
-Two tools:
+Three tools, served under the `wwwdrive` MCP server:
 
-- **`jev_drive`** clicks, types, selects, and scrolls until a goal is done:
-  open a menu, fill a form, search, follow a link. It returns `status`
-  (`done` or `blocked`), the `actions` it took, `why`, a `reason` when it
-  stopped early, and the visible `page_text`.
-- **`jev_read`** reads the same tab without clicking. With no script it
-  returns an outline of articles, headings, times, and links. With a script
-  (an expression, a function, or a body with `return`) it returns JSON.
-  `scrolls` covers a long feed in one call.
+- **`drive`** clicks, types, selects, and scrolls until a goal is done: open a
+  menu, fill a form, search, follow a link. It returns `status` (`done` or
+  `blocked`), the `actions` it took, `why`, a `reason` when it stopped early,
+  and the visible `page_text`.
+- **`read`** reads the same tab without clicking. With no script it returns an
+  outline of articles, headings, times, and links. With a script (an
+  expression, a function, or a body with `return`) it returns JSON. `scrolls`
+  covers a long feed in one call.
+- **`status`** reports whether this machine can drive a browser at all. No
+  arguments, no browser, no spend: every field is `ok` or `missing`.
 
-The agent never sees element tables. The contract it reads is the two tool
-descriptions in [`plugin/__init__.py`](plugin/__init__.py).
+The agent never sees element tables. The contract it reads is the tool
+descriptions in [`plugin/__init__.py`](plugin/__init__.py), which both
+adapters serve verbatim.
 
-## Install
+## Install (any MCP client)
 
 Requirements: macOS or Linux, Python 3.12+, [uv](https://docs.astral.sh/uv/),
 the [terminal-browser](https://terminal-browser.dev) program on `PATH`, a
@@ -43,12 +49,46 @@ needed for typing into fields.
 git clone https://github.com/nedzen/jev-terminal-browser-driver
 cd jev-terminal-browser-driver
 uv sync
-./scripts/install_plugin.sh            # links into ~/.hermes/plugins/jev-driver
-./scripts/install_plugin.sh work       # also a named Hermes profile
-hermes plugins enable jev-driver
 ```
 
-Then open **Plugins → jev-driver** in Hermes and set:
+Register the server with your host. In Hermes:
+
+```bash
+hermes mcp add wwwdrive --command uv --args run --directory <repo> python scripts/mcp.py
+```
+
+Any other host takes the same command and args in its MCP config:
+
+```json
+{"command": "uv", "args": ["run", "--directory", "<repo>", "python", "scripts/mcp.py"]}
+```
+
+Then set `TYPESAFE_API_KEY` in the host process environment and restart the
+session. Add `WWWDRIVE_DEBUG=0` to the command's environment to turn the debug
+overlay off (`JEV_DEBUG=0` still works as the pre-1.0 name). API keys are
+never passed through tool arguments.
+
+### Bare tool names
+
+The tools are deliberately bare — `drive`, `read`, `status` — because the
+server name carries the namespace: a host that namespaces MCP tools shows
+`mcp__wwwdrive__drive`, `mcp__wwwdrive__read`, `mcp__wwwdrive__status`, which
+covers every client this project is used with. A host that has a native `read`
+of its own *and* does not namespace MCP tools can collide; there, register the
+server under a prefixed name or use a client that namespaces.
+
+## Hermes plugin (optional)
+
+Hermes can also load the same schemas as native tools, which is useful when you
+want the browser gated behind the plugin's own availability check:
+
+```bash
+./scripts/install_plugin.sh            # links into ~/.hermes/plugins/wwwdrive
+./scripts/install_plugin.sh work       # also a named Hermes profile
+hermes plugins enable wwwdrive
+```
+
+Then open **Plugins → wwwdrive** in Hermes and set:
 
 | Setting | What it does |
 |---|---|
@@ -60,8 +100,8 @@ Restart the Hermes session after changing plugin settings.
 
 ## Debug overlay
 
-With the setting on, the driven tab gets a frosted panel in the bottom-right
-corner:
+With the setting (or `WWWDRIVE_DEBUG`) on, the driven tab gets a frosted panel
+in the bottom-right corner:
 
 - Header: a status dot (blue running, green done, amber blocked), the step
   count, the next operation, and its confidence. Click it to expand or
@@ -80,12 +120,12 @@ from the driver's own snapshot.
 
 Every run, read, action, recovery, and stop is appended to:
 
-- `~/.cache/jev-driver/drive.log`, one readable line per event with the ranked
+- `~/.cache/wwwdrive/drive.log`, one readable line per event with the ranked
   operations and targets
-- `~/.cache/jev-driver/drive.jsonl`, the same events as JSON
+- `~/.cache/wwwdrive/drive.jsonl`, the same events as JSON
 
 ```bash
-tail -f ~/.cache/jev-driver/drive.log
+tail -f ~/.cache/wwwdrive/drive.log
 ```
 
 Lines to look for: `run` (goal, url, tab continuity), `act`, `stale` (the page
@@ -93,17 +133,21 @@ moved before input), `retry_click`, `look_further` (scrolled or waited after
 BLOCKED), `blocked`/`done` with a `reason`, `continuity` (why a remembered tab
 was not reused), and `handler` (timeouts and crashes).
 
+Anything already in `~/.cache/jev-driver/` from a pre-1.0 run is orphaned and
+is never read again: delete it when you no longer need it. The same applies to
+`last-page.json`, the remembered tab.
+
 ## How a run works
 
-1. The plugin handler runs `uv run python scripts/drive.py --json` in this
-   repo. Hermes never imports the driver.
+1. The tool handler runs `uv run python scripts/drive.py --json` in this repo.
+   No host ever imports the driver.
 2. The driver attaches to the driver's own tab in the visible pane, or opens
    one. Without `url` it stays on the current page.
 3. Each tick reads the viewport in-page (`snapshot.js`: interactive elements
    plus up to 6K of visible text), asks Jev for one operation and one target,
    and sends real CDP mouse and keyboard input to that element.
 4. A small text model writes the value for `TYPE_TEXT` only.
-5. The loop stops on DONE, BLOCKED, or the step budget.
+5. The loop stops on DONE, BLOCKED, or a budget.
 
 Guards that are code, not prompt:
 
@@ -120,7 +164,7 @@ Full detail: [docs/architecture.md](docs/architecture.md).
 
 ## Command line
 
-The driver also runs without Hermes:
+The driver also runs without any agent host:
 
 ```bash
 export TYPESAFE_API_KEY=...
@@ -133,25 +177,24 @@ uv run python scripts/read.py --json --script "document.title"
 
 Model DONE is not proof. Check `final_url` or `page_text`.
 
-## Other agents (any MCP-capable host)
+## Upgrading from 0.x
 
-The Hermes plugin under `plugin/` is untouched. One thin adapter exposes the
-same `jev_drive` / `jev_read` / `jev_status` tools everywhere else; the core
-stays in `scripts/drive.py` + `scripts/read.py`:
+1.0.0 renamed the product, the tools, and the paths. What changed:
 
-- **Any MCP-capable agent** (Claude Code, Crush, OpenCode, Hermes): stdlib-only
-  stdio server, no new dependencies. Schemas are imported from `plugin/`, so
-  they cannot drift.
-  ```bash
-  uv run --directory <repo> python scripts/mcp.py
-  JEV_DEBUG=0 uv run --directory <repo> python scripts/mcp.py  # no debug overlay
-  ```
-  Debug overlay is on by default; opt out with `JEV_DEBUG=0`.
-  Client config: `{"command": "uv", "args": ["run", "--directory", "<repo>",
-  "python", "scripts/mcp.py"]}`. API keys come from the host process env.
+| | 0.x | 1.0.0 |
+|---|---|---|
+| MCP server name | `jev-driver` | `wwwdrive` |
+| Tools | `jev_drive`, `jev_read`, `jev_status` | `drive`, `read`, `status` |
+| Hermes plugin dir | `~/.hermes/plugins/jev-driver` | `~/.hermes/plugins/wwwdrive` |
+| Checkout override | `JEV_DRIVER_HOME` | `WWWDRIVE_HOME` (old name still read) |
+| Debug opt-out | `JEV_DEBUG=0` | `WWWDRIVE_DEBUG=0` (old name still read) |
+| Cache and logs | `~/.cache/jev-driver` | `~/.cache/wwwdrive` |
 
-`tests/test_adapter_parity.py` fails the suite if the served schemas drift
-from the canonical schemas in `plugin/__init__.py`.
+The rename is a clean break for tool names and the plugin directory: there is
+no compatibility alias. Re-register the MCP server under `wwwdrive`, delete the
+old `jev-driver` plugin link, and re-enter the settings under **Plugins →
+wwwdrive**. The two environment variables and both cache files keep working as
+fallbacks where noted. The GitHub repository name is unchanged in 1.0.0.
 
 ## Tests
 
@@ -161,7 +204,9 @@ uv run ruff check .
 ```
 
 The live release checklist is [docs/test-plan.md](docs/test-plan.md): ten
-prompts to paste into Hermes, with pass criteria.
+prompts to paste into a host with the server registered, with pass criteria.
+[docs/mcp-agent-test-guide.md](docs/mcp-agent-test-guide.md) is the paste-ready
+version for an agent driving the test itself.
 
 ## Safety
 

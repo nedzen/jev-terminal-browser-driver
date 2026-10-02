@@ -1,4 +1,4 @@
-# Testing the jev-driver MCP server (agent guide)
+# Testing the wwwdrive MCP server (agent guide)
 
 Paste-ready instructions for an agent tasked with installing and exercising
 the MCP server from this branch.
@@ -16,32 +16,32 @@ the MCP server from this branch.
 Run exactly this (`--args` must stay last):
 
 ```bash
-hermes mcp add jev-driver --command uv --args run --directory <repo> python scripts/mcp.py
+hermes mcp add wwwdrive --command uv --args run --directory <repo> python scripts/mcp.py
 ```
 
 If it asks `Enable all 3 tools?`, answer `Y`. Confirm with
-`hermes mcp list` (expect `jev-driver` enabled). Any MCP-capable client
+`hermes mcp list` (expect `wwwdrive` enabled). Any MCP-capable client
 works too: command `uv`, args `run --directory <repo> python scripts/mcp.py`.
 
 ## 2. Load the tools
 
 Run `/reload-mcp` in the TUI (or start a new session). Verify via tool
-search: expect `mcp__jev_driver__jev_drive` (required param `goal`),
-`mcp__jev_driver__jev_read`, and `mcp__jev_driver__jev_status`, all with
-source `mcp`. If a built-in
-`jev_drive` plugin is also enabled, prefer the `mcp__` tools for the test
-so results aren't confounded.
+search: expect `mcp__wwwdrive__drive` (required param `goal`),
+`mcp__wwwdrive__read`, and `mcp__wwwdrive__status`, all with
+source `mcp`. The names are bare because the server name namespaces them. If
+a built-in `drive` tool from another plugin is also enabled, prefer the
+`mcp__` tools for the test so results aren't confounded.
 
 ## 3. Smoke test (fast, no browser needed)
 
-Call `jev_drive` with `{}` (no goal). Expect `success: false`,
+Call `drive` with `{}` (no goal). Expect `success: false`,
 `error: "goal is required"`, `stopped_reason: "error"`, `verified: null`.
 
 ## 4. Live test (needs the visible terminal)
 
-- `jev_read` with `{"url": "https://example.com"}` → expect `success: true`
+- `read` with `{"url": "https://example.com"}` → expect `success: true`
   with an outline.
-- `jev_drive` with `{"goal": "Click the Learn more link; done when the
+- `drive` with `{"goal": "Click the Learn more link; done when the
   IANA example domains page shows", "max_steps": 6}` → expect
   `status: "done"`, `final_url` on iana.org, `stopped_reason: "model_done"`,
   `verified: null`.
@@ -52,8 +52,8 @@ Symptom: `blocked` with "unsupported terminal" (nested panes without
 graphics passthrough). Workaround: from a supported terminal launch a
 shared browser with `terminal-browser new-tab about:blank`, find its
 `cdpPort` via `terminal-browser ls --all --json`, then pass
-`background: true` + `cdp_url: "http://127.0.0.1:<port>"` on `jev_drive`
-or `jev_read` calls (both accept them; read-only calls without them attach
+`background: true` + `cdp_url: "http://127.0.0.1:<port>"` on `drive`
+or `read` calls (both accept them; read-only calls without them attach
 via the tab lease instead).
 
 ## 6. Report back

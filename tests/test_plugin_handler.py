@@ -44,7 +44,7 @@ def home(monkeypatch, tmp_path):
     (tmp_path / "scripts" / "drive.py").write_text("# drive\n")
     (tmp_path / "fixtures").mkdir()
     (tmp_path / "fixtures" / "click.html").write_text("<a>Widget</a>")
-    monkeypatch.setenv("JEV_DRIVER_HOME", str(tmp_path))
+    monkeypatch.setenv("WWWDRIVE_HOME", str(tmp_path))
     monkeypatch.setattr(handler, "LOG_DIR", tmp_path / "logs")
     return tmp_path
 
@@ -92,7 +92,7 @@ def test_happy_path_aggregates_ticks(home):
 def test_missing_drive_does_not_spawn(monkeypatch, tmp_path):
     empty = tmp_path / "empty"
     empty.mkdir()
-    monkeypatch.setenv("JEV_DRIVER_HOME", str(empty))
+    monkeypatch.setenv("WWWDRIVE_HOME", str(empty))
     popen = Mock(side_effect=AssertionError("must not spawn"))
     result = handler.run_drive({"goal": "x"}, popen=popen)
     assert result["success"] is False
@@ -118,7 +118,7 @@ def test_timeout_kills_process_group(home):
 
 def test_schema_is_openai_function_shape():
     schema = plugin.SCHEMA
-    assert schema["name"] == "jev_drive"
+    assert schema["name"] == "drive"
     assert schema["description"]
     assert schema["parameters"]["type"] == "object"
     assert "goal" in schema["parameters"]["required"]
@@ -316,7 +316,7 @@ def test_drive_schema_has_no_control_driving_params():
     drive_params = set(plugin.SCHEMA["parameters"]["properties"])
     assert drive_params & forbidden == set()
     assert "goal" in plugin.SCHEMA["parameters"]["required"]
-    # jev_read.script is the deliberate read-only exception: evaluated in-page,
+    # read.script is the deliberate read-only exception: evaluated in-page,
     # never drives input. Nothing else script-like may exist on either tool.
     read_params = set(plugin.READ_SCHEMA["parameters"]["properties"])
     assert (read_params & forbidden) <= {"script"}
@@ -358,13 +358,37 @@ def test_timeout_is_logged_by_the_handler(home):
     handler.run_drive({"goal": "g"}, popen=lambda argv, **kw: FakeProc(timeout=True), kill_group=lambda proc: None)
     rows = [json.loads(line) for line in (home / "logs" / "drive.jsonl").read_text().splitlines()]
     assert rows[-1]["event"] == "handler"
-    assert rows[-1]["tool"] == "jev_drive"
+    assert rows[-1]["tool"] == "drive"
     assert "timeout" in rows[-1]["error"]
 
 
 def test_driver_home_walks_up_to_drive_py(monkeypatch):
+    monkeypatch.delenv("WWWDRIVE_HOME", raising=False)
     monkeypatch.delenv("JEV_DRIVER_HOME", raising=False)
     assert (handler.driver_home() / "scripts" / "drive.py").is_file()
+
+
+def test_legacy_driver_home_var_still_resolves(home, monkeypatch):
+    """Pre-1.0 client configs set JEV_DRIVER_HOME; the rename must not break them."""
+    monkeypatch.delenv("WWWDRIVE_HOME", raising=False)
+    monkeypatch.setenv("JEV_DRIVER_HOME", str(home))
+    assert handler.driver_home() == home
+
+
+def test_wwwdrive_home_wins_over_the_legacy_var(home, monkeypatch, tmp_path):
+    other = tmp_path / "other"
+    (other / "scripts").mkdir(parents=True)
+    monkeypatch.setenv("WWWDRIVE_HOME", str(other))
+    monkeypatch.setenv("JEV_DRIVER_HOME", str(home))
+    assert handler.driver_home() == other
+
+
+def test_handler_and_driver_share_one_log_dir(monkeypatch):
+    """Both writers append to the same file, so they must agree on the directory."""
+    from jev_driver import runlog
+
+    monkeypatch.undo()  # drop the fixture's tmp LOG_DIR: read both import-time defaults
+    assert handler.LOG_DIR == runlog.LOG_DIR == Path.home() / ".cache" / "wwwdrive"
 
 
 def test_read_script_forms_all_return_a_value():

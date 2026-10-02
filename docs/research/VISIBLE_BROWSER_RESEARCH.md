@@ -1,5 +1,9 @@
 # Making jev_drive visible & user-takeover-able: Desktop mirror / Desktop true-drive / TUI watch
 
+> **Historical (pre-1.0.0).** Written before the rename to `wwwdrive`; the
+> product, tool, and path names below are the ones in force when it was
+> written. Kept as the record, not as the contract.
+
 Researched 2026-09-21. Builds on `DESKTOP_PLUGIN_RESEARCH.md` (backend/plugin
 loading parity) and `DESKTOP_BUTTON_RESEARCH.md` (desktop plugin surface:
 areas, SDK doors, tool-event tap) — that context is not repeated here. Paths

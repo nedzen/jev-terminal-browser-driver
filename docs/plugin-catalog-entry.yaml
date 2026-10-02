@@ -1,7 +1,8 @@
 # Draft for a pull request to NousResearch/hermes-agent plugin-catalog/.
 # `hermes plugins validate .` passes on the repository root.
-# sha is the merge commit of the v0.1.0 release. Open the catalog PR with this file.
-name: jev-driver
+# sha must be re-pinned to the v1.0.0 release commit before opening the PR; the
+# value below is the v0.1.0 merge commit and is stale.
+name: wwwdrive
 repo: https://github.com/nedzen/jev-terminal-browser-driver
 sha: "0be4c6ff6191d258c282ba33498577a3d891b016"
 description: >
@@ -13,12 +14,12 @@ maintainer: nedzen
 tier: community
 category: web
 docs_url: https://github.com/nedzen/jev-terminal-browser-driver#readme
-version: "0.1.0"
+version: "1.0.0"
 platforms: [macos, linux]
 capabilities:
   provides_tools:
-    - jev_drive
-    - jev_read
+    - drive
+    - read
   provides_hooks: []
   provides_middleware: []
   requires_env:
