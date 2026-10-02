@@ -155,7 +155,7 @@ READ_PARAMETERS = {
 
 READ_SCHEMA = {"name": "jev_read", "description": READ_DESCRIPTION, "parameters": READ_PARAMETERS}
 
-# Schemas only: jev_status is served by the MCP and OpenCode adapters, never
+# Schemas only: jev_status is served by the MCP adapter, never
 # registered as a Hermes native tool (Hermes has no reason to re-check itself).
 STATUS_DESCRIPTION = (
     "Report whether this machine can drive a browser at all. Takes no arguments. "

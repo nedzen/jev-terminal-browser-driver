@@ -133,29 +133,25 @@ uv run python scripts/read.py --json --script "document.title"
 
 Model DONE is not proof. Check `final_url` or `page_text`.
 
-## Other agents (MCP, OpenCode)
+## Other agents (any MCP-capable host)
 
-The Hermes plugin under `plugin/` is untouched. Two thin adapters expose the
-same `jev_drive` / `jev_read` tools elsewhere; the core stays in
-`scripts/drive.py` + `scripts/read.py`:
+The Hermes plugin under `plugin/` is untouched. One thin adapter exposes the
+same `jev_drive` / `jev_read` / `jev_status` tools everywhere else; the core
+stays in `scripts/drive.py` + `scripts/read.py`:
 
-- **Any MCP-capable agent** (Claude Code, Crush, OpenCode fallback): stdlib-only
+- **Any MCP-capable agent** (Claude Code, Crush, OpenCode, Hermes): stdlib-only
   stdio server, no new dependencies. Schemas are imported from `plugin/`, so
   they cannot drift.
   ```bash
   uv run --directory <repo> python scripts/mcp.py
-  JEV_DEBUG=1 uv run --directory <repo> python scripts/mcp.py  # debug overlay
+  JEV_DEBUG=0 uv run --directory <repo> python scripts/mcp.py  # no debug overlay
   ```
+  Debug overlay is on by default; opt out with `JEV_DEBUG=0`.
   Client config: `{"command": "uv", "args": ["run", "--directory", "<repo>",
   "python", "scripts/mcp.py"]}`. API keys come from the host process env.
-- **OpenCode (native tools)**: `opencode-plugin/jev-driver.ts` spawns the same
-  CLI via `Plugin.define` + `ctx.tool.transform`. Copy or symlink it to
-  `~/.config/opencode/plugins/jev-driver.ts`. Debug overlay is on by default;
-  opt out with plugin options `{ debug: false }` in `opencode.json`, or
-  `JEV_DEBUG=0`.
 
-`tests/test_adapter_parity.py` fails the suite if either adapter drifts from
-the canonical schemas in `plugin/__init__.py`.
+`tests/test_adapter_parity.py` fails the suite if the served schemas drift
+from the canonical schemas in `plugin/__init__.py`.
 
 ## Tests
 

@@ -5,8 +5,7 @@ the MCP server from this branch.
 
 ## Prerequisites
 
-- `uv` on PATH; this repo checked out (branch `feat/multi-agent-mcp-opencode`
-  or later).
+- `uv` on PATH; this repo checked out (`main` or later)
 - `terminal-browser` on PATH.
 - A `TYPESAFE_API_KEY` available (process env or `~/.hermes/.env`).
 - A terminal with kitty-graphics support (kitty, ghostty, wezterm, tmux,
