@@ -4,7 +4,14 @@ the Hermes plugin schemas (plugin/__init__.py is canonical). No browser."""
 import re
 from pathlib import Path
 
-from plugin import DESCRIPTION, PARAMETERS, READ_DESCRIPTION, READ_PARAMETERS
+from plugin import (
+    DESCRIPTION,
+    PARAMETERS,
+    READ_DESCRIPTION,
+    READ_PARAMETERS,
+    STATUS_DESCRIPTION,
+    STATUS_PARAMETERS,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -21,6 +28,8 @@ def test_mcp_serves_canonical_schemas():
     assert tools["jev_read"]["inputSchema"] == READ_PARAMETERS
     assert tools["jev_drive"]["description"] == DESCRIPTION
     assert tools["jev_read"]["description"] == READ_DESCRIPTION
+    assert tools["jev_status"]["inputSchema"] == STATUS_PARAMETERS
+    assert tools["jev_status"]["description"] == STATUS_DESCRIPTION
 
 
 def _norm(s: str) -> str:
@@ -32,6 +41,7 @@ def test_opencode_plugin_matches_canonical_schemas():
     flat = re.sub(r'"\s*\+\s*"', "", ts)  # strip TS string-literal joins
     assert _norm(DESCRIPTION) in _norm(flat), "jev_drive description drifted"
     assert _norm(READ_DESCRIPTION) in _norm(flat), "jev_read description drifted"
+    assert _norm(STATUS_DESCRIPTION) in _norm(flat), "jev_status description drifted"
     for name in ("jev_drive", "jev_read", "scripts/drive.py", "scripts/read.py"):
         assert name in ts, name
 
@@ -49,5 +59,76 @@ def test_opencode_plugin_matches_canonical_schemas():
     # Tier 1 (upstream PR #3 ideas): verification honesty, stop taxonomy,
     # page-text cap, strict budget validation — mirrored in both adapters.
     for marker in ("verified", "stopped_reason", "outcome_verification", "PAGE_TEXT_LIMIT = 2000",
-                   "must be an integer", "model_done", "action_budget", "time_budget", "model_blocked"):
+                   "must be an integer", "model_done", "action_budget", "time_budget", "model_blocked",
+                   "final_view"):
         assert marker in ts, marker
+
+
+def _status_tool_body(ts: str) -> str:
+    """The source of the single editor.add({...}) block that registers jev_status.
+
+    Scoped to that call's braces so assertions about it say something about
+    jev_status specifically, not about the whole file where spawn is legitimate.
+    """
+    marker = 'name: "jev_status"'
+    start = ts.index(marker)
+    open_brace = ts.rindex("{", 0, start)
+    depth = 0
+    for i in range(open_brace, len(ts)):
+        if ts[i] == "{":
+            depth += 1
+        elif ts[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return ts[open_brace : i + 1]
+    raise AssertionError("unbalanced braces after jev_status registration")
+
+
+def test_status_tool_parity():
+    """jev_status: both adapters expose it, both report the same four checks, and
+    neither may drift into returning key material."""
+    import importlib.util
+
+    from jev_driver.preflight import CHECKS, FIXES
+
+    spec = importlib.util.spec_from_file_location("jev_mcp_status_parity", ROOT / "scripts" / "mcp.py")
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    # Canonical empty-object schema, both adapters.
+    assert STATUS_PARAMETERS == {"type": "object", "additionalProperties": False, "properties": {}}
+    tools = {t["name"]: t for t in mod._tool_list()}
+    assert tools["jev_status"]["inputSchema"] == STATUS_PARAMETERS
+
+    ts = (ROOT / "opencode-plugin" / "jev-driver.ts").read_text()
+    assert 'name: "jev_status"' in ts
+    assert "description: STATUS_DESCRIPTION" in ts
+    assert "input: STATUS_PARAMETERS" in ts
+    assert "JSON.stringify(preflight())" in ts
+
+    # Same check names and same fixes, verbatim.
+    for name in (*CHECKS, *FIXES):
+        assert f'"{name}"' in ts, name
+    for fix in FIXES.values():
+        assert fix in ts, fix
+
+    # jev_status must stay in-process. Scope the check to the tool's own body:
+    # the file legitimately imports spawn for jev_drive and jev_read.
+    body = _status_tool_body(ts)
+    # Word boundaries: `execute` and `uv run` inside prose must not trip this.
+    banned = [
+        r"\bspawn\b", r"\bspawnSync\b", r"\brunSubprocess\b", r"\bexecSync\b",
+        r"\bexecFile\b", r"\bexecFileSync\b", r"\bchild_process\b", r"\bBun\s*\.\s*\$",
+        r"\bexec\s*\(", r"\buv\b", r"scripts/drive", r"scripts/read",
+    ]
+    spawnish = [pattern for pattern in banned if re.search(pattern, body)]
+    assert not spawnish, f"jev_status must not shell out, matched: {spawnish}\n{body}"
+    # ...and it must actually be the in-process status computation.
+    assert "preflight()" in body, f"jev_status does not compute statuses in-process:\n{body}"
+    assert "JSON.stringify(preflight())" in body, body
+
+    # jev_drive and jev_read still spawn the CLI, so the ban above is scoped.
+    for spawned in ("scripts/drive.py", "scripts/read.py"):
+        assert spawned in ts, spawned
+    assert "runSubprocess" in ts and "spawn" in ts

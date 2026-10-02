@@ -297,6 +297,14 @@ def test_page_text_capped(home):
     assert len(out["page_text"]) == handler.PAGE_TEXT_LIMIT
 
 
+def test_final_view_surfaced_in_compact_result(home):
+    probe = {"page_changed_since_decision": False, "url": "x", "title": "T"}
+    out = handler.compact_result([{"status": "done", "url": "x", "final_view": probe}], 0)
+    assert out["final_view"] == probe
+    out = handler.compact_result([{"status": "blocked", "url": "x"}], 1)
+    assert "final_view" not in out
+
+
 def test_drive_schema_has_no_control_driving_params():
     forbidden = {"selector", "index", "coordinate", "coordinates", "xpath", "css", "script", "js", "javascript"}
     drive_params = set(plugin.SCHEMA["parameters"]["properties"])

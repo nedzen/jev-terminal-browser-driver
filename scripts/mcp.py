@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""MCP stdio server exposing jev_drive / jev_read to any MCP-capable agent.
+"""MCP stdio server exposing jev_drive / jev_read / jev_status to any
+MCP-capable agent.
 
 Stdlib only. The Hermes adapter under plugin/ is untouched: this imports its
-tool schemas and subprocess handlers (never jev_driver directly) and serves
-the same CLI contract over MCP. Core stays in scripts/drive.py + scripts/read.py.
+tool schemas and subprocess handlers (never jev_driver's browser loop) and
+serves the same CLI contract over MCP. The one jev_driver import is the
+stdlib-only preflight leaf behind jev_status. Core stays in scripts/drive.py +
+scripts/read.py.
 
 Run:
     uv run --directory <repo> python scripts/mcp.py
@@ -27,11 +30,14 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from jev_driver.preflight import preflight  # noqa: E402  (stdlib-only leaf: no browser, no network)
 from plugin import (  # noqa: E402
     DESCRIPTION,
     PARAMETERS,
     READ_DESCRIPTION,
     READ_PARAMETERS,
+    STATUS_DESCRIPTION,
+    STATUS_PARAMETERS,
     apply_debug_setting,  # noqa: E402
 )
 from plugin import handler as h  # noqa: E402
@@ -55,6 +61,7 @@ def _tool_list() -> list[dict]:
     return [
         {"name": "jev_drive", "description": DESCRIPTION, "inputSchema": PARAMETERS},
         {"name": "jev_read", "description": READ_DESCRIPTION, "inputSchema": READ_PARAMETERS},
+        {"name": "jev_status", "description": STATUS_DESCRIPTION, "inputSchema": STATUS_PARAMETERS},
     ]
 
 
@@ -75,7 +82,36 @@ def _call_tool(name: str, arguments: dict) -> dict:
             "content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}],
             "isError": not result.get("success", False),
         }
-    raise ValueError(f"unknown tool: {name}")
+    if name == "jev_status":
+        # A missing dependency is the answer, not a failure: no browser, no model call.
+        return {
+            "content": [{"type": "text", "text": json.dumps(preflight(), ensure_ascii=False)}],
+            "isError": False,
+        }
+    raise ValueError(f"unknown tool: {name}")  # unreachable: dispatch checks first
+
+
+def _known_tool(name: str) -> bool:
+    """The tool surface lives in _tool_list(); ask it, never a second list."""
+    return name in {tool["name"] for tool in _tool_list()}
+
+
+def _log_fault(method, note: str) -> None:
+    """Record a server fault in the run log and swallow any logging failure.
+
+    Only the exception class reaches the log, never the message: a message can
+    carry a URL with a key in it, and that log is append-only.
+    """
+    try:
+        h.log_handler_event("mcp", f"{method}: {note}")
+    except Exception:
+        pass
+
+
+def _internal_error(msg_id, method, exc: BaseException) -> dict:
+    """JSON-RPC internal error for anything the server did not expect."""
+    _log_fault(method, f"unhandled {type(exc).__name__}")
+    return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": INTERNAL_ERROR, "message": "internal error"}}
 
 
 def dispatch(msg: dict):
@@ -121,10 +157,18 @@ def dispatch(msg: dict):
                     "id": msg_id,
                     "error": {"code": INVALID_PARAMS, "message": "arguments must be an object"},
                 }
+            # Unknown tool is the client's mistake: reject it here, before a
+            # handler runs, and do not log it as a server fault.
+            name = params["name"]
+            if not _known_tool(name):
+                message = f"unknown tool: {name}"
+                return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": INVALID_PARAMS, "message": message}}
+            # Anything the handler raises is ours, not the client's: report it
+            # as an internal error and let the stdio loop keep serving.
             try:
-                result = _call_tool(params["name"], args)
-            except ValueError as exc:
-                return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": INVALID_PARAMS, "message": str(exc)}}
+                result = _call_tool(name, args)
+            except Exception as exc:
+                return _internal_error(msg_id, method, exc)
             return {"jsonrpc": "2.0", "id": msg_id, "result": result}
         if method == "ping":
             return {"jsonrpc": "2.0", "id": msg_id, "result": {}}
@@ -134,28 +178,51 @@ def dispatch(msg: dict):
             "error": {"code": METHOD_NOT_FOUND, "message": f"unknown method: {method}"},
         }
     except Exception as exc:  # never let one call kill the server
-        h.log_handler_event("mcp", f"{method} failed: {exc}")
-        return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": INTERNAL_ERROR, "message": "internal error"}}
+        return _internal_error(msg_id, method, exc)
 
 
-def serve() -> int:
-    stdin = sys.stdin
+def _emit(out, payload: dict) -> bool:
+    """Write one response line. False means it could not be serialized."""
+    try:
+        line = json.dumps(payload, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return False
+    out.write(line + "\n")
+    out.flush()
+    return True
+
+
+def serve(stdin=None, stdout=None) -> int:
+    """One line in, one JSON-RPC response out. Malformed input, unknown
+    methods and handler crashes each answer with an error object; the loop
+    keeps serving the next request."""
+    stdin = sys.stdin if stdin is None else stdin
+    out = sys.stdout if stdout is None else stdout
     for line in stdin:
         line = line.strip()
         if not line:
             continue
         try:
             msg = json.loads(line)
-        except json.JSONDecodeError:
-            err = {"jsonrpc": "2.0", "id": None, "error": {"code": PARSE_ERROR, "message": "parse error"}}
-            sys.stdout.write(json.dumps(err))
-            sys.stdout.write("\n")
-            sys.stdout.flush()
+        except (json.JSONDecodeError, ValueError):
+            _emit(out, {"jsonrpc": "2.0", "id": None, "error": {"code": PARSE_ERROR, "message": "parse error"}})
             continue
-        response = dispatch(msg)
-        if response is not None:
-            sys.stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
-            sys.stdout.flush()
+        msg_id = msg.get("id") if isinstance(msg, dict) else None
+        method = msg.get("method") if isinstance(msg, dict) else "?"
+        try:
+            response = dispatch(msg)
+        except Exception as exc:  # dispatch traps its own errors; belt and braces
+            response = _internal_error(msg_id, method, exc)
+        if response is None:
+            continue  # notification: no reply
+        if not _emit(out, response):
+            # A result the server cannot serialize is our fault, not the
+            # client's: log it, answer with an error, keep the loop alive.
+            _log_fault(method, "unserializable response")
+            _emit(
+                out,
+                {"jsonrpc": "2.0", "id": msg_id, "error": {"code": INTERNAL_ERROR, "message": "internal error"}},
+            )
     return 0
 
 

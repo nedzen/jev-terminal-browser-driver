@@ -143,6 +143,19 @@ READ_PARAMETERS = {
 
 READ_SCHEMA = {"name": "jev_read", "description": READ_DESCRIPTION, "parameters": READ_PARAMETERS}
 
+# Schemas only: jev_status is served by the MCP and OpenCode adapters, never
+# registered as a Hermes native tool (Hermes has no reason to re-check itself).
+STATUS_DESCRIPTION = (
+    "Report whether this machine can drive a browser at all. Takes no arguments. "
+    "It opens no browser, spends nothing, and never returns key material: every field is "
+    "ok or missing. Fields: decision_key, terminal_browser, driver_home, python_env, "
+    "plus ready (true only when all pass), missing (the failing fields), and fixes (what to do). "
+    "Call it when jev_drive fails, or once before a run when setup is unknown. "
+    "Do not call it in a loop; it does not change."
+)
+
+STATUS_PARAMETERS = {"type": "object", "additionalProperties": False, "properties": {}}
+
 
 def apply_debug_setting(payload: dict, setting) -> dict:
     """The plugin setting is the only debug switch. A model-supplied flag is ignored."""

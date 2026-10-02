@@ -13,6 +13,7 @@ from .browser import _log_continuity, find_continuable_page, set_lease
 from .cdp import connect
 from .discover import WatchUnavailable, discover
 from .drive_agent import DriveAgent, _why
+from .preflight import preflight
 from .questions import MAX_STEPS
 from .readiness import REASON_WHY, unsupported_goal
 from .runlog import JSONL_PATH, write_event
@@ -108,7 +109,7 @@ def trace_fields(snap: dict, rec: dict, *, goal: str) -> dict:
         kind = "done"
     else:
         kind = "tick"
-    return {
+    fields = {
         "event": kind,
         "goal": goal,
         "status": status,
@@ -122,6 +123,9 @@ def trace_fields(snap: dict, rec: dict, *, goal: str) -> dict:
         "page_text": (rec.get("page_text") or "")[:1500] or None,
         "reason": rec.get("reason"),
     }
+    if rec.get("final_view"):
+        fields["final_view"] = rec["final_view"]
+    return fields
 
 
 def tick_record(snap: dict, *, debug: bool = False) -> dict:
@@ -188,6 +192,35 @@ def tick_record(snap: dict, *, debug: bool = False) -> dict:
     return rec
 
 
+def _final_view(snap: dict, browser) -> dict:
+    """Re-read the page once after DONE and compare it with the decision-time read.
+
+    A DONE choice is the model's claim, not evidence. This attaches the evidence
+    and nothing else: the status never changes on account of it, and a failed
+    re-read is reported rather than raised.
+    """
+    page = snap.get("page") or {}
+    decisions = snap.get("decisions") or []
+    decision = (decisions[-1] if decisions else None) or {}
+    at_decision = decision.get("fingerprint") or page.get("fingerprint")
+    if browser is None:
+        return {"error": "no browser to re-read"}
+    try:
+        fresh = browser.observe(screenshot=False) or {}
+        # Nothing below may raise: a browser that answers with anything but a page
+        # reports like a failed re-read instead of escaping past this function.
+        if not isinstance(fresh, dict):
+            return {"error": f"observe returned {type(fresh).__name__}, not a page"}
+    except Exception as exc:  # a probe must never turn a finished run into a crash
+        return {"error": str(exc)[:200] or exc.__class__.__name__}
+    seen = fresh.get("fingerprint")
+    return {
+        "page_changed_since_decision": None if not (at_decision and seen) else at_decision != seen,
+        "url": fresh.get("url"),
+        "title": fresh.get("title"),
+    }
+
+
 def degenerate(decision) -> bool:
     if not decision:
         return False
@@ -202,7 +235,10 @@ def degenerate(decision) -> bool:
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Drive a terminal-browser tab with Jev decisions.")
-    parser.add_argument("--goal", required=True)
+    parser.add_argument("--goal", default=None)
+    parser.add_argument(
+        "--check", action="store_true", help="Print startup statuses as JSON and exit. Needs no --goal."
+    )
     parser.add_argument("--url", default=None, help="Page to open. Omit to re-attach to the last driven page.")
     parser.add_argument("--tab", choices=("new",), default="new")
     parser.add_argument("--target", dest="target_id", default=None, help="Attach to this CDP target id (explicit).")
@@ -223,11 +259,21 @@ def parse_args(argv=None):
         default=False,
         help="Draw score outlines and include an insight trace. Off unless the user asks.",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    # --goal is required to drive, but not to ask whether driving is possible.
+    if not args.check and not (args.goal or "").strip():
+        parser.error("the following arguments are required: --goal (or pass --check)")
+    return args
 
 
 def main(argv=None) -> int:
     args = parse_args(argv)
+    if args.check:
+        # Statuses only: no browser, no model call, no key material. Exit 0 either
+        # way so a shell script can read the JSON without treating a missing
+        # dependency as a crash.
+        print(json.dumps(preflight()))
+        return 0
     if args.max_steps < 1 or args.max_steps > MAX_STEPS:
         print(json.dumps({"status": "blocked", "error": f"--max-steps must be 1..{MAX_STEPS}"}), file=sys.stderr)
         return 1
@@ -334,7 +380,10 @@ def main(argv=None) -> int:
                 return 1
             snap = agent.command("tick")
             steps += 1
-            emit(snap, tick_record(snap, debug=args.debug))
+            rec = tick_record(snap, debug=args.debug)
+            if rec.get("status") == "done":
+                rec["final_view"] = _final_view(snap, (agent.state or {}).get("browser"))
+            emit(snap, rec)
         code = 0 if agent.state["status"] == "done" else 1
         return code
     except (ValueError, RuntimeError, TimeoutError) as exc:

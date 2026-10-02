@@ -1,11 +1,12 @@
 /**
  * jev-driver plugin for OpenCode v2.
  *
- * Exposes jev_drive / jev_read as native tools by spawning the same CLI the
- * Hermes plugin uses (`uv run python scripts/drive.py --json`). The Hermes
- * adapter under plugin/ is untouched; tool schemas below are synced from
- * plugin/__init__.py (DESCRIPTION, PARAMETERS, READ_DESCRIPTION,
- * READ_PARAMETERS).
+ * Exposes jev_drive / jev_read / jev_status as native tools. The first two
+ * spawn the same CLI the Hermes plugin uses (`uv run python scripts/drive.py
+ * --json`); jev_status is in-process and only checks PATH and the filesystem.
+ * The Hermes adapter under plugin/ is untouched; tool schemas below are synced
+ * from plugin/__init__.py (DESCRIPTION, PARAMETERS, READ_DESCRIPTION,
+ * READ_PARAMETERS, STATUS_DESCRIPTION, STATUS_PARAMETERS).
  *
  * Install: copy or symlink this file to ~/.config/opencode/plugins/jev-driver.ts
  * (global) or .opencode/plugins/jev-driver.ts (project). Requires `uv`, the
@@ -16,9 +17,9 @@
 
 import { Plugin } from "@opencode/plugin";
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 
 // ---------------------------------------------------------------------------
 // Schemas (synced from plugin/__init__.py — keep caps/defaults identical).
@@ -129,6 +130,21 @@ const READ_PARAMETERS = {
       maximum: 900,
     },
   },
+} as const;
+
+// jev_status takes no arguments: statuses only, no browser, no paid call.
+const STATUS_DESCRIPTION =
+  "Report whether this machine can drive a browser at all. Takes no arguments. " +
+  "It opens no browser, spends nothing, and never returns key material: every field is " +
+  "ok or missing. Fields: decision_key, terminal_browser, driver_home, python_env, " +
+  "plus ready (true only when all pass), missing (the failing fields), and fixes (what to do). " +
+  "Call it when jev_drive fails, or once before a run when setup is unknown. " +
+  "Do not call it in a loop; it does not change.";
+
+const STATUS_PARAMETERS = {
+  type: "object",
+  additionalProperties: false,
+  properties: {},
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -263,6 +279,7 @@ function compactResult(rows: Record<string, unknown>[], exitCode: number, error?
   }
   if (last.why) out.why = last.why;
   if (last.reason) out.reason = last.reason;
+  if (last.final_view !== undefined && last.final_view !== null) out.final_view = last.final_view;
   // DONE is a model choice, never an independent verification.
   out.verified = null;
   out.outcome_verification =
@@ -287,11 +304,99 @@ function driverHome(): string {
   }
 }
 
+const KEY_VARS = ["DECISION_GATE_API_KEY", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY"];
+
 function hasDecisionKey(): boolean {
-  for (const v of ["DECISION_GATE_API_KEY", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]) {
+  for (const v of KEY_VARS) {
     if ((process.env[v] || "").trim()) return true;
   }
   return false;
+}
+
+// ---------------------------------------------------------------------------
+// Preflight (port of jev_driver/preflight.py — same fields, same fixes).
+// Filesystem and PATH only: no browser, no model call, no key material.
+// ---------------------------------------------------------------------------
+
+const CHECKS = ["decision_key", "terminal_browser", "driver_home", "python_env"] as const;
+
+const FIXES: Record<string, string> = {
+  decision_key: "set DECISION_GATE_API_KEY or TYPESAFE_API_KEY in env, or OPENROUTER_API_KEY",
+  terminal_browser: "install terminal-browser, or point TERMINAL_BROWSER at the binary",
+  driver_home: "keep scripts/drive.py next to this checkout, or set JEV_DRIVER_HOME",
+  python_env: "install uv, or create the repo .venv",
+};
+
+function which(name: string): string | null {
+  for (const dir of (process.env.PATH || "").split(delimiter)) {
+    if (!dir) continue;
+    const full = join(dir, name);
+    try {
+      if (existsSync(full)) return full;
+    } catch {
+      // unreadable PATH entry: keep looking
+    }
+  }
+  return null;
+}
+
+function executable(path: string): boolean {
+  try {
+    // Same test as the Python side: exists and X_OK. Nothing is executed.
+    return existsSync(path) && (accessSync(path, constants.X_OK), true);
+  } catch {
+    return false;
+  }
+}
+
+function terminalBrowserBinary(): string | null {
+  const found = which("terminal-browser");
+  if (found) return found;
+  const override = (process.env.TERMINAL_BROWSER || "").trim();
+  const candidates = override ? [override.replace(/^~(?=\/|$)/, homedir())] : [];
+  candidates.push(join(homedir(), ".local", "bin", "terminal-browser"));
+  return candidates.find((path) => executable(path)) ?? null;
+}
+
+function keyInEnvFile(path: string): boolean {
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    return false;
+  }
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    const prefix = KEY_VARS.map((v) => `${v}=`).find((p) => line.startsWith(p));
+    if (!prefix) continue;
+    // The value is compared here and dropped: never returned to the caller.
+    if (line.slice(prefix.length).trim().replace(/^["']|["']$/g, "")) return true;
+  }
+  return false;
+}
+
+function hermesKeyPresent(): boolean {
+  const files = [join(homedir(), ".hermes", ".env")];
+  const hermesHome = (process.env.HERMES_HOME || "").trim();
+  if (hermesHome) files.push(join(hermesHome.replace(/^~(?=\/|$)/, homedir()), ".env"));
+  return files.some(keyInEnvFile);
+}
+
+function preflight(): Record<string, unknown> {
+  const home = driverHome();
+  const found: Record<string, boolean> = {
+    decision_key: hasDecisionKey() || hermesKeyPresent(),
+    terminal_browser: terminalBrowserBinary() !== null,
+    driver_home: existsSync(join(home, "scripts", "drive.py")),
+    python_env: which("uv") !== null || existsSync(join(home, ".venv")),
+  };
+  const missing = CHECKS.filter((name) => !found[name]);
+  const status: Record<string, unknown> = {};
+  for (const name of CHECKS) status[name] = found[name] ? "ok" : "missing";
+  status.ready = missing.length === 0;
+  status.missing = missing;
+  status.fixes = Object.fromEntries(missing.map((name) => [name, FIXES[name]]));
+  return status;
 }
 
 interface RunResult {
@@ -444,6 +549,14 @@ export default Plugin.define({
         input: READ_PARAMETERS as unknown as Parameters<typeof editor.add>[0]["input"],
         execute: async (input, context) =>
           executeRead(input as Args, { signal: context.signal, debug }),
+      });
+      editor.add({
+        name: "jev_status",
+        description: STATUS_DESCRIPTION,
+        input: STATUS_PARAMETERS as unknown as Parameters<typeof editor.add>[0]["input"],
+        // Synchronous by design: statuses come from PATH and the filesystem,
+        // so a status call can never block on a browser or a model.
+        execute: async () => ({ content: JSON.stringify(preflight()) }),
       });
     });
   },

@@ -186,6 +186,8 @@ def compact_result(rows: list[dict], exit_code: int, error: str | None = None) -
         out["why"] = last["why"]
     if last.get("reason"):
         out["reason"] = last["reason"]
+    if last.get("final_view") is not None:
+        out["final_view"] = last["final_view"]
     # DONE is a model choice, never an independent verification.
     out["verified"] = None
     if out["status"] == "done":
