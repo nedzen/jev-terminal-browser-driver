@@ -122,6 +122,7 @@ class DriveAgent(Agent):
         self._unexecuted_key = None
         self._unexecuted_count = 0
         self._weak_done = 0
+        self._degenerate_streak = 0
         self._clicked = []
         self._start_url = (self.state.get("page") or {}).get("url")
         browser = self.state.get("browser")
@@ -213,7 +214,7 @@ class DriveAgent(Agent):
                 # BLOCKED are exempt; they type and click nothing, so a spent clock
                 # must not turn a free finish into a failure.
                 return self._stop_time_budget()
-            rejected = self._reject_weak_done() or self._look_further()
+            rejected = self._stop_low_confidence() or self._reject_weak_done() or self._look_further()
             if rejected is not None:
                 self._paint_hud()
                 return rejected
@@ -542,6 +543,42 @@ class DriveAgent(Agent):
         )
         return True
 
+    LOW_CONFIDENCE_STRIKES = 2
+
+    def _stop_low_confidence(self):
+        """Stop on the second consecutive degenerate tick. The decision is discarded, never executed.
+
+        A degenerate operation spread is the model reporting that it sees no reason to prefer
+        anything: the top operation is low and the gap to the runner-up is narrow, so whichever
+        one it returns is close to a coin flip. One such tick is ordinary uncertainty and the
+        next observation may settle it, so a single one never stops. Two in a row means the run
+        is choosing what to click and type on the user's own profile by chance, and the cheapest
+        honest end is to stop before the second one lands.
+
+        The streak counts consecutive ticks, not decisions in total: a tick with a real preference
+        resets it. It is read here, ahead of every other rejection path, so nothing below can
+        execute a decision on its way out and no path can settle the run on a coin flip instead.
+        """
+        if not degenerate(self.state.get("decision")):
+            self._degenerate_streak = 0
+            return None
+        self._degenerate_streak = getattr(self, "_degenerate_streak", 0) + 1
+        if self._degenerate_streak < self.LOW_CONFIDENCE_STRIKES:
+            return None
+        state = self.state
+        state["decision"] = None
+        state["status"] = "blocked"
+        state["stop_reason"] = "low_confidence"
+        write_event(
+            {
+                "event": "blocked",
+                "goal": state.get("goal"),
+                "reason": "low_confidence",
+                "why": REASON_WHY["low_confidence"],
+            }
+        )
+        return self.snapshot()
+
     def _reject_weak_done(self):
         """Do not finish on a low-confidence DONE or on a page that is still only labels."""
         state = self.state
@@ -745,7 +782,7 @@ class DriveAgent(Agent):
             target_label = ""
         last = ((state.get("history") or [None])[-1]) or {}
         status = state.get("status") or ""
-        why = _why(status, decision, state.get("history") or [])
+        why = _why(status, decision, state.get("history") or [], state.get("stop_reason"))
         history = state.get("history") or []
         usage = {"input_tokens": 0, "output_tokens": 0, "cost": 0.0}
         for item in history:
