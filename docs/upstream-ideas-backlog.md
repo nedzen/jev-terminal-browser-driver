@@ -10,12 +10,8 @@ this file is the build list.
 Tier 1 (DONE, eda6d5a): verified:null + outcome_verification,
 stopped_reason taxonomy, 2000-char page_text cap, strict budget validation
 (reject, don't clamp), schema-guarantee test, stdout-discipline test.
-<<<<<<< HEAD
-Mirrored in plugin/handler.py. The OpenCode plugin mirrored it too; it is deleted, and MCP is the single adapter.
-=======
 Mirrored in plugin/handler.py and in the OpenCode TypeScript plugin (the
 latter deleted in 32a5444; MCP is the single adapter).
->>>>>>> origin/main
 
 ## Tier 2 — robustness core
 
