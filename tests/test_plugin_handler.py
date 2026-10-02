@@ -311,6 +311,15 @@ def test_final_view_surfaced_in_compact_result(home):
     assert "final_view" not in out
 
 
+def test_omitted_actions_surfaced_in_compact_result(home):
+    """Reviewer PR #10 M1: omitted_actions must reach MCP/Hermes clients
+    through compact_result, not die in the handler."""
+    out = handler.compact_result([{"status": "blocked", "url": "x", "omitted_actions": 50}], 1)
+    assert out["omitted_actions"] == 50
+    out = handler.compact_result([{"status": "done", "url": "x"}], 0)
+    assert "omitted_actions" not in out
+
+
 def test_drive_schema_has_no_control_driving_params():
     forbidden = {"selector", "index", "coordinate", "coordinates", "xpath", "css", "script", "js", "javascript"}
     drive_params = set(plugin.SCHEMA["parameters"]["properties"])

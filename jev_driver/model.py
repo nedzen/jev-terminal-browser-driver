@@ -248,7 +248,12 @@ def set_deny_names(patterns=()) -> tuple:
 
 
 def denied(action, patterns) -> bool:
-    """True when this element's name is denied. Accepts compiled patterns or raw strings."""
+    """True when this element's name is denied. Accepts compiled patterns or raw strings.
+
+    Empty labels are never denied: snapshot.js always offers a non-empty name
+    (label or role fallback), so an empty label means a malformed action, not a
+    safe one. If snapshot ever offers truly unlabeled controls, revisit this.
+    """
     label = str(action.get("label") or "")
     return bool(label) and any(re.search(pattern, label) for pattern in patterns)
 

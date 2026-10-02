@@ -173,3 +173,33 @@ def test_a_bad_pattern_stops_the_run_before_a_browser_is_opened(monkeypatch, cap
     monkeypatch.setattr(cli, "discover", Mock(side_effect=AssertionError("must not discover")))
     assert cli.main(["--goal", "g", "--deny-name", "Follow ("]) == 1
     assert "not a valid regular expression" in capsys.readouterr().err
+
+
+def test_all_elements_denied_still_offers_done_and_blocked(monkeypatch):
+    """Minor 1 (reviewer PR #10): pattern "." denies every non-empty label.
+    The operation head must still offer DONE/BLOCKED (plus surviving
+    controls) — one paid call per tick, no crash, no empty request."""
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test")
+    calls = []
+
+    def post(_url, _key, body):
+        calls.append(body)
+        op_criteria = body["questions"]["operation"]["criteria"]
+        assert "DONE" in op_criteria and "BLOCKED" in op_criteria
+        probs = {key: 0.0 for key in op_criteria}
+        probs["BLOCKED"] = 1.0
+        return {
+            "model": "test",
+            "answers": {"operation": {"choice": "BLOCKED", "confidence": 1.0, "probabilities": probs}},
+        }
+
+    monkeypatch.setattr(model, "post_json", post)
+    elements, targets, controls = model.action_space(page()["actions"], deny_names=["."])
+    assert targets == {}
+    d = model.choose(
+        {"url": page()["url"], "title": "Post", "text": "Post", "actions": page()["actions"]},
+        "Do the thing",
+        [],
+    )
+    assert d["operation"] == "BLOCKED"
+    assert len(calls) == 1
