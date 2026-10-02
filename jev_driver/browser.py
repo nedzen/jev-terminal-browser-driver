@@ -571,6 +571,12 @@ class Browser:
 
         Same read-only probe every round: no re-snapshot, no action-list rebuild, no new page
         to decide from. Returns one of PROBE_REASONS.
+
+        `target_detached` is final. snapshot.js hands ids out from a per-document counter and only
+        prunes disconnected nodes on the next snapshot, which this decision will not take: a node
+        that reads detached cannot re-attach inside it. Waiting out the full settle window would
+        spend 0.6s to learn the same thing. Every other reason can still turn into `ok`, so it is
+        retried.
         """
         expression = _probe_expression(node)
         reason = "target_changed"
@@ -578,7 +584,7 @@ class Browser:
             if attempt:
                 self.sleep(PROBE_RETRIES[attempt - 1])
             reason = _probe_reason(kind, page, node, self.evaluate(expression))
-            if reason == "ok":
+            if reason in {"ok", "target_detached"}:
                 break
         return reason
 
@@ -656,6 +662,16 @@ def _same_field_document(page: dict, page_key) -> bool:
     return page_key[1] == stored[1]
 
 
+def _swapped_document(page: dict, page_key) -> bool:
+    """Whether `page_key` comes from a different document that kept the same URL."""
+    if not isinstance(page_key, list) or len(page_key) < 2:
+        return False
+    stored = page.get("page_key")
+    if not isinstance(stored, list) or len(stored) < 2:
+        return False
+    return page_key[0] != stored[0]
+
+
 def _same_field(page: dict, node: int, current) -> bool:
     """A fill is still valid when this field's identity, value, and URL are unchanged.
 
@@ -671,7 +687,17 @@ def _same_field(page: dict, node: int, current) -> bool:
         return False
     if len(guard) < 4 or len(stored_guard) < 4:
         return False
-    return guard[0] == stored_guard[0] and guard[3] == stored_guard[3]
+    if guard[0] != stored_guard[0] or guard[3] != stored_guard[3]:
+        return False
+    if _swapped_document(page, page_key):
+        # Across a document swap an id match is a collision, not an identity: ids come from a
+        # per-document counter (snapshot.js `next:1`), so the new document hands id 4 to whatever
+        # it observed fourth. Two empty fields at id 4 in one URL are indistinguishable, so the
+        # value has to carry the match on its own: non-empty and equal. A field with no value to
+        # match (empty, or contenteditable, whose guard carries none) is refused and re-observed
+        # instead of being typed into blind — refusing costs a re-read, guessing costs the page.
+        return bool(guard[3]) and bool(stored_guard[3])
+    return True
 
 
 _COUNTS = re.compile(r"\d[\d.,]*\s*[KMBkmb]?")
@@ -713,8 +739,11 @@ def _probe_expression(node: int) -> str:
     `live` travel beside it, and `_probe_reason` decides what they mean.
 
     `attached` connected; `live` also enabled (not :disabled, aria-disabled, or inert) and
-    visible; `inView` its centre is inside the viewport; `hit` elementFromPoint at that centre
-    returns the node or a descendant, so an overlay covering it is visible to the probe.
+    visible; `inView` its centre is inside the viewport; `hit` it has a box to point at and
+    elementFromPoint at that centre does not return a stranger, so an overlay covering it is
+    visible to the probe. An off-screen centre is not covered — the executor scrolls the node
+    into view and re-hit-tests, and `page_key` ignores scroll, so gating on `inView` here
+    would refuse every element below the fold that the executor lands fine.
     """
     return (
         "(() => { const c=window.__jevFast, e=c?c.nodes.get("
@@ -723,8 +752,9 @@ def _probe_expression(node: int) -> str:
         "const g=c.guard(e), attached=!!(e&&e.isConnected), "
         "r=attached?e.getBoundingClientRect():{x:0,y:0,width:0,height:0}, "
         "x=r.x+r.width/2, y=r.y+r.height/2, "
-        "inView=!!(r.width&&r.height&&x>=0&&y>=0&&x<innerWidth&&y<innerHeight), "
-        "hit=inView&&e.contains(document.elementFromPoint(x,y)), "
+        "boxed=!!(r.width&&r.height), "
+        "inView=boxed&&x>=0&&y>=0&&x<innerWidth&&y<innerHeight, "
+        "hit=boxed&&(!inView||e.contains(document.elementFromPoint(x,y))), "
         "live=attached&&!e.matches(':disabled')&&!e.closest('[aria-disabled=\"true\"],[inert]')"
         "&&e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}), "
         "writable=live&&!e.readOnly&&e.getAttribute('aria-readonly')!=='true'; "
@@ -733,7 +763,11 @@ def _probe_expression(node: int) -> str:
 
 
 def _probe_flags(current) -> tuple | None:
-    """(attached, live, inView, hit, writable), or None when the probe answered nothing usable."""
+    """(attached, live, inView, hit, writable), or None when the probe answered nothing usable.
+
+    `inView` is telemetry: the verdict below does not read it, because the executor scrolls a
+    node into view before it hit-tests and `page_key` ignores scroll.
+    """
     if not isinstance(current, list) or len(current) < 3:
         return None
     bits = current[2]
@@ -749,9 +783,13 @@ def _probe_reason(kind: str, page: dict, node: int, current) -> str:
 
     target_detached  the node left the document
     target_changed   another document, or a different control in this one
-    not_actionable   disabled, hidden, off-screen, or covered at its centre
+    not_actionable   disabled, hidden, boxless, or covered at its centre
     not_writable     a fill target that refuses text
     ok               this decision may still be executed
+
+    Off-screen is not in that list. The executor scrollIntoViews an off-screen node and
+    re-hit-tests it (see browser_operation), and a self-scrolling feed moves nodes under a
+    decision without changing anything about them, so `hit` alone decides a pointer target.
 
     Identity is checked last for the target kinds: a control that is covered or disabled is
     still the control the model chose, and saying so beats reporting its state as a change.
@@ -765,7 +803,7 @@ def _probe_reason(kind: str, page: dict, node: int, current) -> str:
             return "target_changed"
     elif not _same_document(page, page_key):
         return "target_changed"
-    attached, live, in_view, hit, writable = flags
+    attached, live, _in_view, hit, writable = flags
     if not attached:
         return "target_detached"
     if kind == "fill":
@@ -775,7 +813,7 @@ def _probe_reason(kind: str, page: dict, node: int, current) -> str:
             return "not_actionable"
         if not writable:
             return "not_writable"
-    elif not (live and in_view and hit):
+    elif not (live and hit):
         return "not_actionable"
     same = _same_field(page, node, current) if kind == "fill" else _same_target(page, node, current)
     return "ok" if same else "target_changed"

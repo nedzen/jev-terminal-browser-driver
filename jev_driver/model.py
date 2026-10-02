@@ -22,6 +22,10 @@ PROBABILITY_TOLERANCE = 0.05
 BACKEND_MODEL = "typesafe"
 BACKEND_DETERMINISTIC = "deterministic"
 CALIBRATION_SURFACE = "typesafe_cloud"
+# A head that was skipped because it had one candidate, and whose decision some
+# other operation won instead. Distinct from "bypass": no answer was needed, so
+# there is no number a consumer could mistake for a model's.
+NOT_EXECUTED = "not-executed"
 _DECISION_KEYS = ("DECISION_GATE_API_KEY", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY")
 _TEXT_KEYS = ("TEXT_MODEL_API_KEY", "OPENROUTER_API_KEY")
 # Fixed name/prompt pairs: the digest must not depend on dict order, and a
@@ -59,6 +63,23 @@ def decisions_url() -> str:
     if base.endswith("/v1/systemone"):
         return base
     return base + "/v1/systemone"
+
+
+def explicit_endpoint(name: str) -> str | None:
+    """An explicitly configured endpoint for ``name``, or None.
+
+    Setting the variable is the operator naming a server and accepting its
+    contract, which is the only thing that makes operating without a
+    credential sensible: with nothing set the URL is a derived hosted default
+    (api.typesafe.ai, openrouter.ai), and a keyless call there is an
+    unauthenticated request to a third party rather than a local convenience.
+    Point the variable at a hosted service and you get the same rejection any
+    missing credential earns — loudly, and before a decision is acted on.
+    """
+    try:
+        return os.environ.get(name, "").strip() or None
+    except Exception:
+        return None
 
 
 def _env_files():
@@ -106,7 +127,10 @@ def load_text_key() -> str | None:
 
 def post_json(url, key, body):
     # An unauthenticated local backend must not receive a "Bearer " header:
-    # an empty credential is no credential, not a malformed one.
+    # an empty credential is no credential, not a malformed one. Deciding that
+    # the credential may be empty at all belongs to the callers (`choose`,
+    # `field_text`), which allow it only for an explicitly configured endpoint;
+    # this function only renders the key it was handed.
     headers = {"Authorization": f"Bearer {key}"} if key else None
     for attempt in range(3):
         try:
@@ -262,7 +286,7 @@ def choose(state, goal, history):
         "questions": questions,
     }
     key = load_decision_key()
-    if not key:
+    if not key and not explicit_endpoint("DECISION_GATE_URL"):
         raise RuntimeError("Set TYPESAFE_API_KEY; no action executed.")
     started = time.perf_counter()
     result = post_json(decisions_url(), key, body)
@@ -296,6 +320,14 @@ def choose(state, goal, history):
     else:
         choice = controls[operation]["id"] if operation in controls else operation
         probabilities[choice] = operation_answer["probabilities"][operation]
+    # Every bypassed head gets an entry, not only the one this decision executed.
+    # `bypassed_heads` and `decision_source: mixed` claim heads were answered in
+    # process, and a record that names a bypass with no stage for it cannot be
+    # checked without replaying the request. An unexecuted bypass carries no
+    # numbers at all — that is the point of it — so it says so and stops there.
+    # Sorted, because insertion order is what the run log serialises.
+    for head in sorted(bypassed):
+        stages.setdefault(head, {"backend": BACKEND_DETERMINISTIC, "source": NOT_EXECUTED})
     return {
         "choice": choice,
         "operation": operation,
@@ -317,8 +349,10 @@ def choose(state, goal, history):
         "question_spec_hash": QUESTION_SPEC_HASH,
         "decision_source": "mixed" if bypassed else "model",
         "calibration_surface": CALIBRATION_SURFACE,
-        # Every head that was answered in-process, not just the executed one, so
-        # "mixed" is auditable without replaying the request.
+        # Every head that was answered in process, not just the executed one, so
+        # "mixed" is auditable without replaying the request. `stages` carries the
+        # matching per-head record: a bypass the model chose is `bypass`, a bypass
+        # another operation won instead is `not-executed`.
         "bypassed_heads": sorted(bypassed),
         "stages": stages,
     }
@@ -368,13 +402,22 @@ def _strip_code_fences(text):
 
 
 def field_text(context):
+    """The value to type, from the text helper, or a refusal that types nothing.
+
+    A keyless call is allowed only for an explicitly configured endpoint (see
+    ``explicit_endpoint``): naming the server is how an operator says it takes no
+    bearer token. Without one, the endpoint is the hosted default and the missing
+    credential is the operator's to fix, so the helper refuses instead of sending
+    an unauthenticated request.
+    """
     key = load_text_key()
-    if not key:
+    endpoint = explicit_endpoint("TEXT_MODEL_BASE_URL")
+    base = (endpoint or "https://openrouter.ai/api/v1").rstrip("/")
+    if not key and not endpoint:
         raise ValueError(
             "Typing needs OPENROUTER_API_KEY (Plugins > jev-driver > OpenRouter API key) or TEXT_MODEL_API_KEY. "
             "No text was typed."
         )
-    base = os.environ.get("TEXT_MODEL_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
     model = os.environ.get("TEXT_MODEL", "inception/mercury-2.5")
     reasoning = {"thinking": {"type": "disabled"}} if "api.deepseek.com/" in base else {"reasoning": {"effort": "low"}}
     if os.environ.get("TEXT_MODEL_REASONING", "none") == "none":

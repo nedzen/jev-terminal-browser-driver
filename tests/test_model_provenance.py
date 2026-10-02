@@ -217,6 +217,72 @@ def test_bypassed_heads_are_sorted_and_complete(monkeypatch):
     # Sorted, not set order: a recorded decision must read the same twice.
     assert decision["bypassed_heads"] == ["SELECT", "TYPE_TEXT"]
     assert decision["decision_source"] == "mixed"
+    # Both are named as skipped, so "mixed" can be checked without replaying the
+    # request: the head this decision used is `model`, the two it did not are
+    # `not-executed`, and both are ours.
+    assert decision["stages"]["CLICK"] == {"backend": "typesafe", "source": "model"}
+    assert decision["stages"]["SELECT"] == {"backend": "deterministic", "source": "not-executed"}
+    assert decision["stages"]["TYPE_TEXT"] == {"backend": "deterministic", "source": "not-executed"}
+    # Insertion order, not just membership: the run log serialises the dict as it
+    # stands, so a set-order walk would make the same decision log differently on a
+    # different interpreter run.
+    assert list(decision["stages"]) == ["operation", "CLICK", "SELECT", "TYPE_TEXT"]
+
+
+def test_an_unexecuted_bypass_carries_no_numbers_at_all(monkeypatch):
+    """A head nobody asked has no target, no confidence and no probabilities: a
+    synthetic 1.0 there would be the one thing a calibrator could not tell from a
+    model's answer."""
+    decision, _calls = decide(
+        monkeypatch,
+        page(FILL, CLICK_ONE, CLICK_TWO),
+        {"operation": choice(["TYPE_TEXT", "CLICK", "DONE", "BLOCKED"], "CLICK"),
+         "click_target": choice(["1", "2"], "1")},
+    )
+    stage = decision["stages"]["TYPE_TEXT"]
+    assert set(stage) == {"backend", "source"}
+    assert "target" not in stage and "confidence" not in stage and "probabilities" not in stage
+    # The executed head is still fully described, so the map is not uniform noise.
+    assert decision["stages"]["CLICK"]["backend"] == "typesafe"
+
+
+def test_the_executed_bypass_is_not_overwritten_by_a_not_executed_marker(monkeypatch):
+    decision, _calls = decide(
+        monkeypatch,
+        MIXED_PAGE,
+        {"operation": choice(["TYPE_TEXT", "CLICK", "WAIT", "DONE", "BLOCKED"], "TYPE_TEXT")},
+    )
+    assert decision["stages"]["TYPE_TEXT"]["source"] == "bypass"  # not "not-executed"
+    assert decision["stages"]["TYPE_TEXT"]["target"] == "1"
+
+
+def test_a_control_operation_still_reports_every_bypassed_head(monkeypatch):
+    # SCROLL has no target head at all, and DONE/BLOCKED are never bypassed, so
+    # this is the case where nothing but the record says a bypass existed.
+    scroll = {"id": "scroll_down", "kind": "scroll", "label": "Scroll down", "node": None}
+    decision, _calls = decide(
+        monkeypatch,
+        page(FILL, scroll),
+        {"operation": choice(["TYPE_TEXT", "SCROLL_DOWN", "DONE", "BLOCKED"], "SCROLL_DOWN")},
+    )
+    assert decision["operation"] == "SCROLL_DOWN"
+    assert decision["decision_source"] == "mixed"
+    assert decision["bypassed_heads"] == ["TYPE_TEXT"]
+    assert decision["stages"]["TYPE_TEXT"] == {"backend": "deterministic", "source": "not-executed"}
+    assert set(decision["stages"]) == {"TYPE_TEXT", "operation"}  # no invented SCROLL stage
+
+
+def test_no_bypass_anywhere_means_no_stages_but_the_ones_asked(monkeypatch):
+    decision, _calls = decide(
+        monkeypatch,
+        page(CLICK_ONE, CLICK_TWO),
+        {"operation": choice(["CLICK", "DONE", "BLOCKED"], "CLICK"),
+         "click_target": choice(["1", "2"], "1")},
+    )
+    assert decision["decision_source"] == "model"
+    assert decision["bypassed_heads"] == []
+    assert sorted(decision["stages"]) == ["CLICK", "operation"]
+    assert all(stage["backend"] == "typesafe" for stage in decision["stages"].values())
 
 
 def test_a_multi_candidate_head_stays_a_model_decision(monkeypatch):
@@ -364,6 +430,133 @@ def test_a_real_key_still_sends_the_bearer_header(monkeypatch):
     monkeypatch.setattr(model.CLIENT, "post", post)
     model.post_json("https://api.typesafe.ai/v1/systemone", "secret", {})
     assert post.call_args.kwargs["headers"] == {"Authorization": "Bearer secret"}
+
+
+# --- keyless operation: only against an explicitly configured endpoint -------
+
+
+NO_KEY_ENV = ("TYPESAFE_API_KEY", "DECISION_GATE_API_KEY", "OPENROUTER_API_KEY", "TEXT_MODEL_API_KEY")
+
+
+@pytest.fixture
+def keyless(monkeypatch):
+    """No credential anywhere in the environment or the env files."""
+    for name in NO_KEY_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(model, "_key_from_env_files", lambda names: None)
+
+
+def test_a_keyless_call_to_a_configured_decision_gate_is_allowed(monkeypatch, keyless):
+    """`DECISION_GATE_URL` is the operator naming a server and accepting its
+    contract, which is the only case where an unauthenticated request is a local
+    convenience rather than a request to a third party."""
+    monkeypatch.setenv("DECISION_GATE_URL", "http://127.0.0.1:8080/v1/systemone")
+    calls = []
+
+    def post(url, key, body):
+        calls.append((url, key))
+        return {"model": "local", "answers": {"operation": choice(["CLICK", "DONE", "BLOCKED"], "DONE")}}
+
+    monkeypatch.setattr(model, "post_json", post)
+    decision = model.choose(page(CLICK_ONE, CLICK_TWO), GOAL, [])
+
+    assert calls == [("http://127.0.0.1:8080/v1/systemone", None)]  # the key is absent, not empty
+    assert decision["choice"] == "DONE"
+    assert decision["backend"] == "typesafe"
+
+
+def test_a_keyless_call_to_the_hosted_gate_is_refused(monkeypatch, keyless):
+    """No explicit endpoint means the URL is the derived hosted default, so a
+    missing credential is the operator's to fix rather than something to send
+    unauthenticated."""
+    def post(*args, **kwargs):
+        raise AssertionError("nothing may be sent without a key or a configured endpoint")
+
+    monkeypatch.setattr(model, "post_json", post)
+    with pytest.raises(RuntimeError, match="TYPESAFE_API_KEY"):
+        model.choose(page(CLICK_ONE, CLICK_TWO), GOAL, [])
+
+
+def test_a_blank_endpoint_is_not_an_explicit_endpoint(monkeypatch, keyless):
+    """`DECISION_GATE_URL=""` configures nothing; treating it as permission would
+    make the flag look like it worked."""
+    monkeypatch.setenv("DECISION_GATE_URL", "   ")
+    assert model.explicit_endpoint("DECISION_GATE_URL") is None
+    with pytest.raises(RuntimeError, match="TYPESAFE_API_KEY"):
+        model.choose(page(CLICK_ONE, CLICK_TWO), GOAL, [])
+
+
+def test_a_configured_endpoint_with_a_key_still_sends_it(monkeypatch):
+    """The keyless path is an allowance, not a replacement: an explicit endpoint
+    never stops a credential from being used."""
+    monkeypatch.setenv("DECISION_GATE_URL", "http://127.0.0.1:8080/v1/systemone")
+    monkeypatch.setenv("TYPESAFE_API_KEY", "sk-live-SECRET")
+    seen = []
+
+    def post(url, key, body):
+        seen.append((url, key))
+        return {"model": "local", "answers": {"operation": choice(["CLICK", "DONE", "BLOCKED"], "DONE")}}
+
+    monkeypatch.setattr(model, "post_json", post)
+    model.choose(page(CLICK_ONE, CLICK_TWO), GOAL, [])
+    assert seen == [("http://127.0.0.1:8080/v1/systemone", "sk-live-SECRET")]
+
+
+def test_a_keyless_text_helper_call_needs_a_configured_endpoint(monkeypatch, keyless):
+    def post(*args, **kwargs):
+        raise AssertionError("nothing may be sent without a key or a configured endpoint")
+
+    monkeypatch.setattr(model, "post_json", post)
+    with pytest.raises(ValueError, match="OPENROUTER_API_KEY"):
+        model.field_text({"goal": GOAL})
+    assert model.explicit_endpoint("TEXT_MODEL_BASE_URL") is None
+
+
+def test_a_keyless_text_helper_works_against_a_configured_endpoint(monkeypatch, keyless):
+    monkeypatch.setenv("TEXT_MODEL_BASE_URL", "http://127.0.0.1:11434/v1/")
+    seen = []
+
+    def post(url, key, body):
+        seen.append((url, key))
+        return {"choices": [{"message": {"content": '{"text": "Zurich"}'}}]}
+
+    monkeypatch.setattr(model, "post_json", post)
+    value, meta = model.field_text({"goal": GOAL})
+    assert value == "Zurich"
+    assert seen == [("http://127.0.0.1:11434/v1/chat/completions", None)]
+    assert meta["model"] == "inception/mercury-2.5"
+
+
+def test_a_keyed_text_helper_call_is_unchanged(monkeypatch, keyless):
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "sk-live-SECRET")
+    monkeypatch.setenv("TEXT_MODEL_BASE_URL", "http://127.0.0.1:11434/v1")
+    seen = []
+
+    def post(url, key, body):
+        seen.append((url, key))
+        return {"choices": [{"message": {"content": '{"text": "Zurich"}'}}]}
+
+    monkeypatch.setattr(model, "post_json", post)
+    assert model.field_text({"goal": GOAL})[0] == "Zurich"
+    assert seen == [("http://127.0.0.1:11434/v1/chat/completions", "sk-live-SECRET")]
+
+
+def test_a_deepseek_base_still_switches_the_reasoning_block(monkeypatch, keyless):
+    # The endpoint variable is read for two things now: permission to be keyless
+    # and the deepseek reasoning shape. It must still do the second.
+    monkeypatch.setenv("TEXT_MODEL_BASE_URL", "https://api.deepseek.com/v1")
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "sk-live-SECRET")
+    monkeypatch.setenv("TEXT_MODEL_REASONING", "1")
+    bodies = []
+
+    def post(url, key, body):
+        bodies.append(body)
+        return {"choices": [{"message": {"content": '{"text": "Zurich"}'}}]}
+
+    monkeypatch.setattr(model, "post_json", post)
+    model.field_text({"goal": GOAL})
+    assert bodies[0]["thinking"] == {"type": "disabled"}
+    assert "reasoning" not in bodies[0]
 
 
 def test_empty_key_retries_still_omit_the_header(monkeypatch):

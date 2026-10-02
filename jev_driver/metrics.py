@@ -9,8 +9,20 @@ without reading its log.
 Secret-free by construction, not by scrubbing: no record method accepts page
 text, a URL, a label, or a key. The only strings that can reach a snapshot
 come from the closed vocabularies below (``_KINDS``, ``_STATUSES``,
-``_ERROR_KINDS``) plus the *type name* of an exception, never its message.
-There is no door for a hostile page to smuggle anything through.
+``_ERROR_KINDS``, ``_STOP_REASONS``), plus the *type name* of an exception,
+never its message, plus the run's own identity (see ``bind_run``). There is no
+door for a hostile page to smuggle anything through.
+
+Run identity, and why the file needs it
+---------------------------------------
+``metrics.json`` is one file, overwritten at close, so a run that was killed
+before closing leaves the *previous* run's numbers sitting there looking
+current. Three identity fields travel with every snapshot — ``run_id``,
+``started_at`` and ``goal_hash`` — and the same ``run_id`` is written into the
+run's own ``event: run`` line, so a stale file is provably stale: its ``run_id``
+is not the one the log says the last run had. ``goal_hash`` is a digest, never
+the goal: a goal can hold anything a user typed, and the identity only has to
+say "the same goal".
 
 ``Metrics`` is backend-independent: no browser, no CDP, no network, and a
 single instance owned by the agent. ``instrument_browser`` is the one
@@ -25,8 +37,11 @@ failure can never reach the caller.
 from __future__ import annotations
 
 import functools
+import hashlib
 import json
+import os
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -34,6 +49,7 @@ from . import runlog
 
 SCHEMA = 1  # snapshot layout; bump if a key is renamed or removed
 METRICS_NAME = "metrics.json"
+GOAL_HASH_CHARS = 16
 
 # Closed vocabularies. Anything unrecognised collapses to the last entry, so
 # the snapshot has a fixed shape whatever the page or the model hands us.
@@ -41,6 +57,29 @@ _KINDS = ("click", "enter", "fill", "other", "scroll", "select", "wait")
 _PHASES = ("observe", "act", "fresh", "wait")  # report order: what a reader compares
 _STATUSES = ("blocked", "done", "error", "predicted", "ready", "unknown")
 _ERROR_KINDS = ("budget", "cancelled", "model", "other", "runtime", "stale", "timeout", "value")
+# Why a run stopped, as the driver spells it: the same tokens `readiness.REASON_WHY`
+# explains, minus the one that is only ever a `why` ("scroll_only"). Recorded as a
+# token, never a sentence: "budget ran out" is prose, and a snapshot that carried
+# only prose would make a deadline stop indistinguishable from any other blocked run.
+_STOP_REASONS = (
+    "already_followed",
+    "click_not_sent",
+    "covered_target",
+    "extract",
+    "field_changed",
+    "max_steps",
+    "model_blocked",
+    "other",
+    "shell",
+    "stale_page",
+    "time_budget",
+    "toggle_undo",
+    "unsupported",
+    "weak_done",
+)
+# The one stop reason that is itself a deadline rather than a failure, so it is
+# reported as a budget kind instead of as no error at all.
+_BUDGET_STOP = "time_budget"
 # Exception *type names* only, matched against these hints in order.
 _ERROR_HINTS = (
     ("timeout", "timeout"),
@@ -83,6 +122,27 @@ def _kind(value) -> str:
 def _status(value) -> str | None:
     text = value.strip().lower() if isinstance(value, str) else ""
     return text if text in _STATUSES else ("unknown" if text else None)
+
+
+def _stop_reason(value) -> str | None:
+    """The stop vocabulary, or None when there was no stop to name."""
+    text = value.strip().lower() if isinstance(value, str) else ""
+    return text if text in _STOP_REASONS else ("other" if text else None)
+
+
+def _goal_digest(goal) -> str | None:
+    """A short digest of the goal, or None when there is no goal to digest.
+
+    The goal itself never reaches a snapshot — it is free text a caller typed
+    and can hold anything — so identity is a sha256 over it, truncated. Equal
+    goals give equal digests, which is all a reader compares.
+    """
+    if goal is None:
+        return None
+    try:
+        return hashlib.sha256(str(goal).encode("utf-8", "replace")).hexdigest()[:GOAL_HASH_CHARS]
+    except Exception:
+        return None
 
 
 def _error_kind(error) -> str | None:
@@ -134,9 +194,17 @@ class _Timer:
 
 
 class Metrics:
-    """Counters and timings for one run. Owned by the agent, never global."""
+    """Counters and timings for one run. Owned by the agent, never global.
+
+    Every instance is born with an identity — a ``run_id``, the moment it was
+    constructed and, once the caller supplies one, a digest of the goal — so two
+    snapshots on the same disk can always be told apart.
+    """
 
     def __init__(self) -> None:
+        self._run_id = uuid.uuid4().hex
+        self._started_at = _stamp()
+        self._goal_hash: str | None = None
         self._jev = _Timer()
         self._text = _Timer()
         self._phases = {phase: _Timer() for phase in _PHASES}
@@ -150,9 +218,21 @@ class Metrics:
         self._finished = False
         self._status: str | None = None
         self._error: str | None = None
+        self._stop: str | None = None
         self._finished_at: str | None = None
 
     # -- recorders -----------------------------------------------------
+    def bind_run(self, goal=None) -> None:
+        """Name the run this snapshot belongs to. First call wins, like ``finish``.
+
+        The goal is digested, never stored: identity only has to say "the same
+        goal", and a goal is free text that can carry anything. A caller that
+        never binds one still gets a ``run_id`` and a ``started_at``, which is
+        what makes a stale ``metrics.json`` detectable.
+        """
+        if self._goal_hash is None:
+            self._goal_hash = _goal_digest(goal)
+
     def record_jev(self, latency_ms=None) -> None:
         """One decision call, with the provider's own latency."""
         self._jev.add(latency_ms)
@@ -193,17 +273,33 @@ class Metrics:
         """Closing the browser. Recorded even when closing raises."""
         self._cleanup_ms = _number(ms)
 
+    def record_stop(self, reason=None) -> None:
+        """Why the run stopped, as one vocabulary token.
+
+        Recorded through the closed vocabulary, never as the driver's sentence:
+        a ``time_budget`` stop has to be readable as ``time_budget`` without
+        anyone parsing prose, and an unrecognised reason collapses to
+        ``other`` rather than widening the snapshot's shape.
+        """
+        stop = _stop_reason(reason)
+        if stop is not None:
+            self._stop = stop
+
     # -- results -------------------------------------------------------
     def finish(self, status=None, error=None) -> dict:
         """Freeze the run's outcome and return the snapshot.
 
         The first call wins: a later call with a different status or a
         different error changes nothing, so ``close()`` twice is harmless.
+        An exception's kind always outranks the stop reason, so a stale page
+        that ended the run is still reported as ``stale``; a deadline stop with
+        no exception behind it is recorded as ``budget`` rather than as the
+        ``null`` that means "no error kind was ever determined".
         """
         if not self._finished:
             self._finished = True
             self._status = _status(status)
-            self._error = _error_kind(error)
+            self._error = _error_kind(error) or ("budget" if self._stop == _BUDGET_STOP else None)
             self._finished_at = _stamp()
         return self.snapshot()
 
@@ -211,8 +307,12 @@ class Metrics:
         """A JSON-safe copy. Every phase is present, so consumers can diff runs."""
         return {
             "schema": SCHEMA,
+            "run_id": self._run_id,
+            "goal_hash": self._goal_hash,
+            "started_at": self._started_at,
             "status": self._status,
             "error": self._error,
+            "stop_reason": self._stop,
             "finished": self._finished,
             "finished_at": self._finished_at,
             "jev": self._jev.snapshot("calls"),
@@ -236,17 +336,30 @@ class Metrics:
         """Write the snapshot next to the run log. Never raises; True if it landed.
 
         Written to a sibling and renamed, so a reader never sees half a file and
-        a failed write leaves the previous run's snapshot readable.
+        a failed write leaves the previous run's snapshot readable. The scratch
+        name carries the pid and a uuid: a fixed ``.tmp`` is only atomic while
+        there is one writer, and two runs (an MCP server driving one while a
+        second process drives another) would otherwise rename each other's
+        half-written body into place.
         """
         try:
             target = Path(path) if path is not None else metrics_path()
             target.parent.mkdir(parents=True, exist_ok=True)
-            scratch = target.with_name(target.name + ".tmp")
-            scratch.write_text(
-                json.dumps(self.snapshot(), ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False) + "\n",
-                encoding="utf-8",
-            )
-            scratch.replace(target)
+            scratch = target.with_name(f"{target.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+            try:
+                scratch.write_text(
+                    json.dumps(self.snapshot(), ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False)
+                    + "\n",
+                    encoding="utf-8",
+                )
+                scratch.replace(target)
+            finally:
+                # A failed or renamed scratch leaves nothing behind to be mistaken
+                # for a snapshot; a scratch we cannot remove is not worth raising over.
+                try:
+                    scratch.unlink()
+                except OSError:
+                    pass
             return True
         except Exception:
             return False

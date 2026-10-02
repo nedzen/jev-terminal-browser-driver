@@ -9,12 +9,18 @@ import errno
 import hashlib
 import json
 import os
+import re
+import threading
+from unittest.mock import Mock
 
 import pytest
 
 from jev_driver import cli, runlog
 from jev_driver import processes as proc
 from jev_driver.discover import Discovery
+from jev_driver.metrics import Metrics, metrics_path
+
+STAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
 # A fake table: one zombie browser, one live browser, one driver of our own.
 PS_TABLE = """
@@ -31,9 +37,10 @@ ZOMBIE_ROW = {"pid": 4242, "stat": "Z+", "command": "/Users/u/.local/bin/termina
 class FakePs:
     """Stands in for the process table and for git. Records every argv."""
 
-    def __init__(self, table="", states=None, git=None, dead=False):
+    def __init__(self, table="", states=None, starts=None, git=None, dead=False):
         self.table = table
         self.states = dict(states or {})
+        self.starts = dict(starts or {})  # pid -> the lstart token ps would render
         self.git = git
         self.dead = dead  # ps/git unavailable: every call answers None
         self.calls = []
@@ -49,6 +56,9 @@ class FakePs:
             return self.table
         if "-p" in argv:
             pid = int(argv[argv.index("-p") + 1])
+            field = argv[argv.index("-o") + 1] if "-o" in argv else ""
+            if field.startswith("lstart"):
+                return self.starts.get(pid, "")
             return self.states.get(pid, "")
         return ""
 
@@ -93,8 +103,8 @@ def clean_counters():
 def ps(monkeypatch):
     """Install a fake ps/git backend and hand it back."""
 
-    def install(table="", states=None, git=None, dead=False):
-        backend = FakePs(table=table, states=states, git=git, dead=dead)
+    def install(table="", states=None, starts=None, git=None, dead=False):
+        backend = FakePs(table=table, states=states, starts=starts, git=git, dead=dead)
         monkeypatch.setattr(proc, "run_cmd", backend)
         return backend
 
@@ -119,14 +129,15 @@ def sleeps(monkeypatch):
     return calls
 
 
-def install_ps_backend(ps, states=None, git=None, table=PS_TABLE, dead=False):
-    return ps(table=table, states=states, git=git, dead=dead)
+def install_ps_backend(ps, states=None, starts=None, git=None, table=PS_TABLE, dead=False):
+    return ps(table=table, states=states, starts=starts, git=git, dead=dead)
 
 
 # ------------------------------------------------------------------- spawning
 
 
-def test_a_spawn_is_counted_with_its_pid_and_kind():
+def test_a_spawn_is_counted_with_its_pid_and_kind(ps):
+    install_ps_backend(ps)
     assert proc.note_spawn("terminal-browser") == 1
     assert proc.note_spawn("helper", pid="4242") == 2
     assert proc.runtime_spawn_count() == 2
@@ -134,11 +145,13 @@ def test_a_spawn_is_counted_with_its_pid_and_kind():
     assert proc.spawn_summary() == {
         "spawn_count": 2,
         "tracked_pids": [4242],
+        "tracked_starts": {4242: None},
         "spawn_kinds": {"helper": 1, "terminal-browser": 1},
     }
 
 
-def test_a_spawn_without_a_pid_is_counted_but_not_tracked():
+def test_a_spawn_without_a_pid_is_counted_but_not_tracked(ps):
+    install_ps_backend(ps)
     proc.note_spawn("terminal-browser")  # terminal-browser forks the pane itself
     assert proc.runtime_spawn_count() == 1
     assert proc.tracked_pids() == []
@@ -146,37 +159,77 @@ def test_a_spawn_without_a_pid_is_counted_but_not_tracked():
     assert proc.spawn_summary()["spawn_kinds"] == {"terminal-browser": 1}
 
 
-def test_unusable_pids_are_counted_but_never_tracked():
+def test_unusable_pids_are_counted_but_never_tracked(ps):
+    install_ps_backend(ps)
     for pid in (0, -7, "abc", None):
         proc.note_spawn("helper", pid=pid)
     assert proc.runtime_spawn_count() == 4
     assert proc.tracked_pids() == []  # signalling pid 0 hits a whole group
 
 
-def test_the_same_pid_is_tracked_once():
+def test_the_same_pid_is_tracked_once(ps):
+    install_ps_backend(ps)
     proc.note_spawn("helper", pid=4242)
     proc.note_spawn("helper", pid=4242)
-    assert proc.spawn_summary() == {"spawn_count": 2, "tracked_pids": [4242], "spawn_kinds": {"helper": 2}}
+    assert proc.spawn_summary() == {
+        "spawn_count": 2,
+        "tracked_pids": [4242],
+        "tracked_starts": {4242: None},
+        "spawn_kinds": {"helper": 2},
+    }
 
 
-def test_a_tracked_pid_may_be_adopted_after_the_fact():
+def test_a_tracked_pid_may_be_adopted_after_the_fact(ps):
+    install_ps_backend(ps)
     proc.note_spawn("terminal-browser")
     proc.note_spawn("terminal-browser", pid=4242)
     assert proc.tracked_pids() == [4242]
 
 
-def test_reset_spawns_starts_the_next_run():
+def test_reset_spawns_starts_the_next_run(ps):
+    install_ps_backend(ps)
     proc.note_spawn("terminal-browser", pid=4242)
     proc.reset_spawns()
     assert proc.runtime_spawn_count() == 0
     assert proc.tracked_pids() == []
     assert proc.spawn_summary()["spawn_kinds"] == {}
+    # Start times belong to the run that read them, never to the next one.
+    assert proc.spawn_summary()["tracked_starts"] == {}
 
 
 def test_the_context_manager_counts_a_spawn_without_a_pid():
     with proc.RUN.spawn("probe"):
         pass
-    assert proc.spawn_summary() == {"spawn_count": 1, "tracked_pids": [], "spawn_kinds": {"probe": 1}}
+    assert proc.spawn_summary() == {
+        "spawn_count": 1,
+        "tracked_pids": [],
+        "tracked_starts": {},
+        "spawn_kinds": {"probe": 1},
+    }
+
+
+def test_a_noted_pid_carries_the_start_time_read_at_spawn(ps):
+    """A pid is a slot, not a process: the only way to tell the two apart later
+    is what was read while the slot was still ours."""
+    backend = install_ps_backend(ps, starts={4243: "Fri Oct  2 19:11:03 2026"})
+    proc.note_spawn("terminal-browser", pid=4243)
+    assert proc.spawn_summary()["tracked_starts"] == {4243: "Fri Oct  2 19:11:03 2026"}
+    assert backend.ps_calls == [["ps", "-p", "4243", "-o", "lstart="]]
+
+
+def test_a_pid_with_no_start_time_is_recorded_as_unknown(ps):
+    """Unreadable at spawn time is "we could not tell", which costs the reuse
+    check and nothing else."""
+    install_ps_backend(ps, dead=True)
+    proc.note_spawn("terminal-browser", pid=4243)
+    assert proc.spawn_summary()["tracked_starts"] == {4243: None}
+
+
+def test_an_unreadable_pid_never_costs_a_ps_call(ps):
+    backend = install_ps_backend(ps)
+    proc.note_spawn("terminal-browser")  # no pid to ask about
+    proc.note_spawn("helper", pid=0)
+    assert backend.ps_calls == []
 
 
 # --------------------------------------------------------- process table / ps
@@ -234,6 +287,67 @@ def test_matching_processes_honours_a_narrower_pattern(ps):
 def test_the_match_list_is_capped(ps):
     install_ps_backend(ps, table="".join(f" {100 + i} Ss  /bin/terminal-browser-{i}\n" for i in range(50)))
     assert len(proc.matching_processes(limit=5)) == 5
+
+
+# --- raw argv from other processes -----------------------------------------
+
+
+BARE_CREDENTIALS = [
+    ("curl -H 'Authorization: Bearer sk-live-AAAABBBBCCCC' https://api.example.test/v1", "sk-live-AAAABBBBCCCC"),
+    ("curl https://api.example.test/v1?api_key=sk-live-ZZZZ9999", "sk-live-ZZZZ9999"),
+    ("node drive.js --token ghp_ABCDEFGHIJKLMNOP --url https://x.test", "ghp_ABCDEFGHIJKLMNOP"),
+    ("node drive.js --api-key=sk-live-QQQQ1111 --url https://x.test", "sk-live-QQQQ1111"),
+    ("sh -c 'export AUTH_TOKEN=deadbeefcafe1234; curl https://x.test'", "deadbeefcafe1234"),
+]
+
+
+@pytest.mark.parametrize(("argv", "secret"), BARE_CREDENTIALS)
+def test_a_bare_credential_in_another_process_argv_is_not_kept(ps, argv, secret):
+    """`ps` shows every process's whole command line, credentials included, and
+    those rows go into the run log. The row is still evidence of a running
+    process; it just must not carry the secret."""
+    install_ps_backend(ps, table=f" 4243 Ss  {argv}\n")
+    row = proc.matching_processes(("curl", "node", "sh"))[0]
+    assert row["pid"] == 4243  # the row survives: the process is still evidence
+    assert secret not in row["command"]
+    assert "redacted" in row["command"]
+
+
+def test_an_argv_flag_credential_is_caught_though_the_run_log_rules_never_see_a_colon(ps):
+    # `--token VALUE` is not `token: VALUE`, so the argv shape has to be rewritten
+    # before the run log's assignment rules can match it.
+    install_ps_backend(ps, table=" 4243 Ss  node drive.js --token ghp_ABCDEFGHIJKLMNOP --url https://x.test\n")
+    assert proc.matching_processes(("node",))[0]["command"] == (
+        "node drive.js --token [redacted] --url https://x.test"
+    )
+
+
+def test_a_scrubbed_command_still_matches_the_browser_pattern(ps):
+    install_ps_backend(ps, table=" 4243 Ss  /Users/u/.local/bin/terminal-browser --url 'https://x.test/?api_key=sk-live-X'\n")
+    row = proc.matching_processes()[0]
+    assert row["pid"] == 4243
+    assert "terminal-browser" in row["command"]
+    assert "sk-live-X" not in row["command"]
+
+
+def test_the_process_evidence_event_carries_no_bare_credential(ps, sleeps):
+    install_ps_backend(ps, table=" 4243 Ss  /usr/bin/terminal-browser open 'https://x.test/?token=ghp_AAAABBBBCCCCCCCC'\n")
+    proc.note_spawn("terminal-browser")
+    evidence = proc.process_evidence(goal="Check the page", sleep=lambda seconds: sleeps.append(seconds))
+    blob = json.dumps(evidence)
+    assert "ghp_AAAABBBBCCCCCCCC" not in blob
+    assert "[redacted]" in blob
+
+
+def test_a_scrub_that_explodes_still_yields_the_row(ps, monkeypatch):
+    install_ps_backend(ps, table=" 4243 Ss  /usr/bin/terminal-browser --split right\n")
+    monkeypatch.setattr(
+        runlog,
+        "_scrub_text",
+        Mock(side_effect=RuntimeError("redaction is down")),
+    )
+    row = proc.matching_processes()[0]
+    assert row == {"pid": 4243, "stat": "Ss", "command": "/usr/bin/terminal-browser --split right"}
 
 
 @pytest.mark.parametrize("stat", ["Z", "Z+", "Zs", "Z+", "X", "x"])
@@ -345,6 +459,98 @@ def test_a_liveness_report_buckets_every_pid(ps, signals):
 def test_a_liveness_report_of_nothing_is_still_well_shaped(ps):
     install_ps_backend(ps)
     assert proc.liveness_report([]) == {"alive": [], "zombie": [], "dead": [], "unknown": [], "checked": 0}
+
+
+# ------------------------------------------------------------- pid reuse
+
+
+LSTART = "Fri Oct  2 19:11:03 2026"
+
+
+def test_a_recycled_pid_is_never_reported_as_our_orphan(ps, signals):
+    """The pid is still alive — but it is somebody else's process now, so calling
+    it our leak would blame them and calling it clean would hide that we cannot
+    say what we spawned. Neither is available, so it is unknown."""
+    backend = install_ps_backend(ps, states={4243: "Ss"}, starts={4243: "Fri Oct  2 18:00:00 2026"})
+    probe = signals()
+    report = proc.liveness_report([4243], starts={4243: LSTART})
+    assert report == {"alive": [], "zombie": [], "dead": [], "unknown": [4243], "checked": 1}
+    assert probe.sent == [(4243, 0)]
+    # The state is never read: the slot already failed the identity question.
+    assert backend.ps_calls == [["ps", "-p", "4243", "-o", "lstart="]]
+
+
+def test_a_pid_whose_start_time_is_unchanged_is_still_classified(ps, signals):
+    """The common case must cost nothing: same process, same answer as before."""
+    backend = install_ps_backend(ps, states={4243: "Ss"}, starts={4243: LSTART})
+    signals()
+    assert proc.liveness_report([4243], starts={4243: LSTART})["alive"] == [4243]
+    assert backend.ps_calls == [
+        ["ps", "-p", "4243", "-o", "lstart="],
+        ["ps", "-p", "4243", "-o", "state="],
+    ]
+
+
+def test_an_unreadable_start_time_falls_back_to_the_older_checks(ps, signals):
+    """`ps` cannot say when it started: that is the situation the reuse check was
+    invented for, and it must not turn every run into `unknown`."""
+    install_ps_backend(ps, states={4243: "Ss"})
+    signals()
+    assert proc.liveness_report([4243], starts={4243: LSTART})["alive"] == [4243]
+    assert proc.liveness_report([4243], starts={4243: None})["alive"] == [4243]
+
+
+def test_a_gone_pid_is_dead_without_asking_when_it_started(ps, signals):
+    """Nothing to misattribute: a pid with no process behind it needs no lstart."""
+    backend = install_ps_backend(ps)
+    probe = signals(missing=[4243])
+    assert proc.liveness_report([4243], starts={4243: LSTART})["dead"] == [4243]
+    assert probe.sent == [(4243, 0)]
+    assert backend.ps_calls == []
+
+
+def test_a_pid_with_no_noted_start_time_never_asks_for_one(ps, signals):
+    """A call site that reported no pid, or one whose ps was down at spawn time,
+    must not start paying for a check it cannot do."""
+    backend = install_ps_backend(ps, states={4243: "Ss"})
+    signals()
+    assert proc.liveness_report([4243])["alive"] == [4243]
+    assert backend.ps_calls == [["ps", "-p", "4243", "-o", "state="]]
+
+
+def test_a_recycled_pid_is_reported_as_unknown_not_clean(ps, signals, sleeps):
+    install_ps_backend(ps, states={4243: "Ss"}, starts={4243: "Fri Oct  2 18:00:00 2026"})
+    signals()
+    report = proc.orphan_report([4243], spawn_count=1, starts={4243: LSTART})
+    assert report["status"] == proc.STATUS_UNKNOWN  # never clean, never a leak verdict
+    assert report["orphans"] == []
+    assert "recycled" in report["detail"]
+
+
+def test_the_reuse_check_survives_a_hostile_starts_mapping(ps, signals):
+    class Hostile(dict):
+        def get(self, *args, **kwargs):
+            raise RuntimeError("no lookups for you")
+
+    install_ps_backend(ps, states={4243: "Ss"})
+    signals()
+    assert proc.liveness_report([4243], starts=Hostile())["alive"] == [4243]
+
+
+def test_an_unreadable_start_time_source_never_raises(ps, signals, monkeypatch):
+    def boom(pid, *, timeout=proc.PS_TIMEOUT_S):
+        raise RuntimeError("ps went sideways")
+
+    monkeypatch.setattr(proc, "process_start_time", boom)
+    signals()
+    assert proc.proc_state(4243, started=LSTART) == proc.ALIVE
+
+
+def test_a_hostile_pid_never_reads_a_start_time(ps):
+    install_ps_backend(ps)
+    assert proc.process_start_time(0) is None
+    assert proc.process_start_time("junk") is None
+    assert install_ps_backend(ps).ps_calls == []
 
 
 # ------------------------------------------------------------------- orphans
@@ -672,7 +878,23 @@ def test_a_failed_write_leaves_no_scratch_file(monkeypatch, ps, tmp_path):
     install_ps_backend(ps, git=None)
     written = proc.write_version_manifest({"impl_hash": Unserialisable()})
     assert "error" in written
-    assert not (tmp_path / "run-log" / "version_manifest.json.tmp").exists()
+    # Not the one fixed name: the scratch is per-writer, so "no scratch left" is the
+    # assertion, not "that one name is gone".
+    assert [path.name for path in (tmp_path / "run-log").iterdir() if path.name.endswith(".tmp")] == []
+    assert not (tmp_path / "run-log" / "version_manifest.json").exists()
+
+
+def test_a_failed_replace_removes_the_scratch_it_already_wrote(monkeypatch, ps, tmp_path):
+    """The failure that happens *after* the body is on disk: the rename cannot land.
+    A scratch left behind is a stale file a later reader could mistake for evidence."""
+    monkeypatch.setattr(runlog, "JSONL_PATH", tmp_path / "run-log" / "drive.jsonl")
+    target = tmp_path / "run-log" / "version_manifest.json"
+    target.mkdir(parents=True)  # a directory where a file belongs
+    install_ps_backend(ps, git=None)
+
+    written = proc.write_version_manifest()
+    assert "error" in written
+    assert [path.name for path in (tmp_path / "run-log").iterdir()] == ["version_manifest.json"]
 
 
 def test_a_prepared_manifest_is_written_verbatim(monkeypatch, ps, tmp_path):
@@ -680,6 +902,60 @@ def test_a_prepared_manifest_is_written_verbatim(monkeypatch, ps, tmp_path):
     install_ps_backend(ps, git="ignored")
     written = proc.write_version_manifest({"git_commit": "abc", "impl_hash": "def", "interpreter": "CPython 3.12"})
     assert json.loads((tmp_path / "run-log" / "version_manifest.json").read_text()) == written
+
+
+def test_the_scratch_name_is_not_shared_between_writers(monkeypatch, ps, tmp_path):
+    """A fixed ``.tmp`` is only atomic while there is one writer: two runs in two
+    processes share the path, and one can rename the other's half-written body
+    into place."""
+    target = tmp_path / "version_manifest.json"
+    first = proc._scratch_name(target)
+    second = proc._scratch_name(target)
+    assert first != second
+    assert first.parent == target.parent  # same directory: that is what makes the rename atomic
+    assert first.name.endswith(".tmp") and second.name.endswith(".tmp")
+
+
+def test_two_writers_interleaving_leave_one_valid_manifest(monkeypatch, ps, tmp_path):
+    """The failure this exists for: interleaved writers, one file, and a reader
+    that must find a whole manifest from one of them — never a blend of both."""
+    log = tmp_path / "run-log" / "drive.jsonl"
+    monkeypatch.setattr(runlog, "JSONL_PATH", log)
+    install_ps_backend(ps, git=None)
+    real_write_text = proc.Path.write_text
+    both_inside = threading.Barrier(2)
+    both_written = threading.Barrier(2)
+
+    def interleaving_write(self, *args, **kwargs):
+        # Hold both writers inside the write, then hold them again once both
+        # bodies are on disk. That is the window a shared scratch path turns into
+        # one writer renaming the other's body — or into nothing at all.
+        both_inside.wait(timeout=10)
+        result = real_write_text(self, *args, **kwargs)
+        both_written.wait(timeout=10)
+        return result
+
+    monkeypatch.setattr(proc.Path, "write_text", interleaving_write)
+    written = []
+
+    def writer(tag):
+        written.append(proc.write_version_manifest({"git_commit": tag, "impl_hash": tag * 4, "interpreter": "3.12"}))
+
+    threads = [threading.Thread(target=writer, args=(tag,)) for tag in ("a", "b")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    target = tmp_path / "run-log" / "version_manifest.json"
+    landed = json.loads(target.read_text())
+    # One writer's manifest, whole: the commit, the hash and the interpreter all
+    # come from the same body rather than from two.
+    assert landed["git_commit"] in {"a", "b"}
+    assert landed["impl_hash"] == landed["git_commit"] * 4
+    assert {body["git_commit"] for body in written} == {"a", "b"}
+    assert all("error" not in body for body in written)
+    assert sorted(path.name for path in (tmp_path / "run-log").iterdir()) == ["version_manifest.json"]
 
 
 def test_the_real_checkout_hashes_and_commits(ps):
@@ -726,6 +1002,9 @@ class FakeAgent:
             "started_at": None,
         }
         self.closed = False
+        # Counters like the real agent, and written at close like the real agent,
+        # so the run's own evidence can be compared with the file on disk.
+        self.metrics = Metrics()
 
     def snapshot(self):
         return {key: value for key, value in self.state.items() if key != "browser"}
@@ -738,14 +1017,41 @@ class FakeAgent:
 
     def close(self):
         self.closed = True
+        self.metrics.record_cleanup(0.0)
+        self.metrics.finish(self.state.get("status"))
+        self.metrics.write()
+
+
+# What `terminal-browser ls --all --json` reports for the port the fixture drives.
+TB_INSTANCE = {"browsers": [{"key": "1-1", "pid": 4243, "cdpPort": 1, "url": "https://example.test/next"}]}
+
+
+def _no_such_process(pid, sig):
+    """A pid table with nothing in it: the default, so a liveness answer never
+    depends on what the test machine happens to be running."""
+    raise ProcessLookupError(errno.ESRCH, "no such process")
+
+
+def _still_running(pid, sig):
+    """A pid that answers signal 0: the pid is in the table, state unknown to
+    `kill` alone, which is exactly what `ps` then has to settle."""
+    return None
 
 
 @pytest.fixture
 def drive(monkeypatch, capsys, ps, sleeps):
     """cli.main with no browser and no model. Returns (code, stdout rows, events)."""
 
-    def run(*, auto_launched=False, agent_cls=FakeAgent):
-        backend = install_ps_backend(ps, git="dae8c610584aa693e9fad240e01fa8423c1b0b61\n")
+    def run(
+        *,
+        auto_launched=False,
+        agent_cls=FakeAgent,
+        ls=TB_INSTANCE,
+        states=None,
+        argv=None,
+        kill=_no_such_process,
+    ):
+        backend = install_ps_backend(ps, states=states, git="dae8c610584aa693e9fad240e01fa8423c1b0b61\n")
         monkeypatch.setattr(
             cli,
             "discover",
@@ -755,7 +1061,16 @@ def drive(monkeypatch, capsys, ps, sleeps):
         monkeypatch.setattr(cli, "set_lease", lambda **kw: None)
         monkeypatch.setattr(cli, "find_continuable_page", lambda: (None, None))
         monkeypatch.setattr(cli, "DriveAgent", agent_cls)
-        code = cli.main(["--goal", "Confirm the order", "--url", "https://example.test/next"])
+
+        def instance_list():
+            """`ls --all --json`, or the failure a real call would have produced."""
+            if isinstance(ls, BaseException):
+                raise ls
+            return ls
+
+        monkeypatch.setattr(cli, "list_browsers", instance_list)
+        monkeypatch.setattr(proc.os, "kill", kill)
+        code = cli.main(argv or ["--goal", "Confirm the order", "--url", "https://example.test/next"])
         rows = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
         events = [
             json.loads(line)
@@ -795,16 +1110,90 @@ def test_a_run_that_attaches_counts_no_spawns(drive):
 
 
 def test_a_run_that_provisioned_a_browser_counts_one_spawn(drive):
+    """The auto-launch is the one spawn this driver really performs, and `ls` names
+    the pid behind the port it is driving — so the close-time check gets a pid to
+    ask about instead of a command pattern."""
     code, rows, events, backend = drive(auto_launched=True)
     assert code == 0
     assert proc.runtime_spawn_count() == 1
     event = _processes_event(events)
     assert event["spawn_count"] == 1
     assert event["spawn_kinds"] == {"terminal-browser": 1}
-    # No pid: terminal-browser forked the pane itself, so the scan is the evidence.
+    assert event["tracked_pids"] == [4243]
+    assert event["status"] == proc.STATUS_CLEAN  # 4243 is not running: proved, not assumed
+    assert event["liveness"]["dead"] == [4243]
+    # A tracked pid is excluded from the scan: the scan exists for the pids this
+    # run cannot name, and 4243 is now answered for directly.
+    assert [row["pid"] for row in event["pattern_matches"]] == [4242]
+
+
+def test_a_provision_whose_pid_ls_cannot_name_falls_back_to_the_scan(drive):
+    """No pid is not a failure and is not a guess: the spawn stays counted, and
+    the scan stays evidence rather than a verdict."""
+    code, rows, events, backend = drive(auto_launched=True, ls={"browsers": []})
+    assert code == 0
+    event = _processes_event(events)
+    assert event["spawn_count"] == 1
     assert event["tracked_pids"] == []
     assert event["status"] == proc.STATUS_UNTRACKED
     assert [row["pid"] for row in event["pattern_matches"]] == [4242, 4243]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        FileNotFoundError("terminal-browser is not installed"),
+        RuntimeError("ls timed out"),
+        {"browsers": [{"pid": 4243}]},  # no cdpPort to match the driven port against
+        {"browsers": [{"cdpPort": 1}]},  # a port with no pid
+        {"browsers": [{"cdpPort": 1, "pid": 0}]},  # a pid that addresses no process
+        {"browsers": [{"cdpPort": 1, "pid": "not-a-pid"}]},
+        {"browsers": ["not even a dict"]},
+        {"no_browsers_key": True},
+        [],
+    ],
+)
+def test_a_broken_instance_list_leaves_the_spawn_counted_and_untracked(drive, answer):
+    """Every way `ls` can fail to name the new instance costs the pid and nothing
+    else: the run still records the spawn it performed, and the orphan check still
+    answers with the scan rather than with a guess."""
+    code, _rows, events, _backend = drive(auto_launched=True, ls=answer)
+    assert code == 0
+    event = _processes_event(events)
+    assert event["spawn_count"] == 1
+    assert event["tracked_pids"] == []
+    assert event["status"] == proc.STATUS_UNTRACKED
+    assert [row["pid"] for row in event["pattern_matches"]] == [4242, 4243]
+
+
+def test_the_instance_pid_is_matched_by_the_port_we_are_driving(monkeypatch):
+    monkeypatch.setattr(
+        cli,
+        "list_browsers",
+        lambda: {
+            "browsers": [
+                {"pid": 111, "cdpPort": 9},  # somebody else's instance
+                {"pid": 4243, "cdpPort": 57463},
+                {"pid": 222, "cdpPort": 57463},  # a second row for our port
+            ]
+        },
+    )
+    assert cli._instance_pid("ws://127.0.0.1:57463/devtools/browser/abc") == 4243
+    assert cli._instance_pid("wss://127.0.0.1:57463/devtools/browser/abc") == 4243
+
+
+@pytest.mark.parametrize(
+    "ws_url", ["", None, "ws://127.0.0.1/devtools/browser/abc", "not a url at all", "ws://[::1/devtools"]
+)
+def test_a_ws_url_without_a_readable_port_yields_no_pid(monkeypatch, ws_url):
+    monkeypatch.setattr(cli, "list_browsers", Mock(side_effect=AssertionError("ls must not be asked")))
+    assert cli._instance_pid(ws_url) is None
+
+
+def test_a_string_cdp_port_still_matches(monkeypatch):
+    # `ls --json` is another program's output; "57463" and 57463 are the same port.
+    monkeypatch.setattr(cli, "list_browsers", lambda: {"browsers": [{"pid": 4243, "cdpPort": "57463"}]})
+    assert cli._instance_pid("ws://127.0.0.1:57463/devtools/browser/abc") == 4243
 
 
 def test_two_runs_in_one_process_do_not_share_a_spawn_count(drive):
@@ -840,7 +1229,7 @@ def test_the_result_and_exit_code_are_untouched_by_the_accounting(drive):
 
 def test_a_leaked_pid_is_recorded_without_changing_the_exit_code(drive, monkeypatch):
     proc.note_spawn("terminal-browser", pid=4243)  # as if discovery had learned a pid
-    monkeypatch.setattr(proc.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(proc.os, "kill", _still_running)
     code, rows, events, _backend = drive()
     event = _processes_event(events)
     # The run reset the counters at startup, so this pid belongs to the run only
@@ -850,7 +1239,58 @@ def test_a_leaked_pid_is_recorded_without_changing_the_exit_code(drive, monkeypa
     assert "event" in event
 
 
-def test_a_tracked_pid_that_survives_is_reported_as_an_orphan(monkeypatch, capsys, ps, sleeps):
+def test_a_provisioned_browser_that_survives_is_reported_as_an_orphan(drive):
+    """The verdict the whole module exists for, end to end with nothing faked in
+    the wiring: this run auto-launched a pane, `ls` named the pid behind the port,
+    and the process is still there after the detach-only close."""
+    code, rows, events, backend = drive(auto_launched=True, states={4243: "Ss"}, kill=_still_running)
+    event = _processes_event(events)
+    assert code == 0  # an orphan is evidence, never a reason to fail a finished run
+    assert rows[-1]["status"] == "done"
+    assert event["spawn_count"] == 1
+    assert event["tracked_pids"] == [4243]
+    assert event["status"] == proc.STATUS_ORPHANS
+    assert event["orphans"] == [4243]
+    assert event["liveness"]["alive"] == [4243]
+    # The pid was classified from the table, not from a pattern that might match
+    # somebody else's browser.
+    assert ["ps", "-p", "4243", "-o", "state="] in backend.ps_calls
+
+
+def test_a_run_that_stops_for_no_page_still_records_its_process_evidence(drive):
+    """Early return, mid-run: the browser this run launched is still a browser it
+    launched, so the accounting has to be written on this path too."""
+    code, rows, events, backend = drive(auto_launched=True, argv=["--goal", "Confirm the order"])
+    assert code == 1
+    assert rows == [
+        {
+            "status": "blocked",
+            "error": "No page to reuse (no remembered tab). Pass url to open one.",
+            "reason": "no_page",
+        }
+    ]
+    event = _processes_event(events)
+    assert event["spawn_count"] == 1  # the launch happened before this refusal
+    assert event["tracked_pids"] == [4243]
+    assert event["goal"] == "Confirm the order"
+    assert event["status"] == proc.STATUS_CLEAN
+
+
+def test_a_run_refused_for_an_unsupported_goal_still_records_its_process_evidence(drive):
+    code, rows, events, backend = drive(auto_launched=True, argv=["--goal", "Take a screenshot", "--url", "https://x.test"])
+    assert code == 1
+    assert rows[-1]["status"] == "blocked"
+    event = _processes_event(events)
+    assert event["spawn_count"] == 1
+    assert event["tracked_pids"] == [4243]
+    # The refusal is named as a stop token, not left as a blocked run with no reason.
+    assert _run_events(events)[-1]["metrics"]["stop_reason"] == "unsupported"
+
+
+def test_an_agent_that_would_not_open_still_records_its_process_evidence(monkeypatch, ps, sleeps):
+    """Construction failing is not a result the driver converts — it still
+    propagates — but the browser it launched is already a process it started, so
+    the evidence has to be written on the way out."""
     monkeypatch.setattr(
         cli,
         "discover",
@@ -859,23 +1299,155 @@ def test_a_tracked_pid_that_survives_is_reported_as_an_orphan(monkeypatch, capsy
     monkeypatch.setattr(cli, "connect", lambda url: None)
     monkeypatch.setattr(cli, "set_lease", lambda **kw: None)
     monkeypatch.setattr(cli, "find_continuable_page", lambda: (None, None))
-    monkeypatch.setattr(cli, "DriveAgent", FakeAgent)
-    install_ps_backend(ps, states={4243: "Ss"})
-    monkeypatch.setattr(proc.os, "kill", lambda pid, sig: None)
-    real_note = proc.note_spawn
+    monkeypatch.setattr(cli, "list_browsers", lambda: TB_INSTANCE)
+    install_ps_backend(ps, git=None)
+    monkeypatch.setattr(proc.os, "kill", _no_such_process)
 
-    def note_with_pid(kind="spawn", pid=None):
-        return real_note(kind, 4243)  # a provision that somehow knows its pid
+    class Refuses(FakeAgent):
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("the pane never came up")
 
-    monkeypatch.setattr(cli.proc_mod, "note_spawn", note_with_pid)
-    code = cli.main(["--goal", "Confirm the order", "--url", "https://example.test/next"])
-    capsys.readouterr()
+    monkeypatch.setattr(cli, "DriveAgent", Refuses)
+    with pytest.raises(RuntimeError, match="pane never came up"):
+        cli.main(["--goal", "Confirm the order", "--url", "https://example.test/next"])
+
     events = [json.loads(line) for line in runlog.JSONL_PATH.read_text().splitlines()]
     event = _processes_event(events)
-    assert code == 0  # an orphan is evidence, never a reason to fail a finished run
-    assert event["status"] == proc.STATUS_ORPHANS
-    assert event["orphans"] == [4243]
-    assert sleeps == [proc.ORPHAN_CHECK_DELAY_S]
+    assert event["spawn_count"] == 1
+    assert event["tracked_pids"] == [4243]
+
+
+# ------------------------------------------------------- run identity in the log
+
+
+def _run_events(events):
+    return [event for event in events if event.get("event") == "run"]
+
+
+def test_the_run_record_carries_this_run_s_counters_and_identity(drive):
+    code, _rows, events, backend = drive()
+    assert code == 0
+    runs = _run_events(events)
+    assert [event["stage"] for event in runs] == ["start", "finish"]
+    identity, finished = runs
+    # One run, one id: the log's copy, and the file on disk, are the same run.
+    on_disk = json.loads(metrics_path().read_text())
+    assert identity["metrics"]["run_id"] == finished["metrics"]["run_id"] == on_disk["run_id"]
+    assert len(on_disk["run_id"]) == 32 and all(c in "0123456789abcdef" for c in on_disk["run_id"])
+    # The start copy cannot know how the run ended; the finish copy carries it.
+    assert identity["metrics"]["finished"] is False
+    assert finished["metrics"] == on_disk
+    assert finished["metrics"]["status"] == "done"
+    assert finished["metrics"]["finished_at"] is not None
+    assert identity["version"] == finished["version"]
+
+
+def test_the_run_identity_carries_a_goal_digest_and_never_the_goal(drive):
+    code, _rows, events, _backend = drive()
+    snapshot = _run_events(events)[0]["metrics"]
+    assert len(snapshot["goal_hash"]) == 16
+    assert snapshot["goal_hash"] == hashlib.sha256(b"Confirm the order").hexdigest()[:16]
+    blob = json.dumps(snapshot)
+    assert "Confirm the order" not in blob
+    assert STAMP.match(snapshot["started_at"])
+
+
+def test_two_runs_never_share_an_identity(drive):
+    drive()
+    first = json.loads(metrics_path().read_text())["run_id"]
+    drive()
+    second = json.loads(metrics_path().read_text())["run_id"]
+    assert first != second
+
+
+def test_a_run_that_never_closed_leaves_a_provably_stale_metrics_file(drive):
+    """The SIGKILL case: metrics.json is written at close, so a killed run leaves
+    the previous run's numbers in place. The log's run record carries its own id,
+    so the two disagree and the file cannot pass as current."""
+
+    class Killed(FakeAgent):
+        def close(self):
+            self.closed = True  # killed before the counters were written
+
+    assert drive()[0] == 0
+    written = json.loads(metrics_path().read_text())
+    assert written["finished"] is True
+
+    code, _rows, events, _backend = drive(agent_cls=Killed)
+    assert code == 0
+    assert json.loads(metrics_path().read_text()) == written  # nothing overwrote it
+    latest = _run_events(events)[-1]["metrics"]
+    assert latest["run_id"] != written["run_id"]
+    assert latest["finished"] is False  # the log says which run the file is not
+
+
+def test_the_stop_reason_the_driver_sets_is_the_one_metrics_reports():
+    """The two halves of the nit, composed: the driver's state carries a token, the
+    snapshot turns that token into a recorded stop (and into a budget error kind),
+    and neither step reads a sentence."""
+    class Deadline:
+        state = {"stop_reason": "time_budget"}
+        metrics = Metrics()
+
+    agent = Deadline()
+    cli._note_stop(agent)
+    snap = agent.metrics.finish(agent.state["status"] if "status" in agent.state else "blocked")
+    assert snap["stop_reason"] == "time_budget"
+    assert snap["error"] == "budget"
+    assert snap["status"] == "blocked"
+
+
+def test_an_agent_with_no_counters_still_gets_a_run_record(drive):
+    class Countless(FakeAgent):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.metrics = None
+
+        def close(self):
+            self.closed = True
+
+    code, _rows, events, _backend = drive(agent_cls=Countless)
+    assert code == 0
+    runs = _run_events(events)
+    assert [event["stage"] for event in runs] == ["start", "finish"]
+    assert "metrics" not in runs[-1]
+    assert runs[-1]["goal"] == "Confirm the order"  # the record is still the run's
+
+
+def test_a_hostile_metrics_cannot_break_the_run_record(drive):
+    class Hostile:
+        def snapshot(self):
+            raise RuntimeError("no counters for you")
+
+    class Liar(FakeAgent):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.metrics = Hostile()
+
+        def close(self):
+            self.closed = True
+
+    code, rows, events, _backend = drive(agent_cls=Liar)
+    assert code == 0
+    assert rows[-1]["status"] == "done"
+    assert _processes_event(events)["spawn_count"] == 0
+    assert "metrics" not in _run_events(events)[-1]
+
+
+def test_a_close_that_raises_still_leaves_the_evidence(drive):
+    """The close is the one thing in the finally that can raise, and it must not
+    cost the run its records — nor swallow its own exception."""
+
+    class Rude(FakeAgent):
+        def close(self):
+            self.closed = True
+            raise RuntimeError("the browser would not detach")
+
+    with pytest.raises(RuntimeError, match="would not detach"):
+        drive(agent_cls=Rude)
+    events = [json.loads(line) for line in runlog.JSONL_PATH.read_text().splitlines()]
+    assert _processes_event(events)["spawn_count"] == 0
+    assert [event["stage"] for event in _run_events(events)] == ["start", "finish"]
 
 
 def test_broken_accounting_cannot_break_a_run(monkeypatch, capsys, ps, tmp_path):

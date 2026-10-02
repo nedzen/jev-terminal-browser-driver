@@ -25,6 +25,9 @@ from jev_driver.browser import (
 
 KEY = [1.0, "https://x.com/home", 0, 0, 1200, 800, [[4, ""]]]
 GUARD = [7, "button", "8933 Likes. Like", None, None, None, None, False, None, None, None, None, "/p/1", "@a · 2m"]
+# [id, role, name, value, ...] — guard[0] is the per-document node id, guard[3] the field's value.
+EMPTY_FIELD = [4, "textbox", "Search query", "", None, None, False, ""]
+TYPED_FIELD = [4, "textbox", "Search query", "jev browser", None, None, False, ""]
 
 
 def probe(key=KEY, guard=GUARD, *, attached=True, live=True, in_view=True, hit=True, writable=True):
@@ -100,21 +103,39 @@ def test_stale_click_never_dispatches_input(monkeypatch):
     assert events[0]["probe_reason"] == "not_actionable"
 
 
-def test_transient_reparent_succeeds_after_retry():
-    """A node detached for two frames is a re-render, not a stale page."""
-    browser = FakeBrowser([probe(attached=False, live=False), probe(attached=False, live=False), probe()])
+def test_a_detached_node_is_never_retried():
+    """Ids come from a per-document counter, so a detached node cannot re-attach: stop at once."""
+    browser = FakeBrowser([probe(attached=False, live=False)])
+    assert browser.fresh(page(), {"kind": "click", "node": 7}) is False
+    assert browser._fresh_reason == "target_detached"
+    assert len(browser.expressions) == 1  # no settle window spent on an impossible recovery
+    assert browser.slept == []
+
+
+def test_a_detached_node_is_final_even_when_a_later_probe_would_have_been_ok():
+    """The first verdict stands; the answers behind it are never read."""
+    browser = FakeBrowser([probe(attached=False, live=False), probe()])
+    assert browser.fresh(page(), {"kind": "click", "node": 7}) is False
+    assert browser._fresh_reason == "target_detached"
+    assert len(browser.expressions) == 1
+
+
+def test_a_control_that_is_mid_render_still_gets_the_settle_window():
+    """Only detachment is final. A control that is disabled or covered for two frames is a re-render."""
+    browser = FakeBrowser([probe(live=False), probe(hit=False), probe()])
     assert browser.fresh(page(), {"kind": "click", "node": 7}) is True
     assert browser._fresh_reason == "ok"
     assert len(browser.expressions) == 3
     assert browser.slept == [0.1, 0.2]
 
 
-def test_a_reparented_field_is_typed_into_after_settling():
+def test_a_field_that_refuses_text_for_a_frame_is_typed_into_after_settling():
     """The same tolerance applies to a fill, and the value guard still governs it."""
     typed = [4, "textbox", "Search query", "", None, None, False, ""]
     stored = {"4": typed}
-    browser = FakeBrowser([probe(attached=False, live=False), probe(key=KEY, guard=typed)])
+    browser = FakeBrowser([probe(key=KEY, guard=typed, writable=False), probe(key=KEY, guard=typed)])
     assert browser.fresh(page(guards=stored), {"kind": "fill", "node": 4}) is True
+    assert browser._fresh_reason == "ok"
     assert browser.slept == [0.1]
 
 
@@ -158,6 +179,7 @@ REASONS = [
     ("not_actionable", "fill", probe(live=False, writable=False)),
     ("not_writable", "fill", probe(writable=False)),
     ("ok", "click", probe()),
+    ("ok", "click", probe(in_view=False)),  # the executor scrolls an off-screen node into view first
     ("ok", "select", probe()),
     ("ok", "fill", probe()),
 ]
@@ -195,10 +217,35 @@ def test_a_covered_control_is_still_the_control_that_was_chosen():
     assert _probe_reason("click", page(), 7, probe(guard=other_control())) == "target_changed"
 
 
+def test_an_off_screen_click_is_not_a_stale_field():
+    """A self-scrolling feed leaves the chosen node below the fold; the executor scrolls it in."""
+    browser = FakeBrowser([probe(in_view=False)])
+    assert browser.fresh(page(), {"kind": "click", "node": 7}) is True
+    assert browser._fresh_reason == "ok"
+    assert browser.slept == []
+
+
 def test_a_fill_survives_a_same_url_document_swap():
+    """Only a field that still holds text can be recognised across two documents."""
     swapped = [2.0, *KEY[1:]]
-    assert _probe_reason("fill", page(), 7, probe(key=swapped)) == "ok"
-    assert _probe_reason("click", page(), 7, probe(key=swapped)) == "target_changed"
+    seen = page(guards={"4": TYPED_FIELD})
+    assert _probe_reason("fill", seen, 4, probe(key=swapped, guard=TYPED_FIELD)) == "ok"
+    assert _probe_reason("click", seen, 4, probe(key=swapped, guard=TYPED_FIELD)) == "target_changed"
+
+
+def test_a_colliding_node_id_does_not_survive_a_same_url_document_swap():
+    """Id 4 in a fresh document is whatever that document observed fourth, so the value decides."""
+    swapped = [2.0, *KEY[1:]]
+    empty = page(guards={"4": EMPTY_FIELD})
+    # Same id, same URL, but the field holds nothing to match the swap on: refuse and re-observe.
+    assert _probe_reason("fill", empty, 4, probe(key=swapped, guard=EMPTY_FIELD)) == "target_changed"
+    # Same id and a non-empty value that differs: a different field wearing the same id.
+    other = [*TYPED_FIELD]
+    other[3] = "a different search"
+    colliding = page(guards={"4": TYPED_FIELD})
+    assert _probe_reason("fill", colliding, 4, probe(key=swapped, guard=other)) == "target_changed"
+    # The same rule does not apply inside one document: an empty field is still itself.
+    assert _probe_reason("fill", empty, 4, probe(key=KEY, guard=EMPTY_FIELD)) == "ok"
 
 
 def test_a_fill_follows_its_field_not_the_feed():
@@ -283,7 +330,7 @@ HARNESS = """
 const fs = require('fs');
 const expression = fs.readFileSync(process.argv[2], 'utf8');
 const spec = JSON.parse(process.argv[3]);
-function makeElement(s) {
+function makeElement(s, children) {
   const self = {
     isConnected: s.connected !== false,
     matches: (sel) => sel === ':disabled' && !!s.disabled,
@@ -294,15 +341,20 @@ function makeElement(s) {
     checkVisibility: () => s.visible !== false,
     readOnly: !!s.readOnly,
     getAttribute: (name) => (s.attributes || {})[name] !== undefined ? s.attributes[name] : null,
-    contains: (other) => other === self,
+    contains: (other) => other === self || (children || []).includes(other),
     getBoundingClientRect: () => s.rect || {x: 0, y: 0, width: 0, height: 0},
   };
   return self;
 }
-const el = spec.omitNode ? null : makeElement(spec.element || {});
+// elementFromPoint answers the topmost node at the point, which is normally the node itself or
+// something inside it (an icon or an svg inside the button the driver clicked).
+const child = spec.hitChild ? makeElement(spec.hitChild, null) : null;
+const el = spec.omitNode ? null : makeElement(spec.element || {}, child ? [child] : null);
 globalThis.innerWidth = 1200;
 globalThis.innerHeight = 800;
-globalThis.document = {elementFromPoint: () => (spec.covered ? {tagName: 'OVERLAY'} : el)};
+globalThis.document = {
+  elementFromPoint: () => (spec.covered ? {tagName: 'OVERLAY'} : (child || el)),
+};
 globalThis.window = spec.noCache ? {} : {
   __jevFast: {
     nodes: new Map([[spec.node === undefined ? 7 : spec.node, el]]),
@@ -354,11 +406,28 @@ def test_probe_js_hit_test_follows_element_from_point(tmp_path):
 
 
 @node_only
-def test_probe_js_calls_an_off_screen_centre_not_actionable(tmp_path):
+def test_probe_js_counts_a_descendant_hit_as_a_hit(tmp_path):
+    """The real shape: elementFromPoint returns the icon or svg inside the button, not the button."""
+    spec = {**LIVE, "hitChild": {"tagName": "svg", "rect": {"x": 100, "y": 200, "width": 80, "height": 30}}}
+    assert flags_of(run_probe(tmp_path, spec)) == [True, True, True, True, True]
+    # Containment is what decides it: the same page with an overlay on top is still not a hit.
+    assert flags_of(run_probe(tmp_path, {**spec, "covered": True})) == [True, True, True, False, True]
+
+
+@node_only
+def test_probe_js_calls_a_boxless_centre_not_actionable(tmp_path):
+    """Zero width or height: the executor's own hit-test refuses those before scrolling."""
+    boxless = {**LIVE, "element": {"rect": {"x": 100, "y": 200, "width": 0, "height": 0}}}
+    assert flags_of(run_probe(tmp_path, boxless)) == [True, True, False, False, True]
+    zero_height = {**LIVE, "element": {"rect": {"x": 100, "y": 200, "width": 80, "height": 0}}}
+    assert flags_of(run_probe(tmp_path, zero_height)) == [True, True, False, False, True]
+
+
+@node_only
+def test_probe_js_reports_an_off_screen_node_as_actionable(tmp_path):
+    """Below the fold is not covered: the executor scrollIntoViews and hit-tests again."""
     spec = {**LIVE, "element": {"rect": {"x": 100, "y": 2000, "width": 80, "height": 30}}}
-    assert flags_of(run_probe(tmp_path, spec)) == [True, True, False, False, True]
-    hidden = {**LIVE, "element": {"rect": {"x": 100, "y": 200, "width": 0, "height": 0}}}
-    assert flags_of(run_probe(tmp_path, hidden)) == [True, True, False, False, True]
+    assert flags_of(run_probe(tmp_path, spec)) == [True, True, False, True, True]
 
 
 @node_only

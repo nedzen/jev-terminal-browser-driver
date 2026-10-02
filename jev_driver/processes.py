@@ -33,10 +33,23 @@ then, and a dead process leaks nothing but a slot. The four answers are
 ``unknown`` deliberately never counts as clean, because "we could not check" is
 not "there is nothing there".
 
+A pid is a slot, not a process
+------------------------------
+``note_spawn(kind, pid)`` records the start time ``ps`` reports for that pid at
+the moment the run started it, and the close-time check compares the two. A pid
+that is recycled between the two readings belongs to somebody else now, and
+attributing it to this run would either report another process as our leak or
+bury the fact that we cannot say what we spawned — so a mismatch reads
+``unknown``, the answer that never counts as clean.
+
 A command-pattern match is evidence, not a verdict. The driver attaches to
 panes it did not create and leaves them running on purpose, so ``ps`` rows land
 in ``pattern_matches``, separately from the pids this run tracked itself. Only
-those tracked pids can make a run report ``orphans``.
+those tracked pids can make a run report ``orphans``. Those rows carry raw argv
+from other processes, which is exactly where a bare credential lives, so every
+command string goes through the run log's credential redaction
+(``runlog._scrub_text``) before it is stored or matched on — the vocabulary is
+not duplicated here because two copies of it would drift.
 """
 
 from __future__ import annotations
@@ -46,8 +59,10 @@ import hashlib
 import json
 import os
 import platform
+import re
 import subprocess
 import time
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -71,6 +86,7 @@ DEFAULT_PATTERNS = ("terminal-browser",)
 MAX_PATTERN_MATCHES = 20
 MAX_TRACKED_PIDS = 64
 MAX_COMMAND_CHARS = 200
+MAX_START_CHARS = 32
 
 ALIVE = "alive"
 ZOMBIE = "zombie"
@@ -83,6 +99,16 @@ ZOMBIE_LETTERS = ("Z", "X", "x")
 # Everything else we are willing to call running. "I" is macOS idle-kernel
 # thread, "W" is Linux paging, "U"/"P"/"K"/"T" are the BSD/older states.
 RUNNING_LETTERS = ("R", "S", "D", "I", "T", "U", "W", "K", "P")
+
+# argv has a spelling the run log's text rules do not reach: a flag name in front
+# of its value with no `=` or `:`, as in `--token ghp_...`. The run log stays the
+# authority on what counts as a secret name; this only rewrites that one argv
+# shape into the `name: value` text it already redacts, so there is no second
+# credential vocabulary to drift.
+_SECRET_FLAG_RE = re.compile(r"(?i)(--[a-z0-9][a-z0-9_-]*)([ \t]+|=)(\S+)")
+_SECRET_FLAG_NAME_RE = re.compile(
+    r"(?i)^--[a-z0-9]*[-_]?(?:api[-_]?key|keys?|tokens?|secrets?|passwords?|passwd|pwd|cookies?|credentials?)$"
+)
 
 # Close-time report vocabulary. Only "orphans" is a leak verdict.
 STATUS_ORPHANS = "orphans"
@@ -135,11 +161,45 @@ def ps_output(args: list[str], *, timeout: float = PS_TIMEOUT_S) -> str | None:
     return run_cmd(["ps", *args], timeout=timeout)
 
 
+def _redact_flag(match) -> str:
+    """One ``--flag value`` pair, redacted when the flag name says secret.
+
+    A flag that is not a secret name (``--url https://x.test``) is returned
+    untouched, so the row still reads as the command it was.
+    """
+    try:
+        if _SECRET_FLAG_NAME_RE.match(match.group(1)):
+            return f"{match.group(1)}{match.group(2)}{runlog.REDACTED}"
+        return match.group(0)
+    except Exception:
+        return match.group(0)
+
+
+def _scrub_command(value) -> str:
+    """A ps command string, credential-redacted and length-capped.
+
+    Order matters: the run log first, then the argv flag shape, because
+    ``--token VALUE`` is not text its assignment rules recognise (``token:`` is).
+    The flag pass rewrites the whole value, so running it last cannot leave a
+    half-consumed marker behind — the failure mode of doing it first, where the
+    run log would eat ``[redacted`` and leave its closing bracket. A scrub that
+    fails must not lose the row, so the worst case is the clipped original.
+    """
+    text = str(value or "")
+    try:
+        return _SECRET_FLAG_RE.sub(_redact_flag, runlog._scrub_text(text))[:MAX_COMMAND_CHARS]
+    except Exception:
+        return text[:MAX_COMMAND_CHARS]
+
+
 def process_table(*, timeout: float = PS_TIMEOUT_S) -> list[dict]:
     """Every visible process as ``{"pid", "stat", "command"}``. Never raises.
 
     The kernel's own threads carry no useful command line; they are kept
     (they are part of an honest table) and filtered by the callers.
+
+    ``command`` is redacted and capped here rather than at each caller: this is
+    the one place raw argv enters the module, and it reaches the run log.
     """
     rows: list[dict] = []
     out = ps_output(["-A", "-o", "pid=,stat=,command="], timeout=timeout)
@@ -151,7 +211,7 @@ def process_table(*, timeout: float = PS_TIMEOUT_S) -> list[dict]:
             {
                 "pid": int(parts[0]),
                 "stat": parts[1][:4],
-                "command": parts[2].strip()[:MAX_COMMAND_CHARS],
+                "command": _scrub_command(parts[2].strip()),
             }
         )
     return rows
@@ -187,6 +247,10 @@ def matching_processes(
     argv can carry a URL that matches. Matching is substring, deliberately — it
     is the portable thing that works whether the command is
     ``/home/u/.local/bin/terminal-browser`` or ``node .../terminal-browser.js``.
+
+    Matched on the redacted command (``process_table`` scrubs before this sees
+    it), so a pattern naming a credential cannot be matched from another
+    process's argv.
     """
     wanted = _patterns(patterns)
     skip = set(_clean_pids(exclude_pids)) | {os.getpid()}
@@ -254,21 +318,77 @@ def _state_letter(pid: int, *, timeout: float = PS_TIMEOUT_S) -> str | None:
     return None
 
 
-def proc_state(pid, *, timeout: float = PS_TIMEOUT_S) -> str:
+def process_start_time(pid, *, timeout: float = PS_TIMEOUT_S) -> str | None:
+    """When the process now holding ``pid`` started, as ``ps`` renders it.
+
+    None when the pid is unusable, gone, or the field cannot be read — "we could
+    not tell", never "it just started". ``lstart`` is the spelling both BSD/macOS
+    ps and Linux procps accept, and second granularity is all a pid-reuse check
+    needs: a pid recycled within the same second is not a thing a machine does.
+    """
+    value = _clean_pid(pid)
+    if value is None:
+        return None
+    out = ps_output(["-p", str(value), "-o", "lstart="], timeout=timeout)
+    for line in (out or "").splitlines():
+        text = line.strip()
+        if text:
+            return text[:MAX_START_CHARS]
+    return None
+
+
+def _noted_start(starts, pid: int):
+    """The start time recorded for ``pid`` at spawn time, from whatever mapping
+    the caller has. Never raises: an unusable mapping means "not noted"."""
+    if not starts:
+        return None
+    try:
+        return starts.get(pid)
+    except Exception:
+        return None
+
+
+def _same_process(value: int, started, *, timeout: float = PS_TIMEOUT_S) -> bool:
+    """False only when ``value`` provably holds a *different* process than the one
+    that was noted.
+
+    A pid is a slot, not a process: between the spawn and the close-time check
+    the process this run started can exit and the slot be handed to somebody
+    else's. A changed start time is that reuse, and nothing else we can read
+    distinguishes them. Anything unreadable — no note, no ``lstart``, a ps that
+    fails — is "same", because the caller still has the older, weaker checks and
+    this one must never weaken them.
+    """
+    if not isinstance(started, str) or not started.strip():
+        return True
+    try:
+        seen = process_start_time(value, timeout=timeout)
+    except Exception:
+        return True
+    return seen is None or seen == started
+
+
+def proc_state(pid, *, timeout: float = PS_TIMEOUT_S, started=None) -> str:
     """``alive``, ``zombie``, ``dead`` or ``unknown`` for one pid. Never raises.
 
-    Two questions, in this order, because neither alone is enough:
+    Three questions, in this order, because none alone is enough:
 
     1. ``kill(pid, 0)`` — is the pid still in the table? No means ``dead``, and
-       no status lookup is worth running.
-    2. the process state — is the table entry a running process or a corpse?
+       no further lookup is worth running.
+    2. ``started`` — is it still the process that was noted under this pid? A
+       changed start time means the slot was reused, and a live slot that is not
+       ours is ``unknown``: reporting it as an orphan would blame somebody else's
+       process for this run, and reporting it clean would hide that we cannot
+       say what we spawned. A pid we never read a start time for skips the
+       question entirely, exactly as before.
+    3. the process state — is the table entry a running process or a corpse?
        ``Z`` means the process has already exited; a zombie is dead work, not
        leaked work, and saying ``alive`` here is the false positive this whole
        function exists to avoid.
 
-    ``unknown`` covers a pid we may not signal and a machine with no readable
-    state. It is not a softer ``alive``: the caller has to be able to say it
-    could not check.
+    ``unknown`` covers a pid we may not signal, a machine with no readable
+    state, and a recycled pid. It is not a softer ``alive``: the caller has to be
+    able to say it could not check.
     """
     value = _clean_pid(pid)
     if value is None:
@@ -276,6 +396,8 @@ def proc_state(pid, *, timeout: float = PS_TIMEOUT_S) -> str:
     probe = _signal_zero(value)
     if probe == DEAD:
         return DEAD
+    if not _same_process(value, started, timeout=timeout):
+        return UNKNOWN
     state = _state_letter(value, timeout=timeout)
     if state is not None:
         if state in ZOMBIE_LETTERS:
@@ -288,16 +410,19 @@ def proc_state(pid, *, timeout: float = PS_TIMEOUT_S) -> str:
     return ALIVE if probe == ALIVE else UNKNOWN
 
 
-def liveness_report(pids, *, timeout: float = PS_TIMEOUT_S) -> dict:
+def liveness_report(pids, *, starts=None, timeout: float = PS_TIMEOUT_S) -> dict:
     """Classify a batch of pids. Never raises.
 
     The four buckets are always present and always lists, so a caller can read
     ``report["alive"]`` without a guard; ``checked`` says how many pids went in.
+    ``starts`` is the spawn-time start-time mapping (pid -> token); where it has
+    an entry for a pid, the classification also refuses to attribute a recycled
+    pid to this run.
     """
     report: dict = {ALIVE: [], ZOMBIE: [], DEAD: [], UNKNOWN: [], "checked": 0}
     for pid in _clean_pids(pids):
         try:
-            report[proc_state(pid, timeout=timeout)].append(pid)
+            report[proc_state(pid, timeout=timeout, started=_noted_start(starts, pid))].append(pid)
         except Exception:  # a single unreadable pid must not lose the batch
             report[UNKNOWN].append(pid)
         report["checked"] += 1
@@ -315,11 +440,17 @@ class SpawnTracker:
     when it has one. One run loop spawns, so this is deliberately not a
     lock-protected counter and does not pretend otherwise; a run that forks
     worker threads must give each its own tracker.
+
+    Every tracked pid also carries the start time read at spawn time, which is
+    the only thing that tells a pid from whatever process inherits its slot
+    later. Reading it costs one ``ps`` per noted pid and is skipped entirely when
+    the call site has no pid to ask about.
     """
 
     count: int = 0
     tracked: list[int] = field(default_factory=list)
     kinds: dict = field(default_factory=dict)
+    starts: dict = field(default_factory=dict)  # pid -> start time, or None if unreadable
 
     def note(self, kind: str = "spawn", pid=None) -> int:
         """Count one spawn and return the new total. Never raises."""
@@ -330,6 +461,9 @@ class SpawnTracker:
             value = _clean_pid(pid)
             if value is not None and value not in self.tracked:
                 self.tracked.append(value)
+            if value is not None and value not in self.starts:
+                # Read once, here, while the slot is still ours.
+                self.starts[value] = process_start_time(value)
             return self.count
         except Exception:
             return self.count
@@ -346,10 +480,11 @@ class SpawnTracker:
             return {
                 "spawn_count": int(self.count),
                 "tracked_pids": list(self.tracked),
+                "tracked_starts": {pid: self.starts.get(pid) for pid in self.tracked},
                 "spawn_kinds": dict(sorted(self.kinds.items())),
             }
         except Exception:
-            return {"spawn_count": 0, "tracked_pids": [], "spawn_kinds": {}}
+            return {"spawn_count": 0, "tracked_pids": [], "tracked_starts": {}, "spawn_kinds": {}}
 
     def reset(self) -> None:
         """Start a new run's accounting. A process serves many runs (the MCP
@@ -357,6 +492,7 @@ class SpawnTracker:
         self.count = 0
         self.tracked = []
         self.kinds = {}
+        self.starts = {}
 
 
 RUN = SpawnTracker()
@@ -369,7 +505,16 @@ def note_spawn(kind: str = "spawn", pid=None) -> int:
 
 def runtime_spawn_count() -> int:
     """How many processes this run started. 0 means none — or that no call site
-    reported one, which is why the tracker counts kinds as well as pids."""
+    reported one, which is why the tracker counts kinds as well as pids.
+
+    The count is curated, not exhaustive, and the curation is deliberate. The
+    helper processes this module runs (``ps``, ``git``) and the ones discovery
+    runs to find or provision a browser are never noted: each is waited on and
+    gone before the close-time check, so counting them would inflate every run
+    with the cost of measuring it. The number answers "what did this run leave
+    running", which is not the same question as "how many processes the kernel
+    started for this run".
+    """
     return RUN.count
 
 
@@ -405,6 +550,7 @@ def orphan_report(
     pids=(),
     *,
     spawn_count: int | None = None,
+    starts=None,
     patterns: tuple[str, ...] = DEFAULT_PATTERNS,
     delay_s: float = ORPHAN_CHECK_DELAY_S,
     sleep=None,
@@ -421,11 +567,13 @@ def orphan_report(
     ``spawn_count`` decides whether the command-pattern scan is worth running:
     a run that counted no spawn reports ``no_pids`` and scans nothing, because
     every terminal-browser on the box is somebody's pane and none of them is
-    this run's verdict. ``sleep`` replaces the settle wait; None uses ``_sleep``.
+    this run's verdict. ``starts`` is the spawn-time start times for the tracked
+    pids, so a pid recycled since the spawn is not answered as if it were ours.
+    ``sleep`` replaces the settle wait; None uses ``_sleep``.
 
     ``status`` is one of:
 
-    - ``orphans`` — a tracked pid is alive. The only leak verdict.
+    - ``orphans`` — a tracked pid is alive and still ours. The only leak verdict.
     - ``unknown`` — nothing alive, but a pid could not be classified. Not clean.
     - ``clean`` — every tracked pid is dead or a zombie (both cost nothing:
       a corpse is reaped by init when this process exits).
@@ -451,11 +599,16 @@ def orphan_report(
         looked = bool(tracked) or counted > 0
         if looked and delay_s > 0:
             (sleep or _sleep)(delay_s)
-        live = liveness_report(tracked, timeout=timeout) if tracked else liveness_report([])
+        live = (
+            liveness_report(tracked, starts=starts, timeout=timeout)
+            if tracked
+            else liveness_report([])
+        )
         matches = (
             matching_processes(wanted, exclude_pids=tuple(tracked), timeout=timeout) if looked else []
         )
         orphans = list(live[ALIVE])
+        reused = [pid for pid in live[UNKNOWN] if _noted_start(starts, pid)]
         if orphans:
             status = STATUS_ORPHANS
             detail = f"{len(orphans)} process(es) this run started are still running"
@@ -471,6 +624,8 @@ def orphan_report(
         else:
             status = STATUS_NO_PIDS
             detail = "this run started no processes"
+        if reused:
+            detail += f" ({len(reused)} tracked pid(s) had been recycled since the spawn)"
         report.update(
             {
                 "status": status,
@@ -500,6 +655,7 @@ def process_evidence(*, goal=None, **kwargs) -> dict:
         report = orphan_report(
             summary["tracked_pids"],
             spawn_count=summary["spawn_count"],
+            starts=summary.get("tracked_starts"),
             **kwargs,
         )
         return {"event": "processes", "goal": goal, **summary, **report}
@@ -641,6 +797,22 @@ def manifest_path() -> Path | None:
         return None
 
 
+def _scratch_name(target: Path) -> Path:
+    """A scratch name no other writer can collide with.
+
+    A fixed ``<name>.tmp`` only makes the rename atomic when there is one writer.
+    Two runs writing the same file from two processes share that scratch path,
+    so one writer can rename the *other's* half-written body into place — the
+    reader sees a whole file, just not the one anybody meant. The pid plus a
+    uuid makes the collision probability zero and keeps the scratch next to its
+    target, which is what makes the rename atomic in the first place.
+    """
+    try:
+        return target.with_name(f"{target.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    except Exception:
+        return target.with_name(f"{target.name}.tmp")
+
+
 def write_version_manifest(manifest: dict | None = None, *, path=None) -> dict:
     """Write the manifest beside the run log and return what was written.
 
@@ -662,7 +834,7 @@ def write_version_manifest(manifest: dict | None = None, *, path=None) -> dict:
         if target is None:
             raise OSError("no run log directory to write a manifest into")
         target.parent.mkdir(parents=True, exist_ok=True)
-        scratch = target.with_name(target.name + ".tmp")
+        scratch = _scratch_name(target)
         scratch.write_text(json.dumps(body, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         scratch.replace(target)  # a reader sees the old file or the new one, never half of one
         scratch = None

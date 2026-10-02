@@ -75,6 +75,23 @@ def _top_operation(decision) -> str | None:
     return max(probs.items(), key=lambda kv: float(kv[1] or 0))[0]
 
 
+_TERMINAL = {"DONE", "BLOCKED"}
+
+
+def _performs_input(decision) -> bool:
+    """False for DONE and BLOCKED: they only settle the run, they never click or type.
+
+    `choice` is the field the base loop branches on to decide between settling the run
+    and touching the page, so it alone decides this. `operation` is deliberately not
+    consulted: a decision whose two fields disagree must be read as input, because that
+    is the reading that cannot type or click after the deadline.
+
+    The deadline's promise is that nothing is typed or clicked after it, so a decision
+    that performs no input is still worth honouring once the clock is spent.
+    """
+    return (decision or {}).get("choice") not in _TERMINAL
+
+
 def _ranked(probs, limit=6):
     items = sorted((probs or {}).items(), key=lambda kv: -float(kv[1] or 0))
     return [[str(key), round(float(val), 3)] for key, val in items[:limit]]
@@ -93,6 +110,7 @@ class DriveAgent(Agent):
         # outer subprocess kill; this one is checked inside the tick loop.
         self.time_budget_s = None if time_budget_s in (None, "") else int(time_budget_s)
         self._budget_deadline = None
+        self._budget_stopped = False
         self._unexecuted_key = None
         self._unexecuted_count = 0
         self._weak_done = 0
@@ -145,21 +163,28 @@ class DriveAgent(Agent):
         return deadline is not None and time.perf_counter() >= deadline
 
     def _stop_time_budget(self):
-        """Stop on the inner deadline. The pending decision is discarded, never executed."""
+        """Stop on the inner deadline. The pending decision is discarded, never executed.
+
+        One tick reaches this twice: predict refuses the model call, then the tick's
+        unconditional act finds the same spent clock. The second visit re-asserts the
+        state but must not log again, so a consumer sees exactly one time_budget event.
+        """
         state = self.state
         state["decision"] = None
         state["status"] = "blocked"
         state["stop_reason"] = "time_budget"
         if state.get("started_at") is not None:
             state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
-        write_event(
-            {
-                "event": "blocked",
-                "goal": state.get("goal"),
-                "reason": "time_budget",
-                "why": TIME_BUDGET_WHY,
-            }
-        )
+        if not self._budget_stopped:
+            self._budget_stopped = True
+            write_event(
+                {
+                    "event": "blocked",
+                    "goal": state.get("goal"),
+                    "reason": "time_budget",
+                    "why": TIME_BUDGET_WHY,
+                }
+            )
         self._paint_hud()
         return self.snapshot()
 
@@ -174,9 +199,11 @@ class DriveAgent(Agent):
             self._paint_hud()
             return snap
         if name == "act":
-            if self._time_budget_spent():
+            if self._time_budget_spent() and _performs_input(self.state.get("decision")):
                 # The model call outlived the deadline: drop it unexecuted so the
-                # page is never mutated by a decision nobody waited for.
+                # page is never mutated by a decision nobody waited for. DONE and
+                # BLOCKED are exempt; they type and click nothing, so a spent clock
+                # must not turn a free finish into a failure.
                 return self._stop_time_budget()
             rejected = self._reject_weak_done() or self._look_further()
             if rejected is not None:
@@ -294,6 +321,10 @@ class DriveAgent(Agent):
             )
             if action is None:
                 return None
+            if self._time_budget_spent():
+                # The re-read cost the remaining budget. Discard the retry rather
+                # than typing into a field past the deadline.
+                return self._stop_time_budget()
             try:
                 browser.act(action, page, text=text)
                 break
@@ -350,6 +381,9 @@ class DriveAgent(Agent):
                 return None
             if self._would_undo(action, page):
                 return self.snapshot()
+            if self._time_budget_spent():
+                # Same as the fill path: no click lands after the deadline.
+                return self._stop_time_budget()
             try:
                 browser.act(action, page)
                 break

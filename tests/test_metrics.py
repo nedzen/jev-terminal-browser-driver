@@ -5,8 +5,10 @@ Offline throughout: a fake browser and a fake model, and a clock the test
 drives by hand, so every timing in a snapshot is an exact number.
 """
 
+import hashlib
 import json
 import re
+import threading
 from unittest.mock import Mock
 
 import pytest
@@ -27,7 +29,8 @@ SCROLL = {"id": "scroll_down", "kind": "scroll", "label": "Scroll down", "node":
 # Seconds the fake browser charges the fake clock, so every phase total is exact.
 COSTS = {"observe": 0.005, "act": 0.003, "fresh": 0.001, "sleep": 0.002}
 
-# Every string a snapshot is allowed to contain: closed vocabularies plus a timestamp.
+# Every string a snapshot is allowed to contain: closed vocabularies, a timestamp,
+# and the run's own identity (a run id and a goal digest, both pinned by shape).
 VOCAB = {
     "click", "enter", "fill", "other", "scroll", "select", "wait",  # action kinds
     "observe", "act", "fresh",  # phase names
@@ -35,6 +38,8 @@ VOCAB = {
     "budget", "cancelled", "model", "runtime", "stale", "timeout", "value",  # error kinds
 }
 STAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+RUN_ID = re.compile(r"^[0-9a-f]{32}$")
+GOAL_HASH = re.compile(r"^[0-9a-f]{16}$")
 
 
 def _strings(value, out):
@@ -203,8 +208,12 @@ def test_an_empty_run_still_has_every_key():
 
     assert set(snap) == {
         "schema",
+        "run_id",
+        "goal_hash",
+        "started_at",
         "status",
         "error",
+        "stop_reason",
         "finished",
         "finished_at",
         "jev",
@@ -218,6 +227,7 @@ def test_an_empty_run_still_has_every_key():
     assert snap["schema"] == 1
     assert snap["status"] is None and snap["error"] is None and snap["finished"] is False
     assert snap["finished_at"] is None and snap["cleanup_ms"] is None
+    assert snap["stop_reason"] is None
     assert snap["actions"] == {"attempted": 0, "succeeded": 0, "failed": 0, "by_kind": {}}
     assert snap["stale"] == 0 and snap["startup_ms"] == 0.0
     assert snap["jev"] == _timer("calls")
@@ -225,6 +235,104 @@ def test_an_empty_run_still_has_every_key():
     # Every phase is present from the start, so two runs can be diffed field by field.
     assert set(snap["phases"]) == {"observe", "act", "fresh", "wait"}
     assert all(snap["phases"][phase] == _timer("count") for phase in snap["phases"])
+
+
+def test_a_snapshot_names_the_run_it_belongs_to():
+    """metrics.json is one file, overwritten per run, so a reader has to be able to
+    tell whose numbers they are holding."""
+    snap = Metrics().snapshot()
+    assert len(snap["run_id"]) == 32 and all(c in "0123456789abcdef" for c in snap["run_id"])
+    assert STAMP.match(snap["started_at"])
+    assert snap["goal_hash"] is None  # no goal bound yet, never a guess at one
+
+
+def test_two_snapshots_are_never_the_same_run():
+    assert Metrics().snapshot()["run_id"] != Metrics().snapshot()["run_id"]
+
+
+def test_binding_a_goal_records_a_digest_and_never_the_goal():
+    m = Metrics()
+    m.bind_run(GOAL)
+
+    snap = m.snapshot()
+    assert snap["goal_hash"] == hashlib.sha256(GOAL.encode()).hexdigest()[:16]
+    assert GOAL not in json.dumps(snap)
+    # Same goal, same digest: that is the only comparison a reader makes.
+    assert Metrics().snapshot()["goal_hash"] is None
+    other = Metrics()
+    other.bind_run(GOAL)
+    assert other.snapshot()["goal_hash"] == snap["goal_hash"]
+
+
+def test_the_first_bound_goal_wins_like_every_other_frozen_field():
+    m = Metrics()
+    m.bind_run(GOAL)
+    m.bind_run("a different goal entirely")
+
+    assert m.snapshot()["goal_hash"] == hashlib.sha256(GOAL.encode()).hexdigest()[:16]
+
+
+def test_binding_a_hostile_goal_digests_nothing_and_raises_nothing():
+    class Hostile:
+        def __str__(self):
+            raise RuntimeError("no string for you")
+
+    m = Metrics()
+    m.bind_run(Hostile())
+    assert m.snapshot()["goal_hash"] is None
+    m.bind_run(None)
+    assert m.snapshot()["goal_hash"] is None
+
+
+def test_a_time_budget_stop_is_recorded_as_a_budget_not_as_no_error():
+    """The run stopped because a deadline ran out. `error: null` would read as
+    "no error kind was ever determined", which is how a budget stop became
+    indistinguishable from any other blocked run."""
+    m = Metrics()
+    m.record_stop("time_budget")
+    snap = m.finish("blocked")
+    assert snap["stop_reason"] == "time_budget"
+    assert snap["error"] == "budget"
+
+
+def test_an_exception_still_outranks_the_stop_reason():
+    m = Metrics()
+    m.record_stop("time_budget")
+    snap = m.finish("blocked", StalePage("the feed changed"))
+    assert snap["stop_reason"] == "time_budget"  # why it stopped
+    assert snap["error"] == "stale"  # what killed the last decision
+
+
+def test_another_stop_is_recorded_as_itself_and_is_not_an_error():
+    m = Metrics()
+    m.record_stop("model_blocked")
+    snap = m.finish("blocked")
+    assert snap["stop_reason"] == "model_blocked"
+    assert snap["error"] is None
+
+
+@pytest.mark.parametrize("reason", ["max_steps", "weak_done", "unsupported", "extract", "stale_page"])
+def test_every_stop_the_driver_can_name_is_in_the_vocabulary(reason):
+    assert Metrics().snapshot() is not None  # the snapshot is buildable either way
+    m = Metrics()
+    m.record_stop(reason)
+    assert m.finish("blocked")["stop_reason"] == reason
+
+
+def test_an_unrecognised_stop_collapses_to_other_never_to_a_sentence():
+    hostile = "Stopped: the time budget ran out; the decision was discarded (sk-live-SECRET)"
+    m = Metrics()
+    m.record_stop(hostile)
+    assert m.finish("blocked")["stop_reason"] == "other"
+    assert "sk-live-SECRET" not in json.dumps(m.snapshot())
+
+
+def test_recording_no_stop_leaves_the_field_empty():
+    m = Metrics()
+    for reason in (None, "", "   ", 42, {"why": "sk-live-SECRET"}):
+        m.record_stop(reason)
+    assert m.finish("blocked")["stop_reason"] is None
+    assert "sk-live-SECRET" not in json.dumps(m.snapshot())
 
 
 def test_counters_accumulate_and_average_exactly():
@@ -317,6 +425,9 @@ def test_a_write_failure_is_reported_not_raised(tmp_path):
 
     assert Metrics().write(blocker / "sub" / "metrics.json") is False  # no parent to create
     assert Metrics().write(taken) is False  # a directory where a file belongs
+    # The second one got as far as writing a scratch: a body left on disk would be
+    # a stale file a later reader could mistake for the run's counters.
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["a-directory", "blocker"]
 
 
 def test_a_torn_write_never_replaces_the_last_good_snapshot(monkeypatch):
@@ -337,6 +448,76 @@ def test_a_torn_write_never_replaces_the_last_good_snapshot(monkeypatch):
 
     assert second.write() is False
     assert metrics_path().read_text() == before  # the rename never happened, so nothing is half-written
+
+
+def test_the_scratch_name_is_never_shared_between_writers(monkeypatch):
+    """A fixed ``.tmp`` is only atomic while there is one writer: two runs in two
+    processes share the path, and one renames the other's half-written body."""
+    seen = []
+    real_write_text = metrics_mod.Path.write_text
+
+    def record(self, *args, **kwargs):
+        seen.append(self.name)
+        return real_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(metrics_mod.Path, "write_text", record)
+    for _ in range(3):
+        m = Metrics()
+        m.finish("done")
+        assert m.write() is True
+
+    target = metrics_path()
+    assert len(seen) == len(set(seen)) == 3  # one scratch per write, no collisions
+    assert all(name.startswith(f"{target.name}.") and name.endswith(".tmp") for name in seen)
+    assert [path.name for path in target.parent.iterdir() if path.suffix == ".tmp"] == []
+
+
+def test_two_writers_interleaving_leave_one_valid_snapshot(monkeypatch):
+    """The failure this exists for: interleaved writers, one file, and a reader that
+    must find one run's snapshot whole rather than a blend of two."""
+    real_write_text = metrics_mod.Path.write_text
+    both_inside = threading.Barrier(2)
+    both_written = threading.Barrier(2)
+
+    def interleaving_write(self, *args, **kwargs):
+        # Hold both writers inside the write, then hold them again once both bodies
+        # are on disk: that is the window a shared scratch path turns into a torn
+        # target, or into a writer whose own scratch no longer exists.
+        both_inside.wait(timeout=10)
+        result = real_write_text(self, *args, **kwargs)
+        both_written.wait(timeout=10)
+        return result
+
+    monkeypatch.setattr(metrics_mod.Path, "write_text", interleaving_write)
+    ids = {}
+
+    def writer(tag, calls):
+        m = Metrics()
+        m.bind_run(tag)
+        for _ in range(calls):
+            m.record_jev(3)
+        ids[tag] = (m.snapshot()["run_id"], m.finish("done"), m.write())
+
+    # Two runs that differ in every field that would betray a blended body.
+    threads = [
+        threading.Thread(target=writer, args=("alpha", 5)),
+        threading.Thread(target=writer, args=("beta", 4)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert all(written for _run_id, _snap, written in ids.values())  # nobody lost the file to the other
+    snap = json.loads(metrics_path().read_text())
+    # One run's snapshot, whole: the digest, the counter and the run id all come from
+    # the same body. A blend would carry one writer's goal with the other's count.
+    assert (snap["goal_hash"], snap["jev"]["calls"]) in {
+        (hashlib.sha256(b"alpha").hexdigest()[:16], 5),
+        (hashlib.sha256(b"beta").hexdigest()[:16], 4),
+    }
+    assert snap["run_id"] in {run_id for run_id, _snap, _written in ids.values()}
+    assert [path.name for path in metrics_path().parent.iterdir() if path.suffix == ".tmp"] == []
 
 
 # --- the browser adapter -------------------------------------------------
@@ -791,7 +972,13 @@ def test_a_hostile_page_cannot_reach_the_snapshot(clock, monkeypatch):
     for secret in ("hunter2", "sk-live", "SECRET", "pw-secret", "4111111", "evil.test", "admin@hacker", "padding"):
         assert secret not in raw, secret
 
+    snap = json.loads(raw)
     found: list[str] = []
-    _strings(json.loads(raw), found)
+    _strings(snap, found)
     assert found, "the snapshot should not be empty"
-    assert all(word in VOCAB or STAMP.match(word) for word in found), sorted(set(found) - VOCAB)
+    # The run's own identity is the only thing outside the vocabularies: a run id
+    # and a goal digest, both pinned by shape here rather than waved through.
+    identity = {snap["run_id"], snap["goal_hash"]}
+    assert RUN_ID.match(snap["run_id"])
+    assert snap["goal_hash"] is None or GOAL_HASH.match(snap["goal_hash"])
+    assert all(word in VOCAB or STAMP.match(word) or word in identity for word in found), sorted(set(found) - VOCAB)
