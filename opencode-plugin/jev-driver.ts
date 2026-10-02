@@ -132,6 +132,7 @@ const MAX_STEPS_CAP = 30;
 const TIMEOUT_CAP = 900;
 const DEFAULT_MAX_STEPS = 12;
 const DEFAULT_TIMEOUT = 300;
+const PAGE_TEXT_LIMIT = 2000;
 
 type Args = Record<string, unknown>;
 
@@ -139,16 +140,25 @@ function truthy(v: unknown): boolean {
   return v === true || v === "true" || v === "True" || v === 1 || v === "1";
 }
 
-function clampTimeout(value: unknown): number {
-  const n = typeof value === "number" ? value : parseInt(String(value ?? ""), 10);
-  if (!Number.isFinite(n)) return DEFAULT_TIMEOUT;
-  return Math.max(1, Math.min(n, TIMEOUT_CAP));
+function budgetInt(value: unknown, lo: number, hi: number, name: string, fallback: number): number {
+  // Strict: reject (don't silently clamp) so the caller knows the budget it got.
+  if (value === undefined || value === null) return fallback;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < lo || value > hi) {
+    throw new Error(`${name} must be an integer ${lo}..${hi}; no action executed.`);
+  }
+  return value;
+}
+
+function stoppedReason(status: string, reason: unknown, error: unknown): string {
+  if (error === "timeout") return "time_budget";
+  if (status === "done") return "model_done";
+  if (reason === "max_steps") return "action_budget";
+  if (status === "error") return "error";
+  return "model_blocked";
 }
 
 function buildDriveArgv(args: Args): string[] {
-  let maxSteps = parseInt(String(args.max_steps ?? DEFAULT_MAX_STEPS), 10);
-  if (!Number.isFinite(maxSteps)) maxSteps = DEFAULT_MAX_STEPS;
-  maxSteps = Math.max(1, Math.min(maxSteps, MAX_STEPS_CAP));
+  const maxSteps = budgetInt(args.max_steps, 1, MAX_STEPS_CAP, "max_steps", DEFAULT_MAX_STEPS);
   const argv = [
     "uv",
     "run",
@@ -172,9 +182,7 @@ function buildDriveArgv(args: Args): string[] {
 }
 
 function buildReadArgv(args: Args): string[] {
-  let scrolls = parseInt(String(args.scrolls ?? 0), 10);
-  if (!Number.isFinite(scrolls)) scrolls = 0;
-  scrolls = Math.max(0, Math.min(scrolls, 15));
+  const scrolls = budgetInt(args.scrolls, 0, 15, "scrolls", 0);
   const argv = ["uv", "run", "python", "scripts/read.py", "--json"];
   if (args.url) argv.push("--url", String(args.url));
   if (args.script) argv.push("--script", String(args.script));
@@ -238,9 +246,17 @@ function compactResult(rows: Record<string, unknown>[], exitCode: number, error?
     browser,
     error,
   };
-  if (last.page_text !== undefined && last.page_text !== null) out.page_text = last.page_text;
+  if (last.page_text !== undefined && last.page_text !== null) {
+    out.page_text =
+      typeof last.page_text === "string" ? last.page_text.slice(0, PAGE_TEXT_LIMIT) : last.page_text;
+  }
   if (last.why) out.why = last.why;
   if (last.reason) out.reason = last.reason;
+  // DONE is a model choice, never an independent verification.
+  out.verified = null;
+  out.outcome_verification =
+    out.status === "done" ? "unverified - DONE choice by model without independent check" : "not_applicable";
+  out.stopped_reason = stoppedReason(out.status as string, out.reason, out.error);
   const insights = ticks.map((t) => t.insight).filter((i) => i && typeof i === "object");
   if (insights.length > 0) out.insights = insights;
   if (ticks.some((t) => t.degenerate)) out.degenerate = true;
@@ -335,13 +351,21 @@ async function executeDrive(rawArgs: Args, execCtx: { signal?: AbortSignal; debu
   if (!existsSync(join(home, "scripts", "drive.py"))) {
     return { content: JSON.stringify(compactResult([], 1, `drive.py missing under ${home}`)) };
   }
-  const timeoutS = clampTimeout(args.timeout_s ?? DEFAULT_TIMEOUT);
-  const run = await runSubprocess(buildDriveArgv(args), home, timeoutS, execCtx.signal);
+  let argv: string[];
+  let timeoutS: number;
+  try {
+    timeoutS = budgetInt(args.timeout_s, 1, TIMEOUT_CAP, "timeout_s", DEFAULT_TIMEOUT);
+    argv = buildDriveArgv(args);
+  } catch (err) {
+    return { content: JSON.stringify(compactResult([], 1, (err as Error).message)) };
+  }
+  const run = await runSubprocess(argv, home, timeoutS, execCtx.signal);
   if (run.timedOut) {
     const rows = parseJsonLines(run.stdout);
     const result = compactResult(rows, 1, "timeout");
     result.status = "blocked";
     result.success = false;
+    result.stopped_reason = stoppedReason(result.status as string, result.reason, result.error);
     return { content: JSON.stringify(result) };
   }
   const rows = parseJsonLines(run.stdout);
@@ -361,8 +385,15 @@ async function executeRead(rawArgs: Args, execCtx: { signal?: AbortSignal; debug
   if (!existsSync(join(home, "scripts", "read.py"))) {
     return { content: JSON.stringify({ success: false, error: `read.py missing under ${home}` }) };
   }
-  const timeoutS = clampTimeout(args.timeout_s ?? DEFAULT_TIMEOUT);
-  const run = await runSubprocess(buildReadArgv(args), home, timeoutS, execCtx.signal);
+  let argv: string[];
+  let timeoutS: number;
+  try {
+    timeoutS = budgetInt(args.timeout_s, 1, TIMEOUT_CAP, "timeout_s", DEFAULT_TIMEOUT);
+    argv = buildReadArgv(args);
+  } catch (err) {
+    return { content: JSON.stringify({ success: false, error: (err as Error).message }) };
+  }
+  const run = await runSubprocess(argv, home, timeoutS, execCtx.signal);
   if (run.timedOut) {
     return { content: JSON.stringify({ success: false, status: "blocked", error: "timeout" }) };
   }

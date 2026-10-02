@@ -14,6 +14,7 @@ MAX_STEPS_CAP = 30
 TIMEOUT_CAP = 900
 DEFAULT_MAX_STEPS = 12
 DEFAULT_TIMEOUT = 300
+PAGE_TEXT_LIMIT = 2000
 TB = os.environ.get("TERMINAL_BROWSER", str(Path.home() / ".local" / "bin" / "terminal-browser"))
 LOG_DIR = Path.home() / ".cache" / "jev-driver"
 
@@ -129,6 +130,24 @@ def _sum_usage(rows: list[dict]) -> dict:
     return total
 
 
+def _stopped_reason(status: str, reason, error) -> str:
+    """Uniform stop taxonomy (PR browser-use/jev-ultrafast#3).
+
+    done -> model_done; budget exhaustion -> action_budget/time_budget;
+    anything else blocked -> model_blocked; hard failures -> error.
+    The legacy `reason` field keeps the granular detail.
+    """
+    if error == "timeout":
+        return "time_budget"
+    if status == "done":
+        return "model_done"
+    if reason == "max_steps":
+        return "action_budget"
+    if status == "error":
+        return "error"
+    return "model_blocked"
+
+
 def compact_result(rows: list[dict], exit_code: int, error: str | None = None) -> dict:
     meta = next((r for r in rows if r.get("event") == "browser"), {})
     ticks = [r for r in rows if r.get("status")]
@@ -161,11 +180,19 @@ def compact_result(rows: list[dict], exit_code: int, error: str | None = None) -
         "error": error,
     }
     if last.get("page_text") is not None:
-        out["page_text"] = last["page_text"]
+        text = last["page_text"]
+        out["page_text"] = text[:PAGE_TEXT_LIMIT] if isinstance(text, str) else text
     if last.get("why"):
         out["why"] = last["why"]
     if last.get("reason"):
         out["reason"] = last["reason"]
+    # DONE is a model choice, never an independent verification.
+    out["verified"] = None
+    if out["status"] == "done":
+        out["outcome_verification"] = "unverified - DONE choice by model without independent check"
+    else:
+        out["outcome_verification"] = "not_applicable"
+    out["stopped_reason"] = _stopped_reason(out["status"], out.get("reason"), out.get("error"))
     insights = [t["insight"] for t in ticks if isinstance(t.get("insight"), dict)]
     if insights:
         out["insights"] = insights
@@ -233,12 +260,14 @@ def build_argv(args: dict) -> list[str]:
     return argv
 
 
-def clamp_timeout(value) -> int:
-    try:
-        timeout = int(value)
-    except (TypeError, ValueError):
-        timeout = DEFAULT_TIMEOUT
-    return max(1, min(timeout, TIMEOUT_CAP))
+def _budget(value, lo: int, hi: int, name: str, default: int) -> int:
+    """Strict budget validation: reject (don't silently clamp) so the caller
+    knows the budget it got. Missing/None falls back to the default."""
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int) or not (lo <= value <= hi):
+        raise ValueError(f"{name} must be an integer {lo}..{hi}; no action executed.")
+    return value
 
 
 def run_drive(args: dict, *, popen=subprocess.Popen, kill_group=_kill_group) -> dict:
@@ -247,9 +276,16 @@ def run_drive(args: dict, *, popen=subprocess.Popen, kill_group=_kill_group) -> 
         return compact_result([], 1, error="goal is required")
     if not (home / "scripts" / "drive.py").is_file():
         return compact_result([], 1, error=f"drive.py missing under {home}")
-    timeout_s = clamp_timeout(args.get("timeout_s", DEFAULT_TIMEOUT))
+    try:
+        validated = {
+            **args,
+            "max_steps": _budget(args.get("max_steps"), 1, MAX_STEPS_CAP, "max_steps", DEFAULT_MAX_STEPS),
+        }
+        timeout_s = _budget(args.get("timeout_s"), 1, TIMEOUT_CAP, "timeout_s", DEFAULT_TIMEOUT)
+    except ValueError as exc:
+        return compact_result([], 1, error=str(exc))
     proc = popen(
-        build_argv(args),
+        build_argv(validated),
         cwd=str(home),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -311,9 +347,16 @@ def run_read(args: dict, *, popen=subprocess.Popen, kill_group=_kill_group) -> d
     home = driver_home()
     if not (home / "scripts" / "read.py").is_file():
         return {"success": False, "error": f"read.py missing under {home}"}
-    timeout_s = clamp_timeout(args.get("timeout_s", DEFAULT_TIMEOUT))
+    try:
+        validated = {
+            **args,
+            "scrolls": _budget(args.get("scrolls"), 0, 15, "scrolls", 0),
+        }
+        timeout_s = _budget(args.get("timeout_s"), 1, TIMEOUT_CAP, "timeout_s", DEFAULT_TIMEOUT)
+    except ValueError as exc:
+        return {"success": False, "error": str(exc)}
     proc = popen(
-        build_read_argv(args),
+        build_read_argv(validated),
         cwd=str(home),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

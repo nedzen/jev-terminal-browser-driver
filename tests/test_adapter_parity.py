@@ -46,3 +46,8 @@ def test_opencode_plugin_matches_canonical_schemas():
                 if key in spec:
                     assert f"{key}: {ts_spelling(spec[key])}" in ts, f"{prop}.{key} drifted"
     assert 'required: ["goal"]' in ts
+    # Tier 1 (upstream PR #3 ideas): verification honesty, stop taxonomy,
+    # page-text cap, strict budget validation — mirrored in both adapters.
+    for marker in ("verified", "stopped_reason", "outcome_verification", "PAGE_TEXT_LIMIT = 2000",
+                   "must be an integer", "model_done", "action_budget", "time_budget", "model_blocked"):
+        assert marker in ts, marker

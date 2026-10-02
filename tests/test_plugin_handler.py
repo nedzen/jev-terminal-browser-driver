@@ -4,6 +4,7 @@ import json
 import subprocess
 import sys
 import types
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -217,17 +218,82 @@ def test_compact_result_keeps_debug_insights():
     assert out["browser"]["visibility"] == "terminal-browser-pane"
 
 
-def test_max_steps_and_timeout_clamped(home):
+def test_out_of_range_budgets_rejected_before_spawn(home):
+    spawned = []
+    (home / "scripts" / "read.py").write_text("# read\n")
+
+    def popen(argv, **kwargs):
+        spawned.append(argv)
+        return FakeProc(stdout=json.dumps({"status": "done", "url": "x"}), returncode=0)
+
+    out = handler.run_drive({"goal": "g", "max_steps": 99, "timeout_s": 9999}, popen=popen)
+    assert spawned == []
+    assert out["status"] == "error"
+    assert out["stopped_reason"] == "error"
+    assert "max_steps must be an integer 1..30" in out["error"]
+
+    out = handler.run_drive({"goal": "g", "max_steps": 1.5}, popen=popen)
+    assert spawned == []
+    assert "max_steps must be an integer" in out["error"]
+
+    out = handler.run_drive({"goal": "g", "timeout_s": 0}, popen=popen)
+    assert spawned == []
+    assert "timeout_s must be an integer" in out["error"]
+
+    out = handler.run_read({"scrolls": 99}, popen=popen)
+    assert spawned == []
+    assert "scrolls must be an integer 0..15" in out["error"]
+
+
+def test_valid_budgets_pass_through(home):
     captured = {}
 
     def popen(argv, **kwargs):
         captured["argv"] = argv
         return FakeProc(stdout=json.dumps({"status": "done", "url": "x"}), returncode=0)
 
-    handler.run_drive({"goal": "g", "max_steps": 99, "timeout_s": 9999}, popen=popen)
-    assert "--max-steps" in captured["argv"]
+    handler.run_drive({"goal": "g", "max_steps": 30, "timeout_s": 900}, popen=popen)
     assert captured["argv"][captured["argv"].index("--max-steps") + 1] == "30"
-    assert handler.clamp_timeout(9999) == 900
+
+
+def test_result_carries_verification_and_stop_taxonomy(home):
+    done = handler.compact_result([{"status": "done", "url": "x"}], 0)
+    assert done["verified"] is None
+    assert done["outcome_verification"].startswith("unverified")
+    assert done["stopped_reason"] == "model_done"
+
+    budget = handler.compact_result([{"status": "blocked", "url": "x", "reason": "max_steps"}], 1)
+    assert budget["stopped_reason"] == "action_budget"
+    assert budget["reason"] == "max_steps"  # granular detail preserved
+    assert budget["verified"] is None
+    assert budget["outcome_verification"] == "not_applicable"
+
+    blocked = handler.compact_result([{"status": "blocked", "url": "x"}], 1)
+    assert blocked["stopped_reason"] == "model_blocked"
+
+
+def test_page_text_capped(home):
+    out = handler.compact_result([{"status": "done", "url": "x", "page_text": "y" * 5000}], 0)
+    assert len(out["page_text"]) == handler.PAGE_TEXT_LIMIT
+
+
+def test_drive_schema_has_no_control_driving_params():
+    forbidden = {"selector", "index", "coordinate", "coordinates", "xpath", "css", "script", "js", "javascript"}
+    drive_params = set(plugin.SCHEMA["parameters"]["properties"])
+    assert drive_params & forbidden == set()
+    assert "goal" in plugin.SCHEMA["parameters"]["required"]
+    # jev_read.script is the deliberate read-only exception: evaluated in-page,
+    # never drives input. Nothing else script-like may exist on either tool.
+    read_params = set(plugin.READ_SCHEMA["parameters"]["properties"])
+    assert (read_params & forbidden) <= {"script"}
+
+
+def test_cli_stdout_carries_only_json():
+    for path in ("jev_driver/cli.py", "scripts/drive.py", "scripts/read.py", "jev_driver/page_read.py"):
+        for lineno, line in enumerate(Path(path).read_text().splitlines(), 1):
+            stripped = line.strip()
+            if stripped.startswith("print(") and "file=sys.stderr" not in stripped:
+                assert "json.dumps" in stripped, f"{path}:{lineno} prints non-JSON to stdout"
 
 
 def test_debug_setting_ignores_the_model_flag():
