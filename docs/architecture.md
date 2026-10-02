@@ -4,6 +4,83 @@ How `drive` / `drive.py` works: the execution chain, the decision
 protocol, the CDP transport, and the safety model. Paths relative to the repo
 root unless noted.
 
+## The plugin/driver boundary
+
+```
+plugin/                      Hermes loads this; jev_driver is NOT importable here
+  __init__.py                tool schemas + register(ctx)
+  handler.py                 subprocess adapter: argv, the child, the JSON payload
+  core/                      the stdlib-only leaf, imported by BOTH sides
+    env.py                   driver_home, has_decision_key, terminal_browser_installed,
+                             check_drive, LOG_DIR, log_handler_event
+    budgets.py               caps + budget()/deny_names(): reject, never clamp
+    result.py                build_tick_row() and compact_result(), one field table
+scripts/drive.py → jev_driver/cli.py  (imports plugin.core.result to emit ticks)
+scripts/mcp.py   → plugin.handler + jev_driver.preflight (MCP adapter)
+```
+
+The dependency runs one way. Hermes loads `plugin/` without `jev_driver`
+installed, so nothing under `plugin/core/` may import outside the standard
+library and `plugin/`; `tests/test_core.py` walks the ASTs to keep that true.
+`jev_driver` importing `plugin.core.result` is the allowed direction — core is
+stdlib-only, so it costs the driver no dependency.
+
+`plugin/handler.py` is a shell: every rule it used to own now lives in core,
+and it re-exports the public names (`compact_result`, `driver_home`,
+`TIME_BUDGET_CAP`, …) because callers and tests hold those names.
+
+### One result builder, one field table
+
+A tick row (what the driver prints) and the agent result (what `compact_result`
+folds those rows into) are two views of a single declaration, `PASSTHROUGH` in
+`plugin/core/result.py`. `build_tick_row` and `compact_result` both read it, so a
+field added there is carried by both with no second edit.
+
+This is a bug class, not a style preference: `final_view` and
+`omitted_actions` were each added to the row and nearly dropped on the way into
+the result, each needing a separate regression test to notice.
+`tests/test_core.py::test_a_novel_declared_field_survives_the_round_trip` pins
+the property itself — a field nobody has written a case for still arrives.
+
+A tick row carries `status`, `url`, `last_action`, `elapsed_ms`, `usage` plus
+whatever `TICK_OPTIONAL` declares. `cli.tick_record(snap, **overrides)` passes
+caller-owned fields (a `max_steps` budget, a `time_budget` stop, a final
+re-read) through the same builder; an override of `None` means "nothing to
+override" and leaves the snapshot's value alone. `degenerate` and `insight` are
+row-only — the result aggregates them across ticks rather than copying the last
+row's copy.
+
+### The run-log record
+
+`plugin/core/trace.py` holds the third record: what survives in
+`~/.cache/wwwdrive/drive.jsonl` after the process exits. `cli.trace_fields`
+delegates to `build_trace_record(row, decision, goal=goal)`, so the log's field
+set is declared once (`TRACE_FIELDS`) instead of being a dict literal in the CLI.
+
+It is a separate table from `PASSTHROUGH` because the two records disagree
+where it would be least visible:
+
+- a tick row and an agent result **omit** a field with nothing to say; a trace
+  record writes the key with an explicit `null`. A log reader asks "was this
+  run's reason recorded?", and `absent` does not answer that the way `null`
+  does. `TraceField.present` is the flag that keeps the two apart, and
+  `final_view` is the one conditional field — an empty one would claim the
+  driver re-read the page when it never did.
+- the trace caps page text at its own `TRACE_PAGE_TEXT` (1500) and reads ranked
+  heads at `TRACE_PROBS_LIMIT` (8), against the row's 2000 and 4. The log is
+  read by a human scanning a file; the row is read by an agent on every step.
+- the row is the record's base, so a field added to a table is filled from the
+  row by default and only the four the log computes itself (`event`, `goal`,
+  `ranked_ops`, `ranked_targets`) are substituted.
+
+`write_event` and the redaction vocabulary stay in `jev_driver/runlog.py`.
+That module is the sanitize-and-append boundary, it also serves
+`redact_for_wire` (a property of an outgoing request body, not of this record),
+and `processes.py`, `metrics.py` and `model.py` reach into its module globals.
+Moving it into the leaf both adapters load would put a wire concern there and
+break every module that patches those globals. The seam is left where it is: the
+core builds the record, `runlog` decides whether it may touch disk.
+
 ## Envelope
 
 `drive` is a **one-viewport click-path actor**: forms, wizards, filters,

@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from plugin import handler
+from plugin.core import env as core_env
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -21,7 +22,9 @@ def mcp(load_mcp):
 
 @pytest.fixture(autouse=True)
 def logs(monkeypatch, tmp_path):
-    monkeypatch.setattr(handler, "LOG_DIR", tmp_path / "logs")
+    # core.env owns the constant; the handler only re-exports it, so patching
+    # the handler's copy would leave the writer reading the real ~/.cache.
+    monkeypatch.setattr(core_env, "LOG_DIR", tmp_path / "logs")
 
 
 def req(method, params=None, msg_id=1):

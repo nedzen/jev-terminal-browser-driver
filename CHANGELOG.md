@@ -6,13 +6,29 @@ All notable user-facing changes, newest first. Version numbers follow
 
 ## 1.0.0
 
-### Changed since tag (unreleased: token epic, on `feat/tokens`)
+### Changed since tag (unreleased: token epic on `feat/tokens`, architecture on `feat/arch-core`)
 
 - **insights trace explicit-only on MCP** (~1.8KB/call saved by default):
   the ranked operations/targets trace rides an explicit opt-in
   (`WWWDRIVE_DEBUG=1`); the debug overlay default is unchanged.
 - **`WWWDRIVE_REQUEST_DEDUP` opt-in**: request-assembly de-duplication
   (bench −17.5/−21.4% input, accuracy flat), env-gated, default off.
+
+### Internal (no behavior change)
+
+- **`plugin/core/`**: a new stdlib-only leaf holding the env walks, the budget
+  validation, and the result builder. `plugin/handler.py` thins to the
+  subprocess shell and re-exports the same names, so no caller moves.
+- **One result builder**: `cli.tick_record` now assembles tick rows through
+  `plugin.core.result.build_tick_row`, driven by the same field table
+  `compact_result` folds with. A new tick field can no longer be added to the
+  row and silently dropped from the agent result — the bug class that nearly
+  killed `final_view` and `omitted_actions`.
+- **Run-log record declared once**: `plugin/core/trace.py` owns the `drive.jsonl`
+  record's field set and `cli.trace_fields` delegates to it. The record is
+  byte-identical — same keys, same order, same nulls. `write_event` and the
+  redaction vocabulary stay in `jev_driver/runlog.py`, which is the
+  sanitize-and-append boundary and also serves the outgoing-wire redactor.
 
 ### Renamed
 
