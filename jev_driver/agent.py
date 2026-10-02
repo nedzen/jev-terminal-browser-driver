@@ -1,5 +1,7 @@
 # From https://github.com/browser-use/jev-ultrafast (c) 2026 Browser Use, MIT License.
-# One change: DONE/BLOCKED only require the same document, not an identical page.
+# Two changes: DONE/BLOCKED only require the same document, not an identical page;
+# the stale-retry text cache is keyed by element node + helper input, not input alone
+# (upstream issue browser-use/jev-ultrafast#191: same-labeled fields sharing one cache entry).
 """The complete agent loop. Typed choices, observable state, bounded execution."""
 
 import base64
@@ -109,11 +111,17 @@ class Agent:
                 if not state["browser"].fresh(page):
                     raise StalePage("Page changed before text generation. Choose again.")
                 context = field_context(state["goal"], action, page, state["history"])
-                if self.pending_text and self.pending_text[0] == context:
+                # Cache key includes the element node: two same-labeled fields
+                # produce byte-identical helper input, and node ids are stable
+                # across snapshots for the same element (snapshot.js WeakMap).
+                # A different node misses and pays for a fresh helper call —
+                # never types a cached value into the wrong field (#191).
+                cache_key = (action.get("node"), context)
+                if self.pending_text and self.pending_text[0] == cache_key:
                     _, text, helper = self.pending_text
                 else:
                     text, helper = field_text(context)
-                    self.pending_text = (context, text, helper)
+                    self.pending_text = (cache_key, text, helper)
                     state["text_calls"].append({**helper, "field": action["label"], "value": text})
             # Browser.act checks freshness immediately before input, including after text generation.
             state["browser"].act(action, page, text=text)
