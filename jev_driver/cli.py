@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from plugin.core.result import build_tick_row
+from plugin.core.trace import build_trace_record, last_decision, target_labels, top_probs
 
 from . import browser as browser_mod
 from . import model as model_mod
@@ -16,7 +17,7 @@ from . import processes as proc_mod
 from .browser import _log_continuity, find_continuable_page, set_lease
 from .cdp import connect, list_browsers
 from .discover import WatchUnavailable, discover
-from .drive_agent import TIME_BUDGET_WHY, DriveAgent, _why, label_of
+from .drive_agent import TIME_BUDGET_WHY, DriveAgent, _why
 from .preflight import preflight
 from .questions import MAX_STEPS
 from .readiness import REASON_WHY, degenerate, unsupported_goal
@@ -26,19 +27,6 @@ from .takeover import TAKEOVER_REASON, WatchAgent
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_FIXTURE = (ROOT / "fixtures" / "click.html").resolve()
 TIME_BUDGET_CAP = 900  # same ceiling as the outer timeout_s kill
-
-
-def _target_labels(decision):
-    questions = ((decision or {}).get("request") or {}).get("questions") or {}
-    op_key = ((decision or {}).get("operation") or "").lower() + "_target"
-    criteria = (questions.get(op_key) or {}).get("criteria") or {}
-    return {key: label_of(text, key, 80) for key, text in criteria.items()}
-
-
-def _top_probs(probs, labels=None, limit=4):
-    labels = labels or {}
-    items = sorted((probs or {}).items(), key=lambda kv: -float(kv[1] or 0))[:limit]
-    return [{"name": labels.get(key, key), "p": round(float(val), 3)} for key, val in items]
 
 
 def same_document(left, right) -> bool:
@@ -95,35 +83,13 @@ def no_page_error(plan, url):
 
 
 def trace_fields(snap: dict, rec: dict, *, goal: str) -> dict:
-    """Fields worth keeping after the process exits. No request body, no API key."""
-    decisions = snap.get("decisions") or []
-    decision = decisions[-1] if decisions else {}
-    labels = _target_labels(decision or {})
-    status = rec.get("status")
-    error = rec.get("error")
-    if error or status == "blocked":
-        kind = "blocked"
-    elif status == "done":
-        kind = "done"
-    else:
-        kind = "tick"
-    fields = {
-        "event": kind,
-        "goal": goal,
-        "status": status,
-        "url": rec.get("url"),
-        "last_action": rec.get("last_action"),
-        "why": rec.get("why"),
-        "error": error,
-        "degenerate": True if rec.get("degenerate") else None,
-        "ranked_ops": _top_probs((decision or {}).get("operation_probabilities"), limit=8),
-        "ranked_targets": _top_probs((decision or {}).get("target_probabilities"), labels, limit=8),
-        "page_text": (rec.get("page_text") or "")[:1500] or None,
-        "reason": rec.get("reason"),
-    }
-    if rec.get("final_view"):
-        fields["final_view"] = rec["final_view"]
-    return fields
+    """The run-log record for one tick. No request body, no API key.
+
+    The shape belongs to plugin.core.trace: the log's field set is declared
+    there, so a field is added in one place rather than to a dict literal here
+    that the log reader has to be told about separately.
+    """
+    return build_trace_record(rec, last_decision(snap), goal=goal)
 
 
 def tick_record(snap: dict, *, debug: bool = False, **overrides) -> dict:
@@ -177,7 +143,7 @@ def tick_record(snap: dict, *, debug: bool = False, **overrides) -> dict:
     if overrides.get("status") or snap.get("status") in {"done", "blocked"} or reason:
         fields["page_text"] = page.get("text") or ""
     if debug and (decision or last):
-        labels = _target_labels(decision)
+        labels = target_labels(decision)
         operation = (decision or {}).get("operation") or (last or {}).get("operation")
         target_key = (decision or {}).get("target")
         target = labels.get(target_key)
@@ -188,8 +154,8 @@ def tick_record(snap: dict, *, debug: bool = False, **overrides) -> dict:
             "confidence": (decision or {}).get("confidence"),
             "target": target,
             "why": why,
-            "top_ops": _top_probs((decision or {}).get("operation_probabilities")),
-            "top_targets": _top_probs((decision or {}).get("target_probabilities"), labels),
+            "top_ops": top_probs((decision or {}).get("operation_probabilities")),
+            "top_targets": top_probs((decision or {}).get("target_probabilities"), labels),
             "page_changed": None if last is None else last.get("page_changed"),
         }
     # An override that is None means "nothing to override": the snapshot's own

@@ -641,8 +641,8 @@ def test_same_link_is_not_followed_twice_but_next_is(monkeypatch):
 
 
 def test_target_labels_clip_to_cli_width():
-    from jev_driver.cli import _target_labels
     from jev_driver.drive_agent import label_of
+    from plugin.core.trace import target_labels as _target_labels
 
     long = "[3] " + "L" * 100 + "; role=button"
     out = _target_labels({"operation": "CLICK", "request": {"questions": {"click_target": {"criteria": {"3": long}}}}})

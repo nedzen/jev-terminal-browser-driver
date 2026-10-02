@@ -5,7 +5,8 @@ Three properties, each with a test that bites:
   Hermes can load it without jev_driver and jev_driver can import it.
 - There is ONE row/result field table, so a field declared there survives the
   round trip on its own rather than needing a hand-written copy in two places.
-- cli.tick_record assembles through that builder, not a second literal dict.
+- cli.tick_record and cli.trace_fields each assemble through one builder, not
+  a second literal dict.
 """
 
 from __future__ import annotations
@@ -71,7 +72,7 @@ def test_the_driver_needs_no_third_party_to_build_a_row():
         for node in ast.walk(tree)
         if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("plugin")
     }
-    assert imported == {"plugin.core.result"}
+    assert imported == {"plugin.core.result", "plugin.core.trace"}
 
 
 def test_a_novel_declared_field_survives_the_round_trip(monkeypatch):

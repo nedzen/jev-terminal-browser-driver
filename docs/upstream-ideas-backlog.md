@@ -80,6 +80,18 @@ DONE (Batch C): per-head deterministic bypass with mixed/deterministic tagging; 
     trip with one table edit — the dropped-field class that nearly killed
     final_view and omitted_actions.
 
+13. **Run-log record in core** DONE (Batch B): plugin/core/trace.py owns the
+    drive.jsonl record's field set (TRACE_FIELDS), cli.trace_fields delegates to
+    build_trace_record. Byte-identical to the dict literal it replaced: same
+    keys, same order, same nulls, verified against HEAD's implementation over
+    16 input shapes at both the record and the written-log level.
+    Separate table from result.PASSTHROUGH on purpose — a trace record writes
+    explicit nulls where a row omits, and keeps its own page-text cap (1500) and
+    ranked-head depth (8). write_event stays in jev_driver/runlog.py: it is the
+    sanitize-and-append boundary, it also serves redact_for_wire (a property of
+    an outgoing body, not of this record), and processes/metrics/model patch its
+    module globals.
+
 Known duplication left in place (out of this batch's scope):
 jev_driver/preflight.py still spells out has_decision_key /
 terminal_browser_installed / driver_home rather than importing core.env. The

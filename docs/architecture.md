@@ -50,6 +50,37 @@ override" and leaves the snapshot's value alone. `degenerate` and `insight` are
 row-only — the result aggregates them across ticks rather than copying the last
 row's copy.
 
+### The run-log record
+
+`plugin/core/trace.py` holds the third record: what survives in
+`~/.cache/wwwdrive/drive.jsonl` after the process exits. `cli.trace_fields`
+delegates to `build_trace_record(row, decision, goal=goal)`, so the log's field
+set is declared once (`TRACE_FIELDS`) instead of being a dict literal in the CLI.
+
+It is a separate table from `PASSTHROUGH` because the two records disagree
+where it would be least visible:
+
+- a tick row and an agent result **omit** a field with nothing to say; a trace
+  record writes the key with an explicit `null`. A log reader asks "was this
+  run's reason recorded?", and `absent` does not answer that the way `null`
+  does. `TraceField.present` is the flag that keeps the two apart, and
+  `final_view` is the one conditional field — an empty one would claim the
+  driver re-read the page when it never did.
+- the trace caps page text at its own `TRACE_PAGE_TEXT` (1500) and reads ranked
+  heads at `TRACE_PROBS_LIMIT` (8), against the row's 2000 and 4. The log is
+  read by a human scanning a file; the row is read by an agent on every step.
+- the row is the record's base, so a field added to a table is filled from the
+  row by default and only the four the log computes itself (`event`, `goal`,
+  `ranked_ops`, `ranked_targets`) are substituted.
+
+`write_event` and the redaction vocabulary stay in `jev_driver/runlog.py`.
+That module is the sanitize-and-append boundary, it also serves
+`redact_for_wire` (a property of an outgoing request body, not of this record),
+and `processes.py`, `metrics.py` and `model.py` reach into its module globals.
+Moving it into the leaf both adapters load would put a wire concern there and
+break every module that patches those globals. The seam is left where it is: the
+core builds the record, `runlog` decides whether it may touch disk.
+
 ## Envelope
 
 `drive` is a **one-viewport click-path actor**: forms, wizards, filters,

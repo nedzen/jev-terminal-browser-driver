@@ -10,6 +10,7 @@ Three modules, three jobs:
 - :mod:`plugin.core.env` — where the driver lives, whether this machine can drive.
 - :mod:`plugin.core.budgets` — what a number may be, rejected rather than clamped.
 - :mod:`plugin.core.result` — the tick row and the agent result, from one field table.
+- :mod:`plugin.core.trace` — the run-log record: what survives after the process exits.
 """
 
 from __future__ import annotations
@@ -41,6 +42,17 @@ from .result import (
     stopped_reason,
     sum_usage,
 )
+from .trace import (
+    TRACE_FIELDS,
+    TRACE_PAGE_TEXT,
+    TraceField,
+    build_trace_record,
+    label_of,
+    last_decision,
+    target_labels,
+    top_probs,
+    trace_kind,
+)
 
 __all__ = [
     "DEFAULT_MAX_STEPS",
@@ -51,17 +63,26 @@ __all__ = [
     "PASSTHROUGH",
     "TIMEOUT_CAP",
     "TIME_BUDGET_CAP",
+    "TRACE_FIELDS",
+    "TRACE_PAGE_TEXT",
     "Field",
+    "TraceField",
     "build_tick_row",
+    "build_trace_record",
     "budget",
     "check_drive",
     "compact_result",
     "deny_names",
     "driver_home",
     "has_decision_key",
+    "label_of",
+    "last_decision",
     "log_handler_event",
     "parse_json_lines",
     "stopped_reason",
     "sum_usage",
+    "target_labels",
     "terminal_browser_installed",
+    "top_probs",
+    "trace_kind",
 ]

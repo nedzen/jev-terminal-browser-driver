@@ -24,6 +24,11 @@ All notable user-facing changes, newest first. Version numbers follow
   `compact_result` folds with. A new tick field can no longer be added to the
   row and silently dropped from the agent result — the bug class that nearly
   killed `final_view` and `omitted_actions`.
+- **Run-log record declared once**: `plugin/core/trace.py` owns the `drive.jsonl`
+  record's field set and `cli.trace_fields` delegates to it. The record is
+  byte-identical — same keys, same order, same nulls. `write_event` and the
+  redaction vocabulary stay in `jev_driver/runlog.py`, which is the
+  sanitize-and-append boundary and also serves the outgoing-wire redactor.
 
 ### Renamed
 
