@@ -236,6 +236,12 @@ def test_out_of_range_budgets_rejected_before_spawn(home):
     assert spawned == []
     assert "max_steps must be an integer" in out["error"]
 
+    # Integral floats are accepted for JSON cross-adapter parity (TS accepts 12.0).
+    handler.run_drive({"goal": "g", "max_steps": 12.0}, popen=popen)
+    argv = spawned[-1]
+    assert argv[argv.index("--max-steps") + 1] == "12"
+    spawned.clear()
+
     out = handler.run_drive({"goal": "g", "timeout_s": 0}, popen=popen)
     assert spawned == []
     assert "timeout_s must be an integer" in out["error"]

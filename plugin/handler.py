@@ -139,6 +139,8 @@ def _stopped_reason(status: str, reason, error) -> str:
     """
     if error == "timeout":
         return "time_budget"
+    if error == "cancelled":
+        return "cancelled"
     if status == "done":
         return "model_done"
     if reason == "max_steps":
@@ -264,10 +266,15 @@ def build_argv(args: dict) -> list[str]:
 
 def _budget(value, lo: int, hi: int, name: str, default: int) -> int:
     """Strict budget validation: reject (don't silently clamp) so the caller
-    knows the budget it got. Missing/None falls back to the default."""
+    knows the budget it got. Missing/None falls back to the default.
+    Integral floats (12.0) are accepted for JSON cross-adapter parity."""
     if value is None:
         return default
-    if isinstance(value, bool) or not isinstance(value, int) or not (lo <= value <= hi):
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer {lo}..{hi}; no action executed.")
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if not isinstance(value, int) or not (lo <= value <= hi):
         raise ValueError(f"{name} must be an integer {lo}..{hi}; no action executed.")
     return value
 

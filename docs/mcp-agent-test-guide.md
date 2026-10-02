@@ -61,3 +61,12 @@ read-only calls attach via the tab lease instead.
 Full result JSONs, wall-clock time per call, and anything where observed
 behavior differs from the above. Do not post, like, submit, or otherwise
 mutate any real site — example.com/IANA only.
+
+## 7. Known server limits
+
+- The MCP server is serial: one `tools/call` at a time. During a long
+  drive it cannot process `notifications/cancelled`; use `timeout_s` /
+  `max_steps` budgets, or SIGTERM the drive subprocess.
+- MCP servers don't hot-reload: after pulling new repo code, restart the
+  host session (or kill `scripts/mcp.py`) so tool schemas and handlers
+  pick up the changes.

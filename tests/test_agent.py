@@ -365,6 +365,43 @@ def test_post_json_retries_retryable_error_body(monkeypatch):
     assert model.post_json("https://x.test/v1", "key", {}) == {"ok": True}
 
 
+def test_post_json_retries_504_status(monkeypatch):
+    bad = httpx.Response(504, json={"error": "gateway timeout"})
+    good = httpx.Response(200, json={"ok": True})
+    post = Mock(side_effect=[bad, good])
+    monkeypatch.setattr(model.CLIENT, "post", post)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    assert model.post_json("https://x.test/v1", "key", {}) == {"ok": True}
+    assert post.call_count == 2
+
+
+def test_post_json_retries_string_error_code(monkeypatch):
+    bad = httpx.Response(200, json={"error": {"message": "busy", "code": "503"}})
+    good = httpx.Response(200, json={"ok": True})
+    monkeypatch.setattr(model.CLIENT, "post", Mock(side_effect=[bad, good]))
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    assert model.post_json("https://x.test/v1", "key", {}) == {"ok": True}
+
+
+def test_field_text_does_not_retry_auth_errors(monkeypatch):
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    post = Mock(side_effect=RuntimeError("Model provider returned HTTP 401; no action executed."))
+    monkeypatch.setattr(model, "post_json", post)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    with pytest.raises(ValueError, match="Request failed: Model provider returned HTTP 401"):
+        model.field_text({"goal": "Find a flight"})
+    assert post.call_count == 1
+
+
+def test_field_text_does_not_retry_deterministic_shape(monkeypatch):
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    post = Mock(return_value={"choices": [{"message": {"content": '{"text":"Zurich","extra":true}'}}]})
+    monkeypatch.setattr(model, "post_json", post)
+    with pytest.raises(ValueError, match="nothing typed"):
+        model.field_text({"goal": "Find a flight"})
+    assert post.call_count == 1
+
+
 def test_navigation_during_prediction_reobserves_without_action(runner):
     runner.state["browser"].fresh.side_effect = StalePage("Document navigating")
     runner.command("tick")

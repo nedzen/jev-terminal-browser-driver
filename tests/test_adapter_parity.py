@@ -60,7 +60,7 @@ def test_opencode_plugin_matches_canonical_schemas():
     # page-text cap, strict budget validation — mirrored in both adapters.
     for marker in ("verified", "stopped_reason", "outcome_verification", "PAGE_TEXT_LIMIT = 2000",
                    "must be an integer", "model_done", "action_budget", "time_budget", "model_blocked",
-                   "final_view"):
+                   "final_view", "cancelled", "detached"):
         assert marker in ts, marker
 
 

@@ -174,6 +174,7 @@ function budgetInt(value: unknown, lo: number, hi: number, name: string, fallbac
 
 function stoppedReason(status: string, reason: unknown, error: unknown): string {
   if (error === "timeout") return "time_budget";
+  if (error === "cancelled") return "cancelled";
   if (status === "done") return "model_done";
   if (reason === "max_steps") return "action_budget";
   if (status === "error") return "error";
@@ -404,11 +405,15 @@ interface RunResult {
   stderr: string;
   code: number | null;
   timedOut: boolean;
+  cancelled: boolean;
 }
 
 function runSubprocess(argv: string[], cwd: string, timeoutS: number, signal?: AbortSignal): Promise<RunResult> {
   return new Promise((resolve) => {
-    const child = spawn(argv[0], argv.slice(1), { cwd, env: process.env });
+    // detached:true makes the child a process-group leader, so the timeout
+    // and abort paths can kill the whole group (uv + drive.py + browser
+    // children) like the Python handler's start_new_session=True + killpg.
+    const child = spawn(argv[0], argv.slice(1), { cwd, env: process.env, detached: true });
     let stdout = "";
     let stderr = "";
     let settled = false;
@@ -427,14 +432,20 @@ function runSubprocess(argv: string[], cwd: string, timeoutS: number, signal?: A
           // already gone
         }
       }, 2000);
-      resolve({ stdout, stderr, code: null, timedOut: true });
+      resolve({ stdout, stderr, code: null, timedOut: true, cancelled: false });
     }, timeoutS * 1000);
     const onAbort = () => {
       clearTimeout(timer);
       if (settled) return;
       settled = true;
-      child.kill("SIGTERM");
-      resolve({ stdout, stderr, code: null, timedOut: true });
+      // Group kill like the timeout path: with detached:true the child
+      // leads its own group (uv + drive.py + browser children).
+      try {
+        process.kill(-child.pid!, "SIGTERM");
+      } catch {
+        child.kill("SIGTERM");
+      }
+      resolve({ stdout, stderr, code: null, timedOut: false, cancelled: true });
     };
     signal?.addEventListener("abort", onAbort, { once: true });
     child.stdout?.setEncoding("utf8");
@@ -446,14 +457,14 @@ function runSubprocess(argv: string[], cwd: string, timeoutS: number, signal?: A
       settled = true;
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
-      resolve({ stdout, stderr: String(err), code: 127, timedOut: false });
+      resolve({ stdout, stderr: String(err), code: 127, timedOut: false, cancelled: false });
     });
     child.on("close", (code) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
-      resolve({ stdout, stderr, code: code ?? 0, timedOut: false });
+      resolve({ stdout, stderr, code: code ?? 0, timedOut: false, cancelled: false });
     });
   });
 }
@@ -476,6 +487,9 @@ async function executeDrive(rawArgs: Args, execCtx: { signal?: AbortSignal; debu
     return { content: JSON.stringify(compactResult([], 1, (err as Error).message)) };
   }
   const run = await runSubprocess(argv, home, timeoutS, execCtx.signal);
+  if (run.cancelled) {
+    return { content: JSON.stringify(compactResult([], 1, "cancelled")) };
+  }
   if (run.timedOut) {
     const rows = parseJsonLines(run.stdout);
     const result = compactResult(rows, 1, "timeout");
@@ -510,6 +524,9 @@ async function executeRead(rawArgs: Args, execCtx: { signal?: AbortSignal; debug
     return { content: JSON.stringify({ success: false, error: (err as Error).message }) };
   }
   const run = await runSubprocess(argv, home, timeoutS, execCtx.signal);
+  if (run.cancelled) {
+    return { content: JSON.stringify({ success: false, status: "blocked", error: "cancelled" }) };
+  }
   if (run.timedOut) {
     return { content: JSON.stringify({ success: false, status: "blocked", error: "timeout" }) };
   }

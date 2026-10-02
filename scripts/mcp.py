@@ -19,6 +19,13 @@ Client config (Claude Code / OpenCode / Crush via MCP):
 
 Like the Hermes plugin, a client-supplied `debug` flag is ignored: only the
 JEV_DEBUG env var controls the overlay.
+
+Serial by design: one tools/call runs at a time; while a 300-900s drive is
+in flight the server cannot read stdin, so notifications/cancelled is only
+seen after the call finishes. Clients that need out-of-band cancellation
+should SIGTERM the drive subprocess (started in its own session) or use the
+per-call timeout_s. A client SIGKILL of this server orphans the running
+drive subprocess.
 """
 
 import json
