@@ -628,3 +628,15 @@ def test_same_link_is_not_followed_twice_but_next_is(monkeypatch):
     nxt = {"kind": "click", "node": 1, "label": "Next", "rect": {"x": 1, "y": 1}}
     agent._remember_click(nxt, first, second["url"])
     assert agent._would_undo({**nxt, "node": 9}, second) is False
+
+
+def test_target_labels_clip_to_cli_width():
+    from jev_driver.cli import _target_labels
+    from jev_driver.drive_agent import label_of
+
+    long = "[3] " + "L" * 100 + "; role=button"
+    out = _target_labels({"operation": "CLICK", "request": {"questions": {"click_target": {"criteria": {"3": long}}}}})
+    assert out == {"3": "L" * 80}
+    # HUD width stays narrower; both widths are deliberate, not interchangeable.
+    assert label_of(long, "3", 60) == "L" * 60
+    assert label_of(long, "3", 80) == "L" * 80

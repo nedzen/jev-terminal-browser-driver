@@ -10,7 +10,7 @@ this file is the build list.
 Tier 1 (DONE, eda6d5a): verified:null + outcome_verification,
 stopped_reason taxonomy, 2000-char page_text cap, strict budget validation
 (reject, don't clamp), schema-guarantee test, stdout-discipline test.
-Mirrored in plugin/handler.py and opencode-plugin/jev-driver.ts (the latter deleted later; MCP is the single adapter).
+Mirrored in plugin/handler.py. The OpenCode plugin mirrored it too; it is deleted, and MCP is the single adapter.
 
 ## Tier 2 — robustness core
 
