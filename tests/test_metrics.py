@@ -12,7 +12,7 @@ import threading
 from unittest.mock import Mock
 
 import pytest
-from conftest import Clock
+from conftest import Clock, _Time
 
 from jev_driver import agent as loop
 from jev_driver import drive_agent
@@ -62,14 +62,6 @@ def _timer(name):
         "max_ms": 0.0,
         "avg_ms": 0.0,
     }
-
-
-
-class _Time:
-    """Stands in for the time module drive_agent and metrics read their clock from."""
-
-    def __init__(self, clock):
-        self.perf_counter = clock.perf_counter
 
 
 class FakeBrowser:

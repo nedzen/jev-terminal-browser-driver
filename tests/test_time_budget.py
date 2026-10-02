@@ -8,7 +8,7 @@ import json
 import subprocess
 
 import pytest
-from conftest import Clock
+from conftest import Clock, _Time
 
 from jev_driver import agent as loop
 from jev_driver import cli, drive_agent
@@ -20,15 +20,6 @@ URL = "https://example.test/widget"
 GOAL = "Open the widget panel"
 
 ACTION = {"id": "e1", "kind": "click", "label": "Open Widget", "role": "button", "value": "", "node": 7}
-
-
-
-
-class _Time:
-    """Stands in for the time module drive_agent reads its clock from."""
-
-    def __init__(self, clock):
-        self.perf_counter = clock.perf_counter
 
 
 class FakeBrowser:

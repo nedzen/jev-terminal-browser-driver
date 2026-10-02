@@ -48,3 +48,10 @@ class Clock:
     def advance(self, seconds):
         self.now += float(seconds)
         return self.now
+
+
+class _Time:
+    """Stands in for the time module production code reads its clock from."""
+
+    def __init__(self, clock):
+        self.perf_counter = clock.perf_counter
