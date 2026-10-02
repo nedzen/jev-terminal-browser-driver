@@ -247,6 +247,33 @@ def set_deny_names(patterns=()) -> tuple:
     return DENY_NAMES
 
 
+def _dedup_from_env() -> bool:
+    raw = os.environ.get("WWWDRIVE_REQUEST_DEDUP", "").strip().lower()
+    return raw not in {"", "0", "false", "no"}
+
+
+# Request-assembly de-duplication, off by default so the full request keeps
+# working unchanged: WWWDRIVE_REQUEST_DEDUP=1 opts a run into the compact body.
+# Two payloads are duplicated when several operation heads are asked. Element
+# labels ride both state.elements and every per-operation criteria, and the
+# NEXT_ACTION/TARGET rules ride every question's instructions. Each is sent once
+# instead. The gate is A/B only: whether the decision backend reads a hoisted
+# rule block or a label it must now join on criteria is a backend property this
+# module cannot assert, so bench_nway.py accuracy and the live Wikipedia action
+# sequence are the only honest evidence that it is behaviour-neutral.
+# Read from the environment at import so the gate is reachable from any entry
+# point (cli.py installs the denylist and is owned elsewhere; bench_nway.py
+# calls choose() directly) without any of them having to know this exists.
+REQUEST_DEDUP: bool = _dedup_from_env()
+
+
+def set_request_dedup(enabled: bool | None = None) -> bool:
+    """Install the de-duplication gate. None re-reads WWWDRIVE_REQUEST_DEDUP."""
+    global REQUEST_DEDUP
+    REQUEST_DEDUP = _dedup_from_env() if enabled is None else bool(enabled)
+    return REQUEST_DEDUP
+
+
 def denied(action, patterns) -> bool:
     """True when this element's name is denied. Accepts compiled patterns or raw strings.
 
@@ -332,21 +359,38 @@ def choose(state, goal, history):
     # never fully deterministic.
     bypassed = {operation for operation, candidates in targets.items() if len(candidates) == 1}
     questions = {
-        "operation": {"type": "choice", "criteria": operations, "instructions": {"goal": goal, "rules": NEXT_ACTION}}
+        "operation": {
+            "type": "choice",
+            "criteria": operations,
+            "instructions": {"goal": goal, "rules": NEXT_ACTION},
+        }
     }
     for operation, candidates in targets.items():
         if operation in bypassed:
             continue
+        instructions = {"goal": goal, "operation": operation}
+        # The rules block is optional per question (verified against the live
+        # decision endpoint: a question without it is accepted, and an unknown
+        # top-level sibling key is rejected with HTTP 400). So the gate drops the
+        # repeats instead of hoisting them, leaving the operation head — the one
+        # that picks the operation — byte-identical to the full request.
+        if not REQUEST_DEDUP:
+            instructions["rules"] = [NEXT_ACTION, TARGET]
         questions[operation.lower() + "_target"] = {
             "type": "choice",
             "criteria": {index: short_criterion(index, action) for index, action in candidates.items()},
-            "instructions": {"goal": goal, "operation": operation, "rules": [NEXT_ACTION, TARGET]},
+            "instructions": instructions,
         }
     body = {
         "model": os.environ.get("DECISION_GATE_MODEL") or os.environ.get("TYPESAFE_DEFAULT_MODEL") or DEFAULT_MODEL,
         "state": {
             "page": {k: state[k] for k in ("url", "title", "text")},
-            "elements": elements,
+            # The per-operation criteria above already carry every label, and
+            # cli._target_labels reads labels from there, not from here, so the
+            # copy in state is pure duplication when the gate is on.
+            "elements": [
+                {k: v for k, v in element.items() if k != "label"} if REQUEST_DEDUP else element for element in elements
+            ],
             "recent_actions": [
                 {k: h.get(k) for k in ("action", "kind", "text", "page_changed")} for h in history[-10:]
             ],

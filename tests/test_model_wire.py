@@ -16,6 +16,7 @@ import pytest
 
 from jev_driver import model
 from jev_driver.browser import fingerprint
+from jev_driver.questions import NEXT_ACTION, TARGET
 
 URL = "https://example.test/"
 GOAL = "Find a book"
@@ -178,6 +179,89 @@ def test_the_recorded_request_is_the_body_that_was_sent(gate):
     decision = model.choose(page(*TWO_CLICKS, text=f"api_key={SECRET}"), GOAL, [])
     assert decision["request"] == bodies[0]
     assert SECRET not in json.dumps(decision["request"])
+
+
+# --- outgoing: request-assembly de-duplication (A/B gated, off by default) ---
+
+
+@pytest.fixture
+def dedup(monkeypatch):
+    """Turn the de-duplication gate on for one test, and put it back after."""
+
+    def install(on):
+        monkeypatch.setattr(model, "REQUEST_DEDUP", on)
+        return on
+
+    return install
+
+
+def test_the_full_request_carries_the_rules_on_every_head(gate, dedup):
+    """The default request repeats the rules on each head, so a head that is
+    asked on its own still gets them without joining anything up."""
+    dedup(False)
+    bodies = gate()
+    model.choose(page(*TWO_CLICKS), GOAL, [])
+    sent = bodies[0]
+    assert sent["questions"]["operation"]["instructions"]["rules"] == NEXT_ACTION
+    assert sent["questions"]["click_target"]["instructions"]["rules"] == [NEXT_ACTION, TARGET]
+
+
+def test_dedup_sends_the_rules_once_and_leaves_the_operation_head_whole(gate, dedup):
+    """The rules ride the operation head, which picks the operation. Repeating
+    them on every target head is the duplication the gate removes; the head that
+    chooses the operation must not be the one that loses them."""
+    dedup(True)
+    bodies = gate()
+    model.choose(page(*TWO_CLICKS), GOAL, [])
+    sent = bodies[0]
+    assert sent["questions"]["operation"]["instructions"]["rules"] == NEXT_ACTION
+    assert "rules" not in sent["questions"]["click_target"]["instructions"]
+
+
+def test_dedup_drops_the_label_the_criteria_already_carries(gate, dedup):
+    """An element label reached the model twice: once in state.elements and once
+    in the criteria of each operation that can act on it. The criteria copy is
+    the one cli._target_labels reads, so that one stays and the other goes."""
+    dedup(True)
+    bodies = gate()
+    model.choose(page(*TWO_CLICKS), GOAL, [])
+    sent = bodies[0]
+    assert all("label" not in element for element in sent["state"]["elements"])
+    assert sent["questions"]["click_target"]["criteria"]["1"] == "[1] Open Search; button"
+
+
+def test_dedup_keeps_the_element_index_that_criteria_are_keyed_by(gate, dedup):
+    """Criteria are keyed by element index and the executor resolves that index
+    back into the element list, so dropping a field must not disturb the
+    numbering the two halves share."""
+    dedup(True)
+    bodies = gate()
+    model.choose(page(*TWO_CLICKS), GOAL, [])
+    sent = bodies[0]
+    assert [element["index"] for element in sent["state"]["elements"]] == ["1", "2"]
+    assert set(sent["questions"]["click_target"]["criteria"]) == {"1", "2"}
+
+
+def test_dedup_adds_no_key_the_decision_endpoint_would_reject(gate, dedup):
+    """The endpoint validates the request body and answers HTTP 400 for an
+    unknown top-level key, so hoisting the shared rules beside `state` and
+    `questions` is not a de-duplication the wire can express. The compact body
+    must carry exactly the keys the full one does."""
+    dedup(True)
+    bodies = gate()
+    model.choose(page(*TWO_CLICKS), GOAL, [])
+    sent = bodies[0]
+    assert set(sent) == {"model", "state", "questions"}
+
+
+def test_dedup_is_off_when_the_environment_says_nothing(gate):
+    """No flag day: with WWWDRIVE_REQUEST_DEDUP unset the driver sends the full
+    request it always sent."""
+    bodies = gate()
+    model.choose(page(*TWO_CLICKS), GOAL, [])
+    sent = bodies[0]
+    assert sent["questions"]["click_target"]["instructions"]["rules"] == [NEXT_ACTION, TARGET]
+    assert all("label" in element for element in sent["state"]["elements"])
 
 
 # --- incoming: the reported model id is checked before anything is acted on ---

@@ -5,3 +5,5 @@ __pycache__/
 .ruff_cache/
 *.egg-info
 .DS_Store
+# bench artifacts (recreated per run)
+bench_nway.md

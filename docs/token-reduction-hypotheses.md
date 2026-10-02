@@ -68,6 +68,19 @@ H1 + H2 first (no model-behavior risk), each independently: implement,
 measure on bench + live Wikipedia task, confirm success rate flat, commit
 separately. H4 as a measured experiment only. Rest after.
 
+## Measurement contract (locked 2026-10-03)
+
+Gate on (a) caller-ingested payload tokens — result bytes per drive call
+(the doc's actual goal: "tokens an agent ingests") — plus (b) suite green
+and decision-sequence equivalence. Driver Jev totals are diagnosis only:
+±32% run-to-run swing on identical action sequences makes them unusable
+as a gate. H2 measured: 4,862 → 3,030 B per drive call (~458 tok).
+
+## Follow-ups
+
+- docs/architecture.md:120 vs apply_debug_setting: call-supplied debug is
+  discarded by both adapters — doc says otherwise. Fix the claim.
+
 ## Measured evidence (stress session 2026-10-02, X + markets + CMC)
 
 | task | outcome | ticks | in-tokens | out-tokens |

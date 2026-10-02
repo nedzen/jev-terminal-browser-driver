@@ -12,7 +12,7 @@ plugin, Tier 1–4, hardening A–C, debloat, rename. Reinstall sweep done.
 | Item | Owner | State | Gate |
 |---|---|---|---|
 | Test matrix (battery + tokens) | main-ops (wire/suite), w4 (tasks 1–5), w5 (tasks 6–10) | COMPLETE with contamination caveat (below) | tables reported in chat |
-| Token epic `feat/tokens` | w4 (H1), w5 (H2) | queued on matrix | all-10 green AND tokens down |
+| Token epic `feat/tokens` | w4 (request de-dup, pivoted from H1 on measured 0.1–0.3%), w5 (H2 insights gate — DONE, frozen, merges after H1) | in flight | caller-payload tokens down + suite/decision-equivalence (driver totals diagnosis only: ±32% run variance) |
 | Architecture batch (core/ + builder) | arch | queued on epic | structural review + e2e field test |
 | H4 experiment | unassigned | gated on H1/H2 holding | reviewer design sign-off first |
 
