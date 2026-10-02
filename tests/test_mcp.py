@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.fixture()
 def mcp(load_mcp):
-    return load_mcp("jev_mcp")
+    return load_mcp("wwwdrive_mcp")
 
 
 @pytest.fixture(autouse=True)
@@ -34,7 +34,7 @@ def req(method, params=None, msg_id=1):
 def test_initialize_negotiates_version(mcp):
     res = mcp.dispatch(req("initialize", {"protocolVersion": "2024-11-05"}))
     assert res["result"]["protocolVersion"] == "2024-11-05"
-    assert res["result"]["serverInfo"]["name"] == "jev-driver"
+    assert res["result"]["serverInfo"]["name"] == "wwwdrive"
     assert "tools" in res["result"]["capabilities"]
 
 
@@ -48,12 +48,12 @@ def test_tools_list_matches_hermes_schemas(mcp):
 
     res = mcp.dispatch(req("tools/list"))
     tools = {t["name"]: t for t in res["result"]["tools"]}
-    assert set(tools) == {"jev_drive", "jev_read", "jev_status"}
-    assert tools["jev_drive"]["inputSchema"] == PARAMETERS
-    assert tools["jev_drive"]["description"] == DESCRIPTION
-    assert tools["jev_read"]["inputSchema"] == READ_PARAMETERS
-    assert tools["jev_read"]["description"] == READ_DESCRIPTION
-    assert "goal" in tools["jev_drive"]["inputSchema"]["required"]
+    assert set(tools) == {"drive", "read", "status"}
+    assert tools["drive"]["inputSchema"] == PARAMETERS
+    assert tools["drive"]["description"] == DESCRIPTION
+    assert tools["read"]["inputSchema"] == READ_PARAMETERS
+    assert tools["read"]["description"] == READ_DESCRIPTION
+    assert "goal" in tools["drive"]["inputSchema"]["required"]
 
 
 def test_notification_returns_none(mcp):
@@ -72,15 +72,22 @@ def test_invalid_request(mcp):
 
 
 def test_call_unknown_tool(mcp):
-    res = mcp.dispatch(req("tools/call", {"name": "jev_fly", "arguments": {}}))
+    res = mcp.dispatch(req("tools/call", {"name": "fly_away", "arguments": {}}))
     assert res["error"]["code"] == mcp.INVALID_PARAMS
 
 
 def test_call_drive_missing_goal_short_circuits(mcp):
-    res = mcp.dispatch(req("tools/call", {"name": "jev_drive", "arguments": {}}))
+    res = mcp.dispatch(req("tools/call", {"name": "drive", "arguments": {}}))
     body = json.loads(res["result"]["content"][0]["text"])
     assert body["error"] == "goal is required"
     assert res["result"]["isError"] is True
+
+
+@pytest.fixture(autouse=True)
+def clean_debug_env(monkeypatch):
+    """Neither debug var leaks in from the developer's shell."""
+    for var in ("WWWDRIVE_DEBUG", "JEV_DEBUG"):
+        monkeypatch.delenv(var, raising=False)
 
 
 def test_call_strips_client_debug(mcp, monkeypatch):
@@ -91,8 +98,7 @@ def test_call_strips_client_debug(mcp, monkeypatch):
         return {"success": True, "status": "done"}
 
     monkeypatch.setattr(handler, "run_drive", fake_drive)
-    monkeypatch.delenv("JEV_DEBUG", raising=False)
-    mcp.dispatch(req("tools/call", {"name": "jev_drive", "arguments": {"goal": "g", "debug": True}}))
+    mcp.dispatch(req("tools/call", {"name": "drive", "arguments": {"goal": "g", "debug": True}}))
     assert seen["debug"] is True  # overlay on by default; model flag ignored
 
 
@@ -104,14 +110,29 @@ def test_debug_opt_out(mcp, monkeypatch):
         return {"success": True, "status": "done"}
 
     monkeypatch.setattr(handler, "run_drive", fake_drive)
-    monkeypatch.setenv("JEV_DEBUG", "0")
-    mcp.dispatch(req("tools/call", {"name": "jev_drive", "arguments": {"goal": "g"}}))
+    monkeypatch.setenv("WWWDRIVE_DEBUG", "0")
+    mcp.dispatch(req("tools/call", {"name": "drive", "arguments": {"goal": "g"}}))
     assert seen["debug"] is False
+
+
+@pytest.mark.parametrize("var", ["WWWDRIVE_DEBUG", "JEV_DEBUG"])
+@pytest.mark.parametrize("value,expected", [("0", False), ("false", False), ("no", False), ("1", True)])
+def test_debug_opt_out_reads_both_var_names(mcp, monkeypatch, var, value, expected):
+    """The pre-1.0 JEV_DEBUG still opts out; WWWDRIVE_DEBUG is the name to use."""
+    assert mcp.debug_default() is True  # unset means the overlay is on
+    monkeypatch.setenv(var, value)
+    assert mcp.debug_default() is expected
+
+
+def test_wwwdrive_debug_wins_over_the_legacy_var(mcp, monkeypatch):
+    monkeypatch.setenv("JEV_DEBUG", "0")
+    monkeypatch.setenv("WWWDRIVE_DEBUG", "1")
+    assert mcp.debug_default() is True
 
 
 def test_call_read_returns_last_row(mcp, monkeypatch):
     monkeypatch.setattr(handler, "run_read", lambda payload: {"success": True, "url": "https://x.test/"})
-    res = mcp.dispatch(req("tools/call", {"name": "jev_read", "arguments": {}}))
+    res = mcp.dispatch(req("tools/call", {"name": "read", "arguments": {}}))
     body = json.loads(res["result"]["content"][0]["text"])
     assert body["url"] == "https://x.test/"
     assert res["result"]["isError"] is False
@@ -121,7 +142,7 @@ def test_call_blocked_is_not_mcp_error(mcp, monkeypatch):
     monkeypatch.setattr(
         handler, "run_drive", lambda payload: {"success": False, "status": "blocked", "reason": "max_steps"}
     )
-    res = mcp.dispatch(req("tools/call", {"name": "jev_drive", "arguments": {"goal": "g"}}))
+    res = mcp.dispatch(req("tools/call", {"name": "drive", "arguments": {"goal": "g"}}))
     assert res["result"]["isError"] is False
 
 
@@ -142,7 +163,7 @@ def test_stdio_end_to_end():
             {"jsonrpc": "2.0", "method": "notifications/initialized"},
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
             {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
-             "params": {"name": "jev_drive", "arguments": {}}},
+             "params": {"name": "drive", "arguments": {}}},
             {"jsonrpc": "2.0", "id": 4, "method": "ping"},
         ]
         assert proc.stdin is not None
@@ -156,8 +177,8 @@ def test_stdio_end_to_end():
     by_id = {r.get("id"): r for r in rows if r.get("id") is not None}
     # notification (no id) gets no reply: 4 replies for 5 messages
     assert set(by_id) == {1, 2, 3, 4}
-    assert by_id[1]["result"]["serverInfo"]["name"] == "jev-driver"
-    assert {t["name"] for t in by_id[2]["result"]["tools"]} == {"jev_drive", "jev_read", "jev_status"}
+    assert by_id[1]["result"]["serverInfo"]["name"] == "wwwdrive"
+    assert {t["name"] for t in by_id[2]["result"]["tools"]} == {"drive", "read", "status"}
     body = json.loads(by_id[3]["result"]["content"][0]["text"])
     assert body["error"] == "goal is required"
     assert by_id[4]["result"] == {}
@@ -184,7 +205,7 @@ def test_unknown_tool_is_a_client_error_and_runs_no_handler(mcp, monkeypatch, tm
         raise AssertionError("an unknown tool must not reach a handler")
 
     monkeypatch.setattr(handler, "run_drive", never)
-    res = mcp.dispatch(req("tools/call", {"name": "jev_fly", "arguments": {}}))
+    res = mcp.dispatch(req("tools/call", {"name": "fly_away", "arguments": {}}))
     assert res["error"]["code"] == mcp.INVALID_PARAMS
     assert not (tmp_path / "logs" / "drive.jsonl").exists()  # not a server fault
 
@@ -194,8 +215,8 @@ def test_bad_client_input_does_not_disturb_the_loop(mcp):
         mcp,
         [
             "{not json",
-            req("tools/call", {"name": "jev_fly", "arguments": {}}, msg_id=1),
-            req("tools/call", {"name": "jev_drive", "arguments": "not an object"}, msg_id=2),
+            req("tools/call", {"name": "fly_away", "arguments": {}}, msg_id=1),
+            req("tools/call", {"name": "drive", "arguments": "not an object"}, msg_id=2),
             req("tools/call", {"arguments": {}}, msg_id=3),
             req("nope/method", msg_id=4),
             {"jsonrpc": "2.0", "method": "notifications/initialized"},
@@ -205,7 +226,7 @@ def test_bad_client_input_does_not_disturb_the_loop(mcp):
     assert rows[0]["error"]["code"] == mcp.PARSE_ERROR
     assert rows[0]["id"] is None
     assert [r["error"]["code"] for r in rows[1:5]] == [mcp.INVALID_PARAMS] * 3 + [mcp.METHOD_NOT_FOUND]
-    assert rows[-1]["result"]["serverInfo"]["name"] == "jev-driver"
+    assert rows[-1]["result"]["serverInfo"]["name"] == "wwwdrive"
     assert len(rows) == 6  # the notification got no reply
 
 
@@ -214,7 +235,7 @@ def test_handler_crash_is_internal_error_and_never_logs_the_message(mcp, monkeyp
         raise RuntimeError("cdp connect failed for wss://x.test/?api_key=sk-live-SUPERSECRET")
 
     monkeypatch.setattr(handler, "run_drive", boom)
-    res = mcp.dispatch(req("tools/call", {"name": "jev_drive", "arguments": {"goal": "g"}}))
+    res = mcp.dispatch(req("tools/call", {"name": "drive", "arguments": {"goal": "g"}}))
     assert res["error"]["code"] == mcp.INTERNAL_ERROR
     assert res["error"]["message"] == "internal error"
     assert "SUPERSECRET" not in json.dumps(res)
@@ -227,7 +248,7 @@ def test_a_value_error_from_the_handler_is_still_a_server_fault(mcp, monkeypatch
     """Client mistakes are rejected before the handler runs, so anything it
     raises is ours: internal error, not invalid params."""
     monkeypatch.setattr(handler, "run_read", lambda payload: (_ for _ in ()).throw(ValueError("bad state")))
-    res = mcp.dispatch(req("tools/call", {"name": "jev_read", "arguments": {}}))
+    res = mcp.dispatch(req("tools/call", {"name": "read", "arguments": {}}))
     assert res["error"]["code"] == mcp.INTERNAL_ERROR
     assert res["error"]["message"] == "internal error"
 
@@ -241,7 +262,7 @@ def test_a_broken_logger_cannot_take_the_call_down(mcp, monkeypatch):
 
     monkeypatch.setattr(handler, "run_drive", boom)
     monkeypatch.setattr(handler, "log_handler_event", broken_logger)
-    res = mcp.dispatch(req("tools/call", {"name": "jev_drive", "arguments": {"goal": "g"}}))
+    res = mcp.dispatch(req("tools/call", {"name": "drive", "arguments": {"goal": "g"}}))
     assert res["error"]["code"] == mcp.INTERNAL_ERROR
 
 
@@ -258,9 +279,9 @@ def test_stdio_loop_survives_a_handler_crash(mcp, monkeypatch):
     rows = _serve(
         mcp,
         [
-            req("tools/call", {"name": "jev_drive", "arguments": {"goal": "g"}}, msg_id=1),
+            req("tools/call", {"name": "drive", "arguments": {"goal": "g"}}, msg_id=1),
             req("tools/list", msg_id=2),
-            req("tools/call", {"name": "jev_drive", "arguments": {"goal": "g"}}, msg_id=3),
+            req("tools/call", {"name": "drive", "arguments": {"goal": "g"}}, msg_id=3),
         ],
     )
     by_id = {r["id"]: r for r in rows}
@@ -284,7 +305,7 @@ def test_unserializable_response_becomes_an_internal_error(mcp, monkeypatch):
     monkeypatch.setattr(mcp, "dispatch", flaky)
     rows = _serve(mcp, [req("tools/list", msg_id=1), req("initialize", {}, msg_id=2)])
     assert rows[0]["error"]["code"] == mcp.INTERNAL_ERROR
-    assert rows[1]["result"]["serverInfo"]["name"] == "jev-driver"
+    assert rows[1]["result"]["serverInfo"]["name"] == "wwwdrive"
 
 
 def test_subprocess_survives_garbage_input():
@@ -300,8 +321,8 @@ def test_subprocess_survives_garbage_input():
     try:
         lines = [
             "{not json",
-            json.dumps(req("tools/call", {"name": "jev_fly", "arguments": {}}, msg_id=1)),
-            json.dumps(req("tools/call", {"name": "jev_drive", "arguments": ["not", "an", "object"]}, msg_id=2)),
+            json.dumps(req("tools/call", {"name": "fly_away", "arguments": {}}, msg_id=1)),
+            json.dumps(req("tools/call", {"name": "drive", "arguments": ["not", "an", "object"]}, msg_id=2)),
             json.dumps(req("initialize", {}, msg_id=3)),
         ]
         assert proc.stdin is not None
@@ -316,4 +337,4 @@ def test_subprocess_survives_garbage_input():
     by_id = {r.get("id"): r for r in rows if r.get("id") is not None}
     assert by_id[1]["error"]["code"] == -32602
     assert by_id[2]["error"]["code"] == -32602
-    assert by_id[3]["result"]["serverInfo"]["name"] == "jev-driver"
+    assert by_id[3]["result"]["serverInfo"]["name"] == "wwwdrive"

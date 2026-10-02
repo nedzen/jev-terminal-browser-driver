@@ -1,5 +1,9 @@
 # Desktop 'Jev driving' preview-toolbar button: research
 
+> **Historical (pre-1.0.0).** Written before the rename to `wwwdrive`; the
+> product, tool, and path names below are the ones in force when it was
+> written. Kept as the record, not as the contract.
+
 Researched 2026-09-21 from `~/.hermes/hermes-agent/apps/desktop` (local source,
 authoritative) on the `preview-browser-bar` question. Paths relative to
 `apps/desktop/` unless noted. `preview-browser-bar.tsx` is confirmed at

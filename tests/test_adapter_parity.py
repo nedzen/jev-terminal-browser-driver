@@ -27,32 +27,32 @@ def mcp_mod(load_mcp):
 def test_mcp_serves_canonical_schemas(mcp_mod):
     mod = mcp_mod
     tools = {t["name"]: t for t in mod._tool_list()}
-    assert set(tools) == {"jev_drive", "jev_read", "jev_status"}
-    assert tools["jev_drive"]["inputSchema"] == PARAMETERS
-    assert tools["jev_read"]["inputSchema"] == READ_PARAMETERS
-    assert tools["jev_drive"]["description"] == DESCRIPTION
-    assert tools["jev_read"]["description"] == READ_DESCRIPTION
-    assert tools["jev_status"]["inputSchema"] == STATUS_PARAMETERS
-    assert tools["jev_status"]["description"] == STATUS_DESCRIPTION
+    assert set(tools) == {"drive", "read", "status"}
+    assert tools["drive"]["inputSchema"] == PARAMETERS
+    assert tools["read"]["inputSchema"] == READ_PARAMETERS
+    assert tools["drive"]["description"] == DESCRIPTION
+    assert tools["read"]["description"] == READ_DESCRIPTION
+    assert tools["status"]["inputSchema"] == STATUS_PARAMETERS
+    assert tools["status"]["description"] == STATUS_DESCRIPTION
 
 
 def test_time_budget_offered_with_the_same_bounds():
-    """time_budget_s is optional on jev_drive, 1..900, never on jev_read."""
+    """time_budget_s is optional on drive, 1..900, never on read."""
     prop = PARAMETERS["properties"]["time_budget_s"]
     assert prop["type"] == "integer"
     assert (prop["minimum"], prop["maximum"]) == (1, 900)
     assert "default" not in prop  # absent means no inner deadline
     assert TIME_BUDGET_CAP == prop["maximum"]
     assert "timeout_s" in PARAMETERS["properties"]  # the outer kill stays a separate knob
-    assert "time_budget_s" not in READ_PARAMETERS["properties"]  # jev_read never drives
+    assert "time_budget_s" not in READ_PARAMETERS["properties"]  # read never drives
 
 
 def test_status_tool_parity(mcp_mod):
-    """jev_status: canonical empty-object schema, same checks as preflight."""
+    """status: canonical empty-object schema, same checks as preflight."""
     from jev_driver.preflight import CHECKS, FIXES
 
     mod = mcp_mod
     tools = {t["name"]: t for t in mod._tool_list()}
-    assert tools["jev_status"]["inputSchema"] == STATUS_PARAMETERS
+    assert tools["status"]["inputSchema"] == STATUS_PARAMETERS
     assert STATUS_PARAMETERS == {"type": "object", "additionalProperties": False, "properties": {}}
     assert set(CHECKS) <= set(FIXES)  # every check names its fix

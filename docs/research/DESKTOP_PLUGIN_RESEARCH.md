@@ -1,5 +1,9 @@
 # Jev driver as a Hermes plugin: Desktop (Electron) vs TUI research
 
+> **Historical (pre-1.0.0).** Written before the rename to `wwwdrive`; the
+> product, tool, and path names below are the ones in force when it was
+> written. Kept as the record, not as the contract.
+
 Researched 2026-09-21 from the local Hermes source tree at `~/.hermes/hermes-agent/`
 (mirrors https://github.com/NousResearch/hermes-agent) plus live probes on this
 machine. All paths are relative to `~/.hermes/hermes-agent/` unless absolute.

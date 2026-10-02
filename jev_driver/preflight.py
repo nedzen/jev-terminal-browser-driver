@@ -9,7 +9,7 @@ material — a key is reported as present or missing, and its value is never rea
 into the result.
 
 Mirrors the checks behind plugin/handler.py (has_decision_key,
-terminal_browser_installed, check_jev_drive) so `jev_status` and the Hermes
+terminal_browser_installed, check_drive) so `status` and the Hermes
 gate agree. handler.py keeps its own copy on purpose: Hermes loads it without
 jev_driver, so neither module may import the other.
 """
@@ -29,7 +29,7 @@ CHECKS = ("decision_key", "terminal_browser", "driver_home", "python_env")
 FIXES = {
     "decision_key": "set DECISION_GATE_API_KEY or TYPESAFE_API_KEY in env, or OPENROUTER_API_KEY",
     "terminal_browser": "install terminal-browser, or point TERMINAL_BROWSER at the binary",
-    "driver_home": "keep scripts/drive.py next to this checkout, or set JEV_DRIVER_HOME",
+    "driver_home": "keep scripts/drive.py next to this checkout, or set WWWDRIVE_HOME",
     "python_env": "install uv, or create the repo .venv",
 }
 
@@ -90,9 +90,9 @@ def driver_home() -> Path:
     """Directory holding scripts/drive.py.
 
     Walks up from this file so an installed copy still finds the checkout.
-    JEV_DRIVER_HOME overrides it.
+    WWWDRIVE_HOME overrides it; JEV_DRIVER_HOME is the pre-1.0 fallback.
     """
-    env = os.environ.get("JEV_DRIVER_HOME", "").strip()
+    env = os.environ.get("WWWDRIVE_HOME", "").strip() or os.environ.get("JEV_DRIVER_HOME", "").strip()
     if env:
         return Path(env).expanduser()
     here = Path(__file__).resolve().parent

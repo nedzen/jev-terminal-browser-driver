@@ -1,5 +1,5 @@
-name: jev-driver
-version: 0.1.0
+name: wwwdrive
+version: 1.0.0
 description: "Drive one visible terminal-browser tab with Jev. Requires the terminal-browser program on PATH, not a skill."
 author: Marius
 kind: standalone
@@ -13,8 +13,8 @@ requires_env:
     url: "https://typesafe.ai"
     secret: true
 provides_tools:
-  - jev_drive
-  - jev_read
+  - drive
+  - read
 config_schema:
   api_key:
     type: secret
@@ -30,4 +30,4 @@ config_schema:
     type: bool
     default: true
     label: Debug overlay
-    description: "Show the Jev panel and target outlines in the page on every jev_drive and jev_read call. On by default. The model cannot change this."
+    description: "Show the Jev panel and target outlines in the page on every drive and read call. On by default. The model cannot change this."

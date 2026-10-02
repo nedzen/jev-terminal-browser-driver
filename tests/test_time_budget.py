@@ -333,7 +333,7 @@ def spawn(monkeypatch, tmp_path):
     """A fake driver home plus a popen that records argv instead of spawning."""
     (tmp_path / "scripts").mkdir()
     (tmp_path / "scripts" / "drive.py").write_text("# drive\n")
-    monkeypatch.setenv("JEV_DRIVER_HOME", str(tmp_path))
+    monkeypatch.setenv("WWWDRIVE_HOME", str(tmp_path))
     calls = []
 
     def popen(argv, **kwargs):

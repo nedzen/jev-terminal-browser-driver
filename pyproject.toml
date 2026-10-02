@@ -1,12 +1,12 @@
 [project]
-name = "jev-driver"
-version = "0.1.0"
+name = "wwwdrive"
+version = "1.0.0"
 description = "Jev-ultrafast agent loop driving terminal-browser via CDP."
 requires-python = ">=3.12"
 dependencies = ["httpx[http2]>=0.28,<1", "websocket-client>=1.8,<2"]
 
 [project.scripts]
-jev-drive = "jev_driver.cli:main"
+wwwdrive = "jev_driver.cli:main"
 
 [build-system]
 requires = ["hatchling"]
