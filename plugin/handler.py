@@ -12,6 +12,7 @@ from pathlib import Path
 
 MAX_STEPS_CAP = 30
 TIMEOUT_CAP = 900
+TIME_BUDGET_CAP = 900
 DEFAULT_MAX_STEPS = 12
 DEFAULT_TIMEOUT = 300
 PAGE_TEXT_LIMIT = 2000
@@ -248,6 +249,10 @@ def build_argv(args: dict) -> list[str]:
         argv.extend(["--url", str(args["url"])])
     if args.get("target"):
         argv.extend(["--target", str(args["target"])])
+    # Optional inner deadline. timeout_s stays the outer subprocess kill; this one
+    # is checked inside the driver's tick loop. Absent means no inner deadline.
+    if args.get("time_budget_s") is not None:
+        argv.extend(["--time-budget-s", str(args["time_budget_s"])])
     background = args.get("background") in {True, "true", "True", 1, "1"}
     if background:
         argv.append("--background")
@@ -289,6 +294,9 @@ def run_drive(args: dict, *, popen=subprocess.Popen, kill_group=_kill_group) -> 
         validated = {
             **args,
             "max_steps": _budget(args.get("max_steps"), 1, MAX_STEPS_CAP, "max_steps", DEFAULT_MAX_STEPS),
+            # Strict, like every other budget: rejected before the spawn, and
+            # integral floats (45.0) accepted for cross-adapter parity.
+            "time_budget_s": _budget(args.get("time_budget_s"), 1, TIME_BUDGET_CAP, "time_budget_s", None),
         }
         timeout_s = _budget(args.get("timeout_s"), 1, TIMEOUT_CAP, "timeout_s", DEFAULT_TIMEOUT)
     except ValueError as exc:

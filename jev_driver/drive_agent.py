@@ -1,12 +1,19 @@
 """Driver-side Agent subclass. agent.py stays verbatim."""
 
 import re
+import time
 
 from .agent import Agent
 from .browser import StalePage, without_counts
+from .metrics import Metrics, instrument_browser
 from .model import action_space, field_context, field_text
 from .readiness import REASON_WHY, done_acceptable, done_probability, page_is_shell
 from .runlog import write_event
+
+TIME_BUDGET_WHY = (
+    "Stopped: the run's time budget ran out before the goal was visibly done. "
+    "The decision that crossed the deadline was discarded, so nothing was clicked or typed after it."
+)
 
 
 def _label_stem(label: str) -> str:
@@ -68,6 +75,23 @@ def _top_operation(decision) -> str | None:
     return max(probs.items(), key=lambda kv: float(kv[1] or 0))[0]
 
 
+_TERMINAL = {"DONE", "BLOCKED"}
+
+
+def _performs_input(decision) -> bool:
+    """False for DONE and BLOCKED: they only settle the run, they never click or type.
+
+    `choice` is the field the base loop branches on to decide between settling the run
+    and touching the page, so it alone decides this. `operation` is deliberately not
+    consulted: a decision whose two fields disagree must be read as input, because that
+    is the reading that cannot type or click after the deadline.
+
+    The deadline's promise is that nothing is typed or clicked after it, so a decision
+    that performs no input is still worth honouring once the clock is spent.
+    """
+    return (decision or {}).get("choice") not in _TERMINAL
+
+
 def _ranked(probs, limit=6):
     items = sorted((probs or {}).items(), key=lambda kv: -float(kv[1] or 0))
     return [[str(key), round(float(val), 3)] for key, val in items[:limit]]
@@ -76,9 +100,17 @@ def _ranked(probs, limit=6):
 class DriveAgent(Agent):
     """Exempt advancing scrolls from the 3-repeat guard; optional debug HUD."""
 
-    def __init__(self, url, goals, *, debug=False, **kwargs):
+    def __init__(self, url, goals, *, debug=False, time_budget_s=None, **kwargs):
+        started = time.perf_counter()
         super().__init__(url, goals, **kwargs)
+        self._metrics = Metrics()
+        self._metrics.record_startup((time.perf_counter() - started) * 1000)
         self.debug = debug
+        # Optional inner deadline (upstream PR #3 idea). timeout_s stays the
+        # outer subprocess kill; this one is checked inside the tick loop.
+        self.time_budget_s = None if time_budget_s in (None, "") else int(time_budget_s)
+        self._budget_deadline = None
+        self._budget_stopped = False
         self._unexecuted_key = None
         self._unexecuted_count = 0
         self._weak_done = 0
@@ -87,11 +119,92 @@ class DriveAgent(Agent):
         browser = self.state.get("browser")
         if browser is not None:
             browser.debug = debug
+            instrument_browser(browser, self._metrics)
             if debug:
                 browser.paint_hud(self._hud_payload())
 
+    @property
+    def metrics(self) -> Metrics:
+        """This run's counters. Created on demand, so a bare instance still works."""
+        if self.__dict__.get("_metrics") is None:
+            self.__dict__["_metrics"] = Metrics()
+        return self.__dict__["_metrics"]
+
+    def close(self) -> None:
+        """Close the browser, then write this run's counters. Metrics never break cleanup."""
+        started = time.perf_counter()
+        try:
+            super().close()
+        finally:
+            self._write_metrics((time.perf_counter() - started) * 1000)
+
+    def _write_metrics(self, cleanup_ms: float) -> None:
+        """Freeze and write once per run, next to the run log. Never raises."""
+        if getattr(self, "_metrics_written", False):
+            return
+        self._metrics_written = True
+        try:
+            state = self.state or {}
+            metrics = self.metrics
+            metrics.record_cleanup(cleanup_ms)
+            metrics.finish(state.get("status"), getattr(self, "_metrics_error", None))
+            metrics.write()
+        except Exception:
+            return
+
+    def _start_time_budget(self) -> None:
+        """Start the clock at the first decision, so opening the tab spends none of it."""
+        if getattr(self, "time_budget_s", None) and getattr(self, "_budget_deadline", None) is None:
+            self._budget_deadline = time.perf_counter() + self.time_budget_s
+
+    def _time_budget_spent(self) -> bool:
+        """True once the inner budget is used up. No budget set means never."""
+        deadline = getattr(self, "_budget_deadline", None)
+        return deadline is not None and time.perf_counter() >= deadline
+
+    def _stop_time_budget(self):
+        """Stop on the inner deadline. The pending decision is discarded, never executed.
+
+        One tick reaches this twice: predict refuses the model call, then the tick's
+        unconditional act finds the same spent clock. The second visit re-asserts the
+        state but must not log again, so a consumer sees exactly one time_budget event.
+        """
+        state = self.state
+        state["decision"] = None
+        state["status"] = "blocked"
+        state["stop_reason"] = "time_budget"
+        if state.get("started_at") is not None:
+            state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
+        if not self._budget_stopped:
+            self._budget_stopped = True
+            write_event(
+                {
+                    "event": "blocked",
+                    "goal": state.get("goal"),
+                    "reason": "time_budget",
+                    "why": TIME_BUDGET_WHY,
+                }
+            )
+        self._paint_hud()
+        return self.snapshot()
+
     def command(self, name, body=None):
+        if name == "predict":
+            if self._time_budget_spent():
+                # Deadline already gone: stop without spending a model call.
+                return self._stop_time_budget()
+            self._start_time_budget()
+            snap = super().command(name, body)
+            self.metrics.record_jev((self.state.get("decision") or {}).get("latency_ms"))
+            self._paint_hud()
+            return snap
         if name == "act":
+            if self._time_budget_spent() and _performs_input(self.state.get("decision")):
+                # The model call outlived the deadline: drop it unexecuted so the
+                # page is never mutated by a decision nobody waited for. DONE and
+                # BLOCKED are exempt; they type and click nothing, so a spent clock
+                # must not turn a free finish into a failure.
+                return self._stop_time_budget()
             rejected = self._reject_weak_done() or self._look_further()
             if rejected is not None:
                 self._paint_hud()
@@ -105,9 +218,12 @@ class DriveAgent(Agent):
                 self._paint_hud()
                 return self.snapshot()
             steps_before = len(self.state.get("history") or [])
+            typed_before = len(self.state.get("text_calls") or [])
             try:
                 snap = super().command("act", body)
             except StalePage as exc:
+                self._note_text_helper(typed_before)
+                self.metrics.record_stale()
                 decision = (self.state.get("decisions") or [None])[-1] or {}
                 write_event(
                     {
@@ -127,7 +243,9 @@ class DriveAgent(Agent):
                 if self._note_unexecuted(exc):
                     self._paint_hud()
                     return self.snapshot()
+                self._metrics_error = exc  # the run dies here; record why, not what it said
                 raise
+            self._note_text_helper(typed_before)
             if chosen is not None and len(self.state.get("history") or []) > steps_before:
                 self._remember_click(chosen, page, (self.state.get("page") or {}).get("url"))
             self._unexecuted_key = None
@@ -148,6 +266,12 @@ class DriveAgent(Agent):
         decision = (state.get("decisions") or [None])[-1] or {}
         if decision.get("choice") == "BLOCKED" or decision.get("operation") == "BLOCKED":
             state["stop_reason"] = "model_blocked"
+
+    def _note_text_helper(self, before: int) -> None:
+        """Count helper calls by how many the loop appended, so a cached value costs nothing."""
+        for row in (self.state.get("text_calls") or [])[before:]:
+            if isinstance(row, dict):
+                self.metrics.record_text_helper(row.get("latency_ms"))
 
     def _decision_label(self, decision: dict) -> str:
         operation = (decision.get("operation") or "").lower()
@@ -183,6 +307,7 @@ class DriveAgent(Agent):
         except (RuntimeError, ValueError) as exc:
             write_event({"event": "retry_fill", "goal": state.get("goal"), "label": label, "why": str(exc)})
             return None
+        self.metrics.record_text_helper(helper.get("latency_ms") if isinstance(helper, dict) else None)
         action = None
         for _ in range(2):
             page = browser._observe_once(screenshot=False)
@@ -196,10 +321,15 @@ class DriveAgent(Agent):
             )
             if action is None:
                 return None
+            if self._time_budget_spent():
+                # The re-read cost the remaining budget. Discard the retry rather
+                # than typing into a field past the deadline.
+                return self._stop_time_budget()
             try:
                 browser.act(action, page, text=text)
                 break
             except StalePage:
+                self.metrics.record_stale()
                 action = None
         if action is None:
             return None
@@ -251,10 +381,14 @@ class DriveAgent(Agent):
                 return None
             if self._would_undo(action, page):
                 return self.snapshot()
+            if self._time_budget_spent():
+                # Same as the fill path: no click lands after the deadline.
+                return self._stop_time_budget()
             try:
                 browser.act(action, page)
                 break
             except StalePage:
+                self.metrics.record_stale()
                 action = None
         if action is None:
             write_event(
@@ -446,7 +580,7 @@ class DriveAgent(Agent):
             try:
                 browser.act(scroll, page)
             except StalePage:
-                pass
+                self.metrics.record_stale()
             state["page"] = browser.observe(screenshot=self.screenshots)
             history = state.setdefault("history", [])
             history.append(
@@ -510,7 +644,7 @@ class DriveAgent(Agent):
         try:
             browser.act(scroll, page)
         except StalePage:
-            pass
+            self.metrics.record_stale()
         state["page"] = browser.observe(screenshot=getattr(self, "screenshots", False))
         history = state.setdefault("history", [])
         history.append(

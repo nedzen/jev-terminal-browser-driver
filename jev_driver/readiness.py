@@ -25,6 +25,10 @@ REASON_WHY = {
         "Model chose BLOCKED. Here is the visible text; do not open another browser tool for the same look."
     ),
     "max_steps": "Stopped: tick budget exhausted before the goal was visibly done.",
+    "time_budget": (
+        "Stopped: the run's time budget ran out before the goal was visibly done. "
+        "The decision that crossed the deadline was discarded, so nothing was clicked or typed after it."
+    ),
     "scroll_only": (
         "Stopped: only scrolled, and the goal had no end state to reach. "
         "The page is below. Use jev_read with scrolls to look at more of it."

@@ -23,6 +23,7 @@ DESCRIPTION = (
     "no_page, there is no driver tab; pass url. "
     "Do not repeat a goal that was blocked twice; report what page_text shows. "
     "background must stay false unless the user asks for a hidden browser. "
+    "time_budget_s stops a run after N seconds of deciding; timeout_s stays the outer kill. "
     "The debug overlay is a plugin setting, not an argument."
 )
 
@@ -72,6 +73,17 @@ PARAMETERS = {
             "type": "integer",
             "description": "Subprocess timeout in seconds (default 300, hard cap 900).",
             "default": 300,
+            "minimum": 1,
+            "maximum": 900,
+        },
+        "time_budget_s": {
+            "type": "integer",
+            "description": (
+                "Stop this run after N seconds of deciding. Checked before every model call and "
+                "before every click or type; a decision that outlives it is discarded without "
+                "clicking or typing. Omit for no inner deadline; timeout_s stays the outer kill. "
+                "The clock starts at the first decision, not at tab creation."
+            ),
             "minimum": 1,
             "maximum": 900,
         },

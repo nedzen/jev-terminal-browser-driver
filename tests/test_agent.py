@@ -96,7 +96,11 @@ def test_all_heads_are_one_request_and_only_matching_head_executes(monkeypatch):
     assert calls[0][0] == "https://api.typesafe.ai/v1/systemone"
     assert calls[0][1]["model"] == "jev-1.13.0"
     assert d["operation"] == "TYPE_TEXT" and d["target"] == "1" and d["choice"] == "e1"
-    assert set(calls[0][1]["questions"]) == {"operation", "click_target", "type_text_target"}
+    # Single-candidate heads are bypassed deterministically (no question asked):
+    # the fixture has one fill action, so type_text_target is answered in-process.
+    assert set(calls[0][1]["questions"]) == {"operation", "click_target"}
+    assert d["decision_source"] == "mixed"
+    assert d["stages"]["TYPE_TEXT"]["backend"] == "deterministic"
     assert isinstance(calls[0][1]["questions"]["click_target"]["criteria"]["1"], str)
 
 
