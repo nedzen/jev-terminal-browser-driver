@@ -140,7 +140,15 @@ def _stopped_reason(status: str, reason, error) -> str:
     return "model_blocked"
 
 
-def compact_result(rows: list[dict], exit_code: int, error: str | None = None) -> dict:
+def compact_result(rows: list[dict], exit_code: int, error: str | None = None, *, insights: bool = True) -> dict:
+    """Fold the tick rows into the one result an agent reads.
+
+    ``insights`` is the ranked operations/targets trace, not the overlay: a
+    human watching the pane wants the overlay by default, but this trace is
+    payload the agent pays for, so adapters pass ``insights=False`` unless
+    debug was explicitly asked for. Dropping it changes nothing else in the
+    result, and debug-on still gets the trace byte-identical.
+    """
     meta = next((r for r in rows if r.get("event") == "browser"), {})
     ticks = [r for r in rows if r.get("status")]
     last = ticks[-1] if ticks else {}
@@ -189,9 +197,10 @@ def compact_result(rows: list[dict], exit_code: int, error: str | None = None) -
     else:
         out["outcome_verification"] = "not_applicable"
     out["stopped_reason"] = _stopped_reason(out["status"], out.get("reason"), out.get("error"))
-    insights = [t["insight"] for t in ticks if isinstance(t.get("insight"), dict)]
     if insights:
-        out["insights"] = insights
+        rows_insights = [t["insight"] for t in ticks if isinstance(t.get("insight"), dict)]
+        if rows_insights:
+            out["insights"] = rows_insights
     if any(t.get("degenerate") for t in ticks):
         out["degenerate"] = True
     return out
@@ -325,6 +334,9 @@ def run_drive(args: dict, *, popen=subprocess.Popen, kill_group=_kill_group) -> 
         timeout_s = _budget(args.get("timeout_s"), 1, TIMEOUT_CAP, "timeout_s", DEFAULT_TIMEOUT)
     except ValueError as exc:
         return compact_result([], 1, error=str(exc))
+    # The insight trace is opt-in per adapter; a caller that says nothing keeps
+    # it, so a direct run_drive caller is unchanged.
+    want_insights = args.get("insights", True)
     proc = popen(
         build_argv(validated),
         cwd=str(home),
@@ -345,7 +357,7 @@ def run_drive(args: dict, *, popen=subprocess.Popen, kill_group=_kill_group) -> 
             leftover = ""
         rows = parse_json_lines(leftover)
         log_handler_event("drive", f"timeout after {timeout_s}s")
-        result = compact_result(rows, 1, error="timeout")
+        result = compact_result(rows, 1, error="timeout", insights=want_insights)
         result["status"] = "blocked"
         result["success"] = False
         return result
@@ -358,7 +370,7 @@ def run_drive(args: dict, *, popen=subprocess.Popen, kill_group=_kill_group) -> 
         error = "driver failed with no output" + (": " + " | ".join(tail) if tail else "")
     if error:
         log_handler_event("drive", error, stderr or "")
-    return compact_result(rows, proc.returncode or 0, error=error)
+    return compact_result(rows, proc.returncode or 0, error=error, insights=want_insights)
 
 
 def handle_drive(args: dict | None = None, **kwargs) -> str:
