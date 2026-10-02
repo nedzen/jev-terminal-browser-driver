@@ -217,6 +217,24 @@ def test_generated_text_reused_only_for_identical_retry_context(runner, monkeypa
     assert runner.pending_text is None
 
 
+def test_cached_text_not_reused_across_fields(runner, monkeypatch):
+    """Upstream issue browser-use/jev-ultrafast#191: two same-labeled fields
+    produce byte-identical helper input, so the cache must key on the element
+    node — a stale fill on one field must not type into the other."""
+    runner.state["page"]["actions"].append(
+        {"id": "e4", "kind": "fill", "label": "Search", "role": "textbox", "value": "", "node": 20}
+    )
+    helper = Mock(return_value=("book", {"model": "test", "latency_ms": 10}))
+    monkeypatch.setattr(loop, "field_text", helper)
+    runner.state["browser"].act.side_effect = [StalePage("Changed before input"), None]
+    with pytest.raises(StalePage):
+        runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
+    runner.state["decision"] = decision("e4")
+    runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
+    assert helper.call_count == 2
+    assert runner.pending_text is None
+
+
 def test_changed_field_context_does_not_reuse_generated_text(runner, monkeypatch):
     helper = Mock(return_value=("book", {"model": "test", "latency_ms": 10}))
     monkeypatch.setattr(loop, "field_text", helper)
