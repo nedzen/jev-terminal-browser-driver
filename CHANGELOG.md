@@ -4,9 +4,9 @@ All notable user-facing changes, newest first. Version numbers follow
 [semver](https://semver.org); the project was published as `jev-driver` at
 0.1.0 and is published as `wwwdrive` from 1.0.0.
 
-## 1.0.0
+## 1.1.0
 
-### Changed since tag (unreleased: token epic on `feat/tokens`, architecture on `feat/arch-core`)
+### Changed
 
 - **insights trace explicit-only on MCP** (~1.8KB/call saved by default):
   the ranked operations/targets trace rides an explicit opt-in
@@ -29,6 +29,8 @@ All notable user-facing changes, newest first. Version numbers follow
   byte-identical — same keys, same order, same nulls. `write_event` and the
   redaction vocabulary stay in `jev_driver/runlog.py`, which is the
   sanitize-and-append boundary and also serves the outgoing-wire redactor.
+
+## 1.0.0
 
 ### Renamed
 

@@ -55,7 +55,7 @@ from plugin import (  # noqa: E402
 from plugin import handler as h  # noqa: E402
 
 SERVER_NAME = "wwwdrive"
-SERVER_VERSION = "1.0.0"  # synced with plugin.yaml version
+SERVER_VERSION = "1.1.0"  # synced with plugin.yaml version
 SUPPORTED_PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07")
 
 PARSE_ERROR = -32700

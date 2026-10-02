@@ -1,5 +1,5 @@
 name: wwwdrive
-version: 1.0.0
+version: 1.1.0
 description: "Drive one visible terminal-browser tab with Jev. Requires the terminal-browser program on PATH, not a skill."
 author: Marius
 kind: standalone

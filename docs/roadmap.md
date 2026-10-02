@@ -67,6 +67,43 @@ Arch merged (PR #13) → reinstall verified → abridged release gate
 drive, suite+ruff) → tag v1.1.0 → release notes. Owner actions:
 GitHub repo rename click (still pending).
 
+## Release gate 1.1.0 (2026-10-03, CLOSED as-is per owner decision — owner out, authority CEO)
+
+- Reinstall: PASS — `scripts/install_plugin.sh` re-run on ca1ce07 working
+  tree; `~/.hermes/plugins/wwwdrive` symlink fresh, no stale jev-driver in
+  the default home. OPEN (owner action, untouched): named profiles `founder`
+  and `intern` still link the old `jev-driver` — needs the per-profile
+  re-link + settings re-entry.
+- Wire contract (raw stdio): PASS — initialize negotiates 2024-11-05,
+  serverInfo wwwdrive **1.1.0** (version bumped in mcp.py + plugin.yaml +
+  pyproject.toml + uv.lock), tools/list exactly {drive, read, status},
+  `drive {}` → success:false / "goal is required" / verified:null,
+  status → ready:true all checks ok, no key material.
+- Suite + ruff: PASS — 657 passed, ruff clean (locked 0.16.8, repo root,
+  re-verified on the final version-bumped tree before commit).
+- Live read-only IANA drive: **NOT GREEN after 3 attempts** (read-only, no
+  mutations; goal `Go to example.com and click the 'More information...' /
+  'Learn more' link, then stop.`): run 1 — self-inflicted staleness loop
+  (driver's `#jev=` URL marker changes the page between observe and act →
+  `field_changed` ×2 → `click_not_sent`); run 2 — click FIRED, final_url
+  `iana.org/help/example-domains` (the plan's end state) but model chose
+  BLOCKED instead of DONE → `model_blocked`; run 3 (22:49:33Z,
+  run_id `bcbce170`) — click FIRED, `stale 0`, same correct end URL,
+  model again BLOCKED (`BLOCKED 0.62 | DONE 0.26`) → `model_blocked`.
+  Suspects: backend model stop-protocol behavior (owner's configured backend
+  changed since 1.0.0 shipped) + observe/act URL-marker mutation (possible
+  pre-existing bug class). NO mid-release hotfixes.
+- Owner decision (relayed via CEO, owner now OUT FOR GOOD): ship v1.1.0
+  as-is on reinstall + wire-contract + suite 657 + ruff green, with this
+  gap recorded honestly. No descope-by-default; this is an explicit
+  owner override of the live-drive gate item only.
+- Post-1.1.0 work (each needs its own cycle + reviewer sign-off, NOT
+  started): (a) stop-protocol mislabel investigation (backend/model config,
+  runs 2–3 evidence); (b) `#jev=` marker observe/act staleness
+  (run 1 evidence, intermittent — did NOT reproduce on run 3).
+- Owner-only pending, untouched: GitHub repo rename click; `founder` /
+  `intern` profile re-link + settings re-entry.
+
 ## Process notes (2026-10-03)
 
 - PR #13 minors follow-up (reviewer-approved, same pattern as a24042f):
