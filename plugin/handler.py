@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -237,6 +238,8 @@ def build_argv(args: dict) -> list[str]:
         argv.extend(["--url", str(args["url"])])
     if args.get("target"):
         argv.extend(["--target", str(args["target"])])
+    for pattern in args.get("deny_names") or []:
+        argv.extend(["--deny-name", pattern])
     # Optional inner deadline. timeout_s stays the outer subprocess kill; this one
     # is checked inside the driver's tick loop. Absent means no inner deadline.
     if args.get("time_budget_s") is not None:
@@ -272,6 +275,33 @@ def _budget(value, lo: int, hi: int, name: str, default: int) -> int:
     return value
 
 
+def _deny_names(value) -> list[str]:
+    """The denylist as a list of patterns, or a pre-spawn rejection.
+
+    A pattern that does not compile, an empty one (it would deny every name and
+    leave the run nothing to drive), or a list that is not made of strings is a
+    malformed argument, not something to clamp quietly: the caller is told
+    instead of getting a browser opened against a denylist nobody asked for.
+    """
+    if value is None:
+        return []
+    bad = "deny_names must be a list of regular expressions; no action executed."
+    if isinstance(value, str) or not isinstance(value, (list, tuple)):
+        raise ValueError(bad)
+    patterns = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(bad)
+        try:
+            re.compile(item)
+        except re.error:
+            raise ValueError(
+                f"deny_names pattern {item[:60]!r} is not a valid regular expression; no action executed."
+            ) from None
+        patterns.append(item)
+    return patterns
+
+
 def run_drive(args: dict, *, popen=subprocess.Popen, kill_group=_kill_group) -> dict:
     home = driver_home()
     if not args.get("goal") or not str(args.get("goal")).strip():
@@ -285,6 +315,10 @@ def run_drive(args: dict, *, popen=subprocess.Popen, kill_group=_kill_group) -> 
             # Strict, like every other budget: rejected before the spawn, and
             # integral floats (45.0) accepted for cross-adapter parity.
             "time_budget_s": _budget(args.get("time_budget_s"), 1, TIME_BUDGET_CAP, "time_budget_s", None),
+            # Rejected before the spawn for the same reason a budget is: a pattern
+            # that cannot compile is the caller's to fix, and a run opened against
+            # a denylist nobody meant to set is a browser nobody asked for.
+            "deny_names": _deny_names(args.get("deny_names")),
         }
         timeout_s = _budget(args.get("timeout_s"), 1, TIMEOUT_CAP, "timeout_s", DEFAULT_TIMEOUT)
     except ValueError as exc:

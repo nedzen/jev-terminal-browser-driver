@@ -228,8 +228,42 @@ def sole_candidate_answer(candidates):
     return {"choice": index, "confidence": 1.0, "probabilities": {index: 1.0}}
 
 
-def action_space(actions):
-    """One index per observed element; each operation has its own valid target choices."""
+# Element names this run refuses to act on, as compiled regexes. Installed once
+# per run by cli.main: agent.py is upstream-verbatim and cannot pass arguments
+# into action_space, so the denylist lives here where both callers read it.
+DENY_NAMES: tuple = ()
+
+
+def set_deny_names(patterns=()) -> tuple:
+    """Install this run's denylist, compiled once. A bad pattern raises before any decision."""
+    global DENY_NAMES
+    compiled = []
+    for pattern in patterns or ():
+        try:
+            compiled.append(re.compile(pattern))
+        except (re.error, TypeError):
+            raise ValueError(f"deny_names pattern {str(pattern)[:60]!r} is not a valid regular expression.") from None
+    DENY_NAMES = tuple(compiled)
+    return DENY_NAMES
+
+
+def denied(action, patterns) -> bool:
+    """True when this element's name is denied. Accepts compiled patterns or raw strings."""
+    label = str(action.get("label") or "")
+    return bool(label) and any(re.search(pattern, label) for pattern in patterns)
+
+
+def action_space(actions, deny_names=None):
+    """One index per observed element; each operation has its own valid target choices.
+
+    An element whose name matches the denylist is dropped before anything is
+    indexed: no element, no target, no control. The model therefore cannot choose
+    it, and the executor never looks up an id it was never offered. ``deny_names``
+    defaults to this run's DENY_NAMES, installed by set_deny_names.
+    """
+    patterns = DENY_NAMES if deny_names is None else deny_names
+    if patterns:
+        actions = [action for action in actions if not denied(action, patterns)]
     elements, indices, targets, controls = [], {}, {}, {}
     operations = {"click": "CLICK", "fill": "TYPE_TEXT", "select": "SELECT"}
     for action in actions:

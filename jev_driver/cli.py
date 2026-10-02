@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import browser as browser_mod
+from . import model as model_mod
 from . import processes as proc_mod
 from .browser import _log_continuity, find_continuable_page, set_lease
 from .cdp import connect, list_browsers
@@ -162,6 +163,10 @@ def tick_record(snap: dict, *, debug: bool = False) -> dict:
         rec["why"] = why
     if reason:
         rec["reason"] = reason
+    # snapshot.js caps the action list at 250; when it trims, say so. A blocked
+    # run then reads as "the model could not see these", not "the page had none".
+    if page.get("omitted_actions"):
+        rec["omitted_actions"] = page["omitted_actions"]
     if rec["status"] in {"done", "blocked"} or reason:
         rec["page_text"] = (page.get("text") or "")[:2000]
     if snap.get("takeover"):
@@ -355,6 +360,16 @@ def parse_args(argv=None):
         ),
     )
     parser.add_argument("--navigate", action="store_true", help="With --target, also Page.navigate to --url.")
+    parser.add_argument(
+        "--deny-name",
+        dest="deny_names",
+        action="append",
+        default=None,
+        help=(
+            "Never offer an element whose name matches this regex to the model (repeatable). "
+            "A denied element gets no index, so it cannot be chosen, clicked, or typed into."
+        ),
+    )
     parser.add_argument("--cdp", dest="cdp_url", default=None, help="Explicit CDP websocket or http discovery URL.")
     parser.add_argument(
         "--background",
@@ -390,6 +405,14 @@ def main(argv=None) -> int:
     if args.time_budget_s is not None and not (1 <= args.time_budget_s <= TIME_BUDGET_CAP):
         err = f"--time-budget-s must be 1..{TIME_BUDGET_CAP}"
         print(json.dumps({"status": "blocked", "error": err}), file=sys.stderr)
+        return 1
+    # Installed before the agent is built: the denylist is read by every decision
+    # this run makes, and a pattern that cannot compile is rejected here rather
+    # than after a browser and a paid call.
+    try:
+        model_mod.set_deny_names(args.deny_names)
+    except ValueError as exc:
+        print(json.dumps({"status": "blocked", "error": str(exc)}), file=sys.stderr)
         return 1
     url = args.url
     launch = url or DEFAULT_FIXTURE.as_uri()
