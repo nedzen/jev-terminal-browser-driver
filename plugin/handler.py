@@ -17,7 +17,7 @@ DEFAULT_MAX_STEPS = 12
 DEFAULT_TIMEOUT = 300
 PAGE_TEXT_LIMIT = 2000
 TB = os.environ.get("TERMINAL_BROWSER", str(Path.home() / ".local" / "bin" / "terminal-browser"))
-LOG_DIR = Path.home() / ".cache" / "jev-driver"
+LOG_DIR = Path.home() / ".cache" / "wwwdrive"
 
 
 def log_handler_event(tool: str, error: str, stderr: str = "") -> None:
@@ -42,9 +42,10 @@ def driver_home() -> Path:
     """Directory that contains scripts/drive.py.
 
     Walks up from this file so a catalog install works without a checkout at
-    ~/Projects. JEV_DRIVER_HOME still overrides it.
+    ~/Projects. WWWDRIVE_HOME overrides it; JEV_DRIVER_HOME is still read as a
+    fallback so pre-1.0 configs keep working.
     """
-    env = os.environ.get("JEV_DRIVER_HOME", "").strip()
+    env = os.environ.get("WWWDRIVE_HOME", "").strip() or os.environ.get("JEV_DRIVER_HOME", "").strip()
     if env:
         return Path(env).expanduser()
     here = Path(__file__).resolve().parent
@@ -80,7 +81,7 @@ def terminal_browser_installed() -> bool:
     return bool(shutil.which("terminal-browser")) or Path(TB).is_file()
 
 
-def check_jev_drive() -> bool:
+def check_drive() -> bool:
     home = driver_home()
     if not (home / "scripts" / "drive.py").is_file():
         return False
@@ -119,7 +120,7 @@ def _sum_usage(rows: list[dict]) -> dict:
 
 
 def _stopped_reason(status: str, reason, error) -> str:
-    """Uniform stop taxonomy (PR browser-use/jev-ultrafast#3).
+    """Uniform stop taxonomy (upstream browser-use/jev-ultrafast#3).
 
     done -> model_done; budget exhaustion -> action_budget/time_budget;
     anything else blocked -> model_blocked; hard failures -> error.
@@ -307,7 +308,7 @@ def run_drive(args: dict, *, popen=subprocess.Popen, kill_group=_kill_group) -> 
         except Exception:
             leftover = ""
         rows = parse_json_lines(leftover)
-        log_handler_event("jev_drive", f"timeout after {timeout_s}s")
+        log_handler_event("drive", f"timeout after {timeout_s}s")
         result = compact_result(rows, 1, error="timeout")
         result["status"] = "blocked"
         result["success"] = False
@@ -320,11 +321,11 @@ def run_drive(args: dict, *, popen=subprocess.Popen, kill_group=_kill_group) -> 
         tail = (stderr or "").strip().splitlines()[-15:]
         error = "driver failed with no output" + (": " + " | ".join(tail) if tail else "")
     if error:
-        log_handler_event("jev_drive", error, stderr or "")
+        log_handler_event("drive", error, stderr or "")
     return compact_result(rows, proc.returncode or 0, error=error)
 
 
-def handle_jev_drive(args: dict | None = None, **kwargs) -> str:
+def handle_drive(args: dict | None = None, **kwargs) -> str:
     payload = args if isinstance(args, dict) else kwargs
     return json.dumps(run_drive(payload))
 
@@ -345,7 +346,7 @@ def build_read_argv(args: dict) -> list[str]:
         argv.extend(["--target", str(args["target"])])
     if args.get("background") in {True, "true", "True", 1, "1"}:
         argv.append("--background")
-        # Same rule as jev_drive: a CDP URL is only honored for an explicit
+        # Same rule as drive: a CDP URL is only honored for an explicit
         # hidden attach, never for the visible pane.
         if args.get("cdp_url"):
             argv.extend(["--cdp", str(args["cdp_url"])])
@@ -378,17 +379,17 @@ def run_read(args: dict, *, popen=subprocess.Popen, kill_group=_kill_group) -> d
         stdout, stderr = proc.communicate(timeout=timeout_s)
     except subprocess.TimeoutExpired:
         kill_group(proc)
-        log_handler_event("jev_read", f"timeout after {timeout_s}s")
+        log_handler_event("read", f"timeout after {timeout_s}s")
         return {"success": False, "status": "blocked", "error": "timeout"}
     rows = parse_json_lines(stdout or "")
     if rows:
         return rows[-1]
     tail = (stderr or "").strip().splitlines()[-8:]
     error = "read failed" + (": " + " | ".join(tail) if tail else "")
-    log_handler_event("jev_read", error, stderr or "")
+    log_handler_event("read", error, stderr or "")
     return {"success": False, "error": error}
 
 
-def handle_jev_read(args: dict | None = None, **kwargs) -> str:
+def handle_read(args: dict | None = None, **kwargs) -> str:
     payload = args if isinstance(args, dict) else kwargs
     return json.dumps(run_read(payload))

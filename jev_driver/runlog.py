@@ -24,7 +24,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-LOG_DIR = Path.home() / ".cache" / "jev-driver"
+LOG_DIR = Path.home() / ".cache" / "wwwdrive"
 JSONL_PATH = LOG_DIR / "drive.jsonl"
 TEXT_PATH = LOG_DIR / "drive.log"
 

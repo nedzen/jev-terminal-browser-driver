@@ -1,4 +1,4 @@
-"""Startup preflight: shape, secrecy, --check, and the MCP jev_status tool.
+"""Startup preflight: shape, secrecy, --check, and the MCP status tool.
 
 No browser, no model call, no paid anything: these checks are exactly what runs
 when nothing is installed, so that is the state under test.
@@ -23,7 +23,7 @@ KEY_VARS = ("DECISION_GATE_API_KEY", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY")
 
 @pytest.fixture()
 def mcp_mod(load_mcp):
-    return load_mcp("jev_mcp_preflight")
+    return load_mcp("wwwdrive_mcp_preflight")
 
 
 @pytest.fixture(autouse=True)
@@ -35,7 +35,7 @@ def clean_env(monkeypatch, tmp_path):
     these tests. Empty the PATH and point HOME at tmp_path instead; tests that
     want a binary put one there.
     """
-    for var in KEY_VARS + ("HERMES_HOME", "JEV_DRIVER_HOME", "TERMINAL_BROWSER"):
+    for var in KEY_VARS + ("HERMES_HOME", "WWWDRIVE_HOME", "JEV_DRIVER_HOME", "TERMINAL_BROWSER"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("PATH", str(tmp_path / "empty-path"))  # a directory that does not exist
@@ -80,7 +80,7 @@ def test_a_fully_provisioned_machine_is_ready(monkeypatch, tmp_path):
     tb = bindir / "terminal-browser"
     tb.write_text("#!/bin/sh\n")
     tb.chmod(0o755)
-    monkeypatch.setenv("JEV_DRIVER_HOME", str(home))
+    monkeypatch.setenv("WWWDRIVE_HOME", str(home))
     monkeypatch.setenv("PATH", str(bindir))  # no uv here; .venv covers python_env
     monkeypatch.setenv("TYPESAFE_API_KEY", "sk-ok")
     out = pf.preflight()
@@ -162,7 +162,7 @@ def test_terminal_browser_override_must_be_executable(monkeypatch, tmp_path):
 
 
 def test_driver_home_missing_without_the_entrypoint(monkeypatch, tmp_path):
-    monkeypatch.setenv("JEV_DRIVER_HOME", str(tmp_path / "empty"))
+    monkeypatch.setenv("WWWDRIVE_HOME", str(tmp_path / "empty"))
     assert pf.preflight()["driver_home"] == "missing"
 
 
@@ -170,8 +170,28 @@ def test_driver_home_override_must_hold_drive_py(monkeypatch, tmp_path):
     fake = tmp_path / "elsewhere"
     (fake / "scripts").mkdir(parents=True)
     (fake / "scripts" / "drive.py").write_text("# drive\n")
-    monkeypatch.setenv("JEV_DRIVER_HOME", str(fake))
+    monkeypatch.setenv("WWWDRIVE_HOME", str(fake))
     assert pf.preflight()["driver_home"] == "ok"
+
+
+def test_legacy_driver_home_var_still_resolves(monkeypatch, tmp_path):
+    """Pre-1.0 configs set JEV_DRIVER_HOME; the 1.0.0 rename keeps reading it."""
+    fake = tmp_path / "elsewhere"
+    (fake / "scripts").mkdir(parents=True)
+    (fake / "scripts" / "drive.py").write_text("# drive\n")
+    monkeypatch.setenv("JEV_DRIVER_HOME", str(fake))
+    assert pf.driver_home() == fake
+    assert pf.preflight()["driver_home"] == "ok"
+
+
+def test_wwwdrive_home_wins_over_the_legacy_var(monkeypatch, tmp_path):
+    new, old = tmp_path / "new", tmp_path / "old"
+    for home in (new, old):
+        (home / "scripts").mkdir(parents=True)
+        (home / "scripts" / "drive.py").write_text("# drive\n")
+    monkeypatch.setenv("WWWDRIVE_HOME", str(new))
+    monkeypatch.setenv("JEV_DRIVER_HOME", str(old))
+    assert pf.driver_home() == new
 
 
 def test_python_env_ok_without_uv_when_venv_exists(monkeypatch, tmp_path):
@@ -179,7 +199,7 @@ def test_python_env_ok_without_uv_when_venv_exists(monkeypatch, tmp_path):
     (home / "scripts").mkdir(parents=True)
     (home / "scripts" / "drive.py").write_text("# drive\n")
     (home / ".venv").mkdir()
-    monkeypatch.setenv("JEV_DRIVER_HOME", str(home))
+    monkeypatch.setenv("WWWDRIVE_HOME", str(home))
     monkeypatch.setenv("PATH", str(Path("/nonexistent")))
     assert pf.preflight()["python_env"] == "ok"
 
@@ -188,7 +208,7 @@ def test_python_env_missing_without_uv_or_venv(monkeypatch, tmp_path):
     home = tmp_path / "repo"
     (home / "scripts").mkdir(parents=True)
     (home / "scripts" / "drive.py").write_text("# drive\n")
-    monkeypatch.setenv("JEV_DRIVER_HOME", str(home))
+    monkeypatch.setenv("WWWDRIVE_HOME", str(home))
     monkeypatch.setenv("PATH", str(Path("/nonexistent")))
     assert pf.preflight()["python_env"] == "missing"
 
@@ -198,7 +218,7 @@ def test_missing_everything_is_not_ready(monkeypatch, tmp_path):
     empty_home = tmp_path / "bare"
     (empty_home / "scripts").mkdir(parents=True)
     (empty_home / "scripts" / "drive.py").write_text("# drive\n")
-    monkeypatch.setenv("JEV_DRIVER_HOME", str(empty_home))
+    monkeypatch.setenv("WWWDRIVE_HOME", str(empty_home))
     out = pf.preflight()
     assert out["ready"] is False
     assert out["missing"] == ["decision_key", "terminal_browser", "python_env"]
@@ -238,7 +258,7 @@ def test_check_prints_preflight_json_and_exits_zero(capsys, monkeypatch):
 
 def test_check_exits_zero_even_when_nothing_is_installed(capsys, monkeypatch):
     monkeypatch.setenv("PATH", str(Path("/nonexistent")))
-    monkeypatch.setenv("JEV_DRIVER_HOME", str(Path("/nonexistent")))
+    monkeypatch.setenv("WWWDRIVE_HOME", str(Path("/nonexistent")))
     assert main(["--check"]) == 0
     body = json.loads(capsys.readouterr().out)
     assert body["ready"] is False
@@ -274,22 +294,22 @@ def test_check_does_not_launch_a_browser(monkeypatch):
     assert main(["--check"]) == 0
 
 
-# --- MCP jev_status --------------------------------------------------------
+# --- MCP status --------------------------------------------------------
 
 
 def test_tools_list_includes_status(mcp_mod):
     tools = {t["name"]: t for t in mcp_mod._tool_list()}
-    assert "jev_status" in tools
-    assert tools["jev_status"]["inputSchema"] == STATUS_PARAMETERS
-    assert tools["jev_status"]["inputSchema"]["properties"] == {}
-    assert tools["jev_status"]["inputSchema"]["additionalProperties"] is False
-    assert tools["jev_status"]["description"]
+    assert "status" in tools
+    assert tools["status"]["inputSchema"] == STATUS_PARAMETERS
+    assert tools["status"]["inputSchema"]["properties"] == {}
+    assert tools["status"]["inputSchema"]["additionalProperties"] is False
+    assert tools["status"]["description"]
 
 
 def test_tools_list_via_dispatch(mcp_mod):
     res = mcp_mod.dispatch({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
     names = {t["name"] for t in res["result"]["tools"]}
-    assert {"jev_drive", "jev_read", "jev_status"} <= names
+    assert {"drive", "read", "status"} <= names
 
 
 def test_call_status_works_with_no_browser(monkeypatch, mcp_mod):
@@ -297,7 +317,7 @@ def test_call_status_works_with_no_browser(monkeypatch, mcp_mod):
     monkeypatch.setattr(mod.h, "run_drive", lambda payload: pytest.fail("status launched a drive"))
     monkeypatch.setattr(mod.h, "run_read", lambda payload: pytest.fail("status launched a read"))
     res = mod.dispatch(
-        {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "jev_status", "arguments": {}}}
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "status", "arguments": {}}}
     )
     assert res["result"]["isError"] is False
     body = json.loads(res["result"]["content"][0]["text"])
@@ -309,7 +329,7 @@ def test_call_status_works_with_no_browser(monkeypatch, mcp_mod):
 def test_call_status_never_leaks_a_key(monkeypatch, mcp_mod):
     monkeypatch.setenv("TYPESAFE_API_KEY", "sk-mcp-secret")
     res = mcp_mod.dispatch(
-        {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "jev_status", "arguments": {}}}
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "status", "arguments": {}}}
     )
     text = res["result"]["content"][0]["text"]
     assert "sk-mcp-secret" not in text
@@ -324,7 +344,7 @@ def test_call_status_takes_no_arguments(mcp_mod):
             "jsonrpc": "2.0",
             "id": 1,
             "method": "tools/call",
-            "params": {"name": "jev_status", "arguments": {"goal": "x"}},
+            "params": {"name": "status", "arguments": {"goal": "x"}},
         }
     )
     assert res["result"]["isError"] is False
@@ -350,7 +370,7 @@ def _registered_tool_names(source: str) -> set[str]:
             if keyword.arg == "name" and isinstance(keyword.value, ast.Constant):
                 if isinstance(keyword.value.value, str):
                     names.add(keyword.value.value)
-        # Positional: ctx.register_tool("jev_status", ...)
+        # Positional: ctx.register_tool("status", ...)
         if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
             names.add(node.args[0].value)
     return names
@@ -366,31 +386,31 @@ def test_status_is_not_registered_as_a_hermes_native_tool():
     source = (ROOT / "plugin" / "__init__.py").read_text()
     registered = _registered_tool_names(source)
     # The two real tools prove the extractor sees keyword registrations at all.
-    assert {"jev_drive", "jev_read"} <= registered, registered
-    assert "jev_status" not in registered, registered
+    assert {"drive", "read"} <= registered, registered
+    assert "status" not in registered, registered
 
 
 # Each entry is a complete ctx.register_tool(...) call that WOULD register
-# jev_status with Hermes. Four spellings, because a line grep only catches one.
+# status with Hermes. Four spellings, because a line grep only catches one.
 _LEAK_STYLES = [
     # name= on a line of its own: the case the old grep-based guard missed.
     '    ctx.register_tool(\n'
     '        name=\n'
-    '            "jev_status",\n'
-    '        toolset="jev",\n'
+    '            "status",\n'
+    '        toolset="wwwdrive",\n'
     '        schema=STATUS_SCHEMA,\n'
     '    )\n',
     # The natural multi-line spelling, copied from the two real registrations.
     '    ctx.register_tool(\n'
-    '        name="jev_status",\n'
-    '        toolset="jev",\n'
+    '        name="status",\n'
+    '        toolset="wwwdrive",\n'
     '        schema=STATUS_SCHEMA,\n'
     '        handler=handle,\n'
     '    )\n',
-    # Positional: ctx.register_tool("jev_status", ...)
-    '    ctx.register_tool("jev_status", "jev", STATUS_SCHEMA, handle)\n',
+    # Positional: ctx.register_tool("status", ...)
+    '    ctx.register_tool("status", "jev", STATUS_SCHEMA, handle)\n',
     # Every argument keyworded on one line.
-    '    ctx.register_tool(name="jev_status", toolset="jev", schema=STATUS_SCHEMA, handler=handle)\n',
+    '    ctx.register_tool(name="status", toolset="wwwdrive", schema=STATUS_SCHEMA, handler=handle)\n',
 ]
 
 
@@ -398,16 +418,16 @@ _LEAK_STYLES = [
 def test_registration_guard_catches_every_call_style(call):
     """Prove the guard bites.
 
-    Each snippet would register jev_status with Hermes if it reached register(),
+    Each snippet would register status with Hermes if it reached register(),
     and each must be caught, so the real assertion in the test above cannot be
     passing for the wrong reason (e.g. an extractor that finds nothing at all).
     """
     source = (ROOT / "plugin" / "__init__.py").read_text()
     mutated = f"{source}\n\ndef _leak(ctx, handle):\n{call}"
     names = _registered_tool_names(mutated)
-    assert "jev_status" in names, f"extractor missed this registration style:\n{call}"
+    assert "status" in names, f"extractor missed this registration style:\n{call}"
     # And the guard's own conclusion therefore flips to failing.
-    assert not ({"jev_drive", "jev_read"} <= names and "jev_status" not in names)
+    assert not ({"drive", "read"} <= names and "status" not in names)
 
 
 def test_preflight_does_not_import_the_plugin():

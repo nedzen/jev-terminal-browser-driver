@@ -1,5 +1,9 @@
 # TUI-only discovery fix — visible panes, never herdr, never headless
 
+> **Historical (pre-1.0.0).** Written before the rename to `wwwdrive`; the
+> product, tool, and path names below are the ones in force when it was
+> written. Kept as the record, not as the contract.
+
 Branch `fix/tui-only`, commit `f320105` (2026-09-24).
 Supersedes the headless/agent-browser paths inherited from `feature/hermes-plugin`.
 
