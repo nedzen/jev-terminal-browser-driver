@@ -19,15 +19,16 @@ Run exactly this (`--args` must stay last):
 hermes mcp add jev-driver --command uv --args run --directory <repo> python scripts/mcp.py
 ```
 
-If it asks `Enable all 2 tools?`, answer `Y`. Confirm with
+If it asks `Enable all 3 tools?`, answer `Y`. Confirm with
 `hermes mcp list` (expect `jev-driver` enabled). Any MCP-capable client
 works too: command `uv`, args `run --directory <repo> python scripts/mcp.py`.
 
 ## 2. Load the tools
 
 Run `/reload-mcp` in the TUI (or start a new session). Verify via tool
-search: expect `mcp__jev_driver__jev_drive` (required param `goal`) and
-`mcp__jev_driver__jev_read`, both with source `mcp`. If a built-in
+search: expect `mcp__jev_driver__jev_drive` (required param `goal`),
+`mcp__jev_driver__jev_read`, and `mcp__jev_driver__jev_status`, all with
+source `mcp`. If a built-in
 `jev_drive` plugin is also enabled, prefer the `mcp__` tools for the test
 so results aren't confounded.
 
@@ -52,8 +53,8 @@ graphics passthrough). Workaround: from a supported terminal launch a
 shared browser with `terminal-browser new-tab about:blank`, find its
 `cdpPort` via `terminal-browser ls --all --json`, then pass
 `background: true` + `cdp_url: "http://127.0.0.1:<port>"` on `jev_drive`
-calls. Note: `jev_read` has no `background`/`cdp_url` params (drive-only);
-read-only calls attach via the tab lease instead.
+or `jev_read` calls (both accept them; read-only calls without them attach
+via the tab lease instead).
 
 ## 6. Report back
 
