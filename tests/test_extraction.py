@@ -470,7 +470,8 @@ def test_fill_freshness_ignores_feed_text(monkeypatch):
     now_guard = [4, "textbox", "Search query", "", None, None, False, "new feed text"]
 
     def evaluate(self, expression):
-        return [now_key, now_guard]
+        # [pageKey, guard, [attached, live, inView, hit, writable]] - what browser._probe_expression asks for.
+        return [now_key, now_guard, [True, True, True, True, True]]
 
     monkeypatch.setattr(Browser, "evaluate", evaluate)
     browser = Browser.__new__(Browser)

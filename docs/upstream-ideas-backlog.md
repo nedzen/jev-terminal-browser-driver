@@ -15,14 +15,15 @@ Mirrored in plugin/handler.py and opencode-plugin/jev-driver.ts.
 ## Tier 2 — robustness core
 
 1. **Read-only freshness probe: retry-with-settle + hit-test + reasons**
-   (PR #141 probe.js). Our fresh() already avoids full re-snapshot; add
-   viewport + elementFromPoint hit-test, writable check for fills, 3x retry
-   (100/200/300ms) before declaring stale, reason taxonomy in telemetry.
-   Skip their epoch field (marker/pageKey cover it). Cuts false-stale aborts.
-2. **Per-decision timeout, double-checked** (PR #3). Thread a deadline through
-   the drive_agent tick loop: check before the Jev call AND before CDP input,
-   discard expired decisions without mutating. Gives agents usable 1–2 min
-   budgets instead of whole-subprocess kill at timeout_s.
+   (PR #141 probe.js). DONE (Batch B): probe retries 3x with settle sleeps,
+   viewport + elementFromPoint hit-test, writable check, reason taxonomy
+   (target_detached/target_changed/not_actionable/not_writable/ok) in
+   telemetry. Fill intentionally gated on live+writable only (covered-field
+   fallback must stay reachable).
+2. **Per-decision timeout, double-checked** (PR #3). DONE (Batch B):
+   time_budget_s arg (inner deadline from first decision) checked before
+   the Jev call AND before input; expired decisions discarded unexecuted
+   with stop time_budget. timeout_s stays the outer kill.
 3. **_final_view independent re-read** (PR #141). After DONE, re-observe and
    compare fingerprints; never trust the model's DONE claim. Parts exist
    (fingerprint/marker); wire into cli.py tick loop.

@@ -22,6 +22,14 @@ MARKER = f"(() => {{ const state={READ_STATE}; return state?.marker ?? null; }})
 BLOCKED_SCHEMES = ("chrome:", "chrome-untrusted:", "devtools:", "chrome-extension:")
 DENYLIST_HOSTS = ("hindsight.vectorize.io",)
 
+# Settle windows before a target counts as stale. A framework that re-parents a row, or a
+# menu that re-renders, hands back the same node a frame later; re-reading one target is
+# cheap, re-snapshotting the page is not (it rebuilds the action list this decision came from).
+PROBE_RETRIES = (0.1, 0.2, 0.3)
+# Why a decision can no longer touch the node it names. Telemetry only: act() still reports
+# field_changed/page_changed, and these name the cause.
+PROBE_REASONS = ("target_detached", "target_changed", "not_actionable", "not_writable", "ok")
+
 LEASE = {
     "tab": "new",
     "target_id": None,
@@ -325,6 +333,8 @@ class Browser:
     HYDRATE_SHELL_ROUNDS = 8
     HYDRATE_SLEEP_S = 0.4
     sleep = staticmethod(time.sleep)
+    # Why the last fresh() call said no. Written by fresh(), read by act() for telemetry.
+    _fresh_reason = None
 
     def __init__(self, url):
         connect()
@@ -542,21 +552,35 @@ class Browser:
 
     def fresh(self, page, action=None):
         kind = (action or {}).get("kind")
-        if kind in {"scroll", "wait", "done"}:
-            current = self.evaluate("(() => [performance.timeOrigin, location.href])()")
-            return _same_document(page, current)
         if kind in {"click", "select", "fill"}:
             node = action["node"]
             if type(node) is not int:
+                self._fresh_reason = "target_detached"
                 return False
-            current = self.evaluate(
-                "(() => { const c=window.__jevFast; "
-                f"return c ? [c.pageKey(),c.guard(c.nodes.get({node}))] : null; }})()"
-            )
-            if kind == "fill":
-                return _same_field(page, node, current)
-            return _same_target(page, node, current)
-        return self.evaluate(MARKER) == page["marker"]
+            self._fresh_reason = self._probe_target(kind, page, node)
+            return self._fresh_reason == "ok"
+        if kind in {"scroll", "wait", "done"}:
+            current = self.evaluate("(() => [performance.timeOrigin, location.href])()")
+            self._fresh_reason = "ok" if _same_document(page, current) else "target_changed"
+            return self._fresh_reason == "ok"
+        self._fresh_reason = "ok" if self.evaluate(MARKER) == page["marker"] else "target_changed"
+        return self._fresh_reason == "ok"
+
+    def _probe_target(self, kind, page, node) -> str:
+        """Probe one target until it is actionable, so a re-parented node is not a stale page.
+
+        Same read-only probe every round: no re-snapshot, no action-list rebuild, no new page
+        to decide from. Returns one of PROBE_REASONS.
+        """
+        expression = _probe_expression(node)
+        reason = "target_changed"
+        for attempt in range(len(PROBE_RETRIES) + 1):
+            if attempt:
+                self.sleep(PROBE_RETRIES[attempt - 1])
+            reason = _probe_reason(kind, page, node, self.evaluate(expression))
+            if reason == "ok":
+                break
+        return reason
 
     def act(self, action, page, text=None):
         if not self.fresh(page, action):
@@ -568,6 +592,9 @@ class Browser:
                     "kind": kind,
                     "label": action.get("label"),
                     "reason": reason,
+                    # field_changed/page_changed says which guard failed; this says why the
+                    # target was not usable, which is the part worth fixing.
+                    "probe_reason": self._fresh_reason,
                     "why": (
                         "The target changed before input."
                         if reason == "field_changed"
@@ -616,6 +643,19 @@ def fingerprint(state):
     return hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()
 
 
+def _same_field_document(page: dict, page_key) -> bool:
+    """A fill survives a re-render of the same URL; it does not survive leaving that URL.
+
+    Deliberately not `_same_document`: a search box must survive a same-URL document swap.
+    """
+    if not isinstance(page_key, list) or len(page_key) < 2:
+        return False
+    stored = page.get("page_key")
+    if not isinstance(stored, list) or len(stored) < 2:
+        return False
+    return page_key[1] == stored[1]
+
+
 def _same_field(page: dict, node: int, current) -> bool:
     """A fill is still valid when this field's identity, value, and URL are unchanged.
 
@@ -623,12 +663,9 @@ def _same_field(page: dict, node: int, current) -> bool:
     """
     if not isinstance(current, list) or len(current) < 2:
         return False
-    page_key, guard = current
-    stored_key = page.get("page_key")
+    page_key, guard = current[0], current[1]
     stored_guard = (page.get("guards") or {}).get(str(node))
-    if not isinstance(page_key, list) or not isinstance(stored_key, list):
-        return False
-    if len(page_key) < 2 or len(stored_key) < 2 or page_key[1] != stored_key[1]:
+    if not _same_field_document(page, page_key):
         return False
     if not isinstance(guard, list) or not isinstance(stored_guard, list):
         return False
@@ -658,13 +695,90 @@ def _same_target(page: dict, node: int, current) -> bool:
     """Same document and the same control. Scroll position and ticking numbers are ignored."""
     if not isinstance(current, list) or len(current) < 2:
         return False
-    page_key, guard = current
+    page_key, guard = current[0], current[1]
     if not _same_document(page, page_key):
         return False
     stored = (page.get("guards") or {}).get(str(node))
     if not isinstance(guard, list) or not isinstance(stored, list) or len(guard) != len(stored):
         return False
     return [without_counts(item) for item in guard] == [without_counts(item) for item in stored]
+
+
+def _probe_expression(node: int) -> str:
+    """The read-only probe for one observed node.
+
+    Returns ``[pageKey, guard, [attached, live, inView, hit, writable]]``, or null when the
+    document that produced the observation is gone. The bits are observations, not policy:
+    `guard` is null unless the node is connected and visible, which is why `attached` and
+    `live` travel beside it, and `_probe_reason` decides what they mean.
+
+    `attached` connected; `live` also enabled (not :disabled, aria-disabled, or inert) and
+    visible; `inView` its centre is inside the viewport; `hit` elementFromPoint at that centre
+    returns the node or a descendant, so an overlay covering it is visible to the probe.
+    """
+    return (
+        "(() => { const c=window.__jevFast, e=c?c.nodes.get("
+        f"{node}"
+        "):null; if (!c) return null; "
+        "const g=c.guard(e), attached=!!(e&&e.isConnected), "
+        "r=attached?e.getBoundingClientRect():{x:0,y:0,width:0,height:0}, "
+        "x=r.x+r.width/2, y=r.y+r.height/2, "
+        "inView=!!(r.width&&r.height&&x>=0&&y>=0&&x<innerWidth&&y<innerHeight), "
+        "hit=inView&&e.contains(document.elementFromPoint(x,y)), "
+        "live=attached&&!e.matches(':disabled')&&!e.closest('[aria-disabled=\"true\"],[inert]')"
+        "&&e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}), "
+        "writable=live&&!e.readOnly&&e.getAttribute('aria-readonly')!=='true'; "
+        "return [c.pageKey(),g,[attached,live,inView,hit,writable]]; })()"
+    )
+
+
+def _probe_flags(current) -> tuple | None:
+    """(attached, live, inView, hit, writable), or None when the probe answered nothing usable."""
+    if not isinstance(current, list) or len(current) < 3:
+        return None
+    bits = current[2]
+    if not isinstance(bits, list) or len(bits) < 5:
+        return None
+    if any(bit is not True and bit is not False for bit in bits[:5]):
+        return None
+    return tuple(bits[:5])
+
+
+def _probe_reason(kind: str, page: dict, node: int, current) -> str:
+    """One word for why this decision can no longer touch `node`.
+
+    target_detached  the node left the document
+    target_changed   another document, or a different control in this one
+    not_actionable   disabled, hidden, off-screen, or covered at its centre
+    not_writable     a fill target that refuses text
+    ok               this decision may still be executed
+
+    Identity is checked last for the target kinds: a control that is covered or disabled is
+    still the control the model chose, and saying so beats reporting its state as a change.
+    """
+    flags = _probe_flags(current)
+    if flags is None:
+        return "target_changed"  # the document that produced the observation is gone
+    page_key = current[0]
+    if kind == "fill":
+        if not _same_field_document(page, page_key):
+            return "target_changed"
+    elif not _same_document(page, page_key):
+        return "target_changed"
+    attached, live, in_view, hit, writable = flags
+    if not attached:
+        return "target_detached"
+    if kind == "fill":
+        # Typing needs a field, not a pointer: a field covered by its own label is focused and
+        # typed into (see _focus_covered_field), so the hit-test does not gate a fill.
+        if not live:
+            return "not_actionable"
+        if not writable:
+            return "not_writable"
+    elif not (live and in_view and hit):
+        return "not_actionable"
+    same = _same_field(page, node, current) if kind == "fill" else _same_target(page, node, current)
+    return "ok" if same else "target_changed"
 
 
 def _offer_enter(page: dict | None) -> None:

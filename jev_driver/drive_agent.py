@@ -1,12 +1,18 @@
 """Driver-side Agent subclass. agent.py stays verbatim."""
 
 import re
+import time
 
 from .agent import Agent
 from .browser import StalePage, without_counts
 from .model import action_space, field_context, field_text
 from .readiness import REASON_WHY, done_acceptable, done_probability, page_is_shell
 from .runlog import write_event
+
+TIME_BUDGET_WHY = (
+    "Stopped: the run's time budget ran out before the goal was visibly done. "
+    "The decision that crossed the deadline was discarded, so nothing was clicked or typed after it."
+)
 
 
 def _label_stem(label: str) -> str:
@@ -76,9 +82,13 @@ def _ranked(probs, limit=6):
 class DriveAgent(Agent):
     """Exempt advancing scrolls from the 3-repeat guard; optional debug HUD."""
 
-    def __init__(self, url, goals, *, debug=False, **kwargs):
+    def __init__(self, url, goals, *, debug=False, time_budget_s=None, **kwargs):
         super().__init__(url, goals, **kwargs)
         self.debug = debug
+        # Optional inner deadline (upstream PR #3 idea). timeout_s stays the
+        # outer subprocess kill; this one is checked inside the tick loop.
+        self.time_budget_s = None if time_budget_s in (None, "") else int(time_budget_s)
+        self._budget_deadline = None
         self._unexecuted_key = None
         self._unexecuted_count = 0
         self._weak_done = 0
@@ -90,8 +100,49 @@ class DriveAgent(Agent):
             if debug:
                 browser.paint_hud(self._hud_payload())
 
+    def _start_time_budget(self) -> None:
+        """Start the clock at the first decision, so opening the tab spends none of it."""
+        if getattr(self, "time_budget_s", None) and getattr(self, "_budget_deadline", None) is None:
+            self._budget_deadline = time.perf_counter() + self.time_budget_s
+
+    def _time_budget_spent(self) -> bool:
+        """True once the inner budget is used up. No budget set means never."""
+        deadline = getattr(self, "_budget_deadline", None)
+        return deadline is not None and time.perf_counter() >= deadline
+
+    def _stop_time_budget(self):
+        """Stop on the inner deadline. The pending decision is discarded, never executed."""
+        state = self.state
+        state["decision"] = None
+        state["status"] = "blocked"
+        state["stop_reason"] = "time_budget"
+        if state.get("started_at") is not None:
+            state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
+        write_event(
+            {
+                "event": "blocked",
+                "goal": state.get("goal"),
+                "reason": "time_budget",
+                "why": TIME_BUDGET_WHY,
+            }
+        )
+        self._paint_hud()
+        return self.snapshot()
+
     def command(self, name, body=None):
+        if name == "predict":
+            if self._time_budget_spent():
+                # Deadline already gone: stop without spending a model call.
+                return self._stop_time_budget()
+            self._start_time_budget()
+            snap = super().command(name, body)
+            self._paint_hud()
+            return snap
         if name == "act":
+            if self._time_budget_spent():
+                # The model call outlived the deadline: drop it unexecuted so the
+                # page is never mutated by a decision nobody waited for.
+                return self._stop_time_budget()
             rejected = self._reject_weak_done() or self._look_further()
             if rejected is not None:
                 self._paint_hud()

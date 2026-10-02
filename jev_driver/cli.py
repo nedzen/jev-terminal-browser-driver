@@ -12,7 +12,7 @@ from . import browser as browser_mod
 from .browser import _log_continuity, find_continuable_page, set_lease
 from .cdp import connect
 from .discover import WatchUnavailable, discover
-from .drive_agent import DriveAgent, _why
+from .drive_agent import TIME_BUDGET_WHY, DriveAgent, _why
 from .preflight import preflight
 from .questions import MAX_STEPS
 from .readiness import REASON_WHY, unsupported_goal
@@ -21,6 +21,7 @@ from .takeover import TAKEOVER_REASON, WatchAgent
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_FIXTURE = (ROOT / "fixtures" / "click.html").resolve()
+TIME_BUDGET_CAP = 900  # same ceiling as the outer timeout_s kill
 
 
 def _criterion_label(text, fallback):
@@ -244,6 +245,18 @@ def parse_args(argv=None):
     parser.add_argument("--target", dest="target_id", default=None, help="Attach to this CDP target id (explicit).")
     parser.add_argument("--browser", dest="browser_key", default=None)
     parser.add_argument("--max-steps", type=int, default=20)
+    parser.add_argument(
+        "--time-budget-s",
+        dest="time_budget_s",
+        type=int,
+        default=None,
+        help=(
+            f"Stop this run after N seconds of deciding (1..{TIME_BUDGET_CAP}). Checked before "
+            "every model call and before every click or type; a decision that outlives it is "
+            "discarded. Omit for no inner deadline, and note timeout_s stays the outer kill. "
+            "The clock starts at the first decision, not at tab creation."
+        ),
+    )
     parser.add_argument("--navigate", action="store_true", help="With --target, also Page.navigate to --url.")
     parser.add_argument("--cdp", dest="cdp_url", default=None, help="Explicit CDP websocket or http discovery URL.")
     parser.add_argument(
@@ -276,6 +289,10 @@ def main(argv=None) -> int:
         return 0
     if args.max_steps < 1 or args.max_steps > MAX_STEPS:
         print(json.dumps({"status": "blocked", "error": f"--max-steps must be 1..{MAX_STEPS}"}), file=sys.stderr)
+        return 1
+    if args.time_budget_s is not None and not (1 <= args.time_budget_s <= TIME_BUDGET_CAP):
+        err = f"--time-budget-s must be 1..{TIME_BUDGET_CAP}"
+        print(json.dumps({"status": "blocked", "error": err}), file=sys.stderr)
         return 1
     url = args.url
     launch = url or DEFAULT_FIXTURE.as_uri()
@@ -343,7 +360,9 @@ def main(argv=None) -> int:
     )
     agent_cls = WatchAgent if args.watch else DriveAgent
     agent = None
-    agent = agent_cls(agent_url, args.goal, screenshots=False, debug=args.debug)
+    # Only pass the kwarg when asked, so an agent built without the flag is unchanged.
+    extra = {} if args.time_budget_s is None else {"time_budget_s": args.time_budget_s}
+    agent = agent_cls(agent_url, args.goal, screenshots=False, debug=args.debug, **extra)
 
     def emit(snap, rec):
         print(json.dumps(rec), flush=True)
@@ -381,6 +400,12 @@ def main(argv=None) -> int:
             snap = agent.command("tick")
             steps += 1
             rec = tick_record(snap, debug=args.debug)
+            if snap.get("stop_reason") == "time_budget":
+                # The stop taxonomy reads error=="timeout" as stopped_reason
+                # time_budget, so an in-loop deadline reports like the outer
+                # timeout_s kill — without killing anything.
+                rec["error"] = "timeout"
+                rec["why"] = TIME_BUDGET_WHY
             if rec.get("status") == "done":
                 rec["final_view"] = _final_view(snap, (agent.state or {}).get("browser"))
             emit(snap, rec)

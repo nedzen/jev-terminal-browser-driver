@@ -44,6 +44,7 @@ const DESCRIPTION =
   "no_page, there is no driver tab; pass url. " +
   "Do not repeat a goal that was blocked twice; report what page_text shows. " +
   "background must stay false unless the user asks for a hidden browser. " +
+  "time_budget_s stops a run after N seconds of deciding; timeout_s stays the outer kill. " +
   "The debug overlay is a plugin setting, not an argument.";
 
 const PARAMETERS = {
@@ -82,6 +83,13 @@ const PARAMETERS = {
       type: "integer",
       description: "Subprocess timeout in seconds (default 300, hard cap 900).",
       default: 300,
+      minimum: 1,
+      maximum: 900,
+    },
+    time_budget_s: {
+      type: "integer",
+      description:
+        "Stop this run after N seconds of deciding. Checked before every model call and before every click or type; a decision that outlives it is discarded without clicking or typing. Omit for no inner deadline; timeout_s stays the outer kill. The clock starts at the first decision, not at tab creation.",
       minimum: 1,
       maximum: 900,
     },
@@ -153,6 +161,7 @@ const STATUS_PARAMETERS = {
 
 const MAX_STEPS_CAP = 30;
 const TIMEOUT_CAP = 900;
+const TIME_BUDGET_CAP = 900;
 const DEFAULT_MAX_STEPS = 12;
 const DEFAULT_TIMEOUT = 300;
 const PAGE_TEXT_LIMIT = 2000;
@@ -196,6 +205,11 @@ function buildDriveArgv(args: Args): string[] {
   ];
   if (args.url) argv.push("--url", String(args.url));
   if (args.target) argv.push("--target", String(args.target));
+  // Optional inner deadline: timeout_s stays the outer kill, this one is checked
+  // inside the driver's tick loop. Absent means no inner deadline.
+  if (args.time_budget_s !== undefined && args.time_budget_s !== null) {
+    argv.push("--time-budget-s", String(args.time_budget_s));
+  }
   if (truthy(args.background)) {
     argv.push("--background");
     if (args.cdp_url) argv.push("--cdp", String(args.cdp_url));
@@ -482,6 +496,10 @@ async function executeDrive(rawArgs: Args, execCtx: { signal?: AbortSignal; debu
   let timeoutS: number;
   try {
     timeoutS = budgetInt(args.timeout_s, 1, TIMEOUT_CAP, "timeout_s", DEFAULT_TIMEOUT);
+    // Optional and off by default; when present it is strict, like every other budget.
+    if (args.time_budget_s !== undefined && args.time_budget_s !== null) {
+      budgetInt(args.time_budget_s, 1, TIME_BUDGET_CAP, "time_budget_s", 0);
+    }
     argv = buildDriveArgv(args);
   } catch (err) {
     return { content: JSON.stringify(compactResult([], 1, (err as Error).message)) };
