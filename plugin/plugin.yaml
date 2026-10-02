@@ -28,6 +28,6 @@ config_schema:
     description: "Only used to write the text for form fields. Without it the driver can click but not type."
   debug:
     type: bool
-    default: false
+    default: true
     label: Debug overlay
-    description: "Show the Jev panel and target outlines in the page on every jev_drive and jev_read call. The model cannot change this."
+    description: "Show the Jev panel and target outlines in the page on every jev_drive and jev_read call. On by default. The model cannot change this."

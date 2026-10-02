@@ -5,6 +5,7 @@ import time
 from copy import deepcopy
 from unittest.mock import Mock
 
+import httpx
 import pytest
 
 from jev_driver import agent as loop
@@ -305,6 +306,100 @@ def test_text_helper_rejects_invalid_values(monkeypatch, content):
     monkeypatch.setattr(model, "post_json", Mock(return_value={"choices": [{"message": {"content": content}}]}))
     with pytest.raises(ValueError, match="nothing typed"):
         model.field_text({"goal": "Find a flight"})
+
+
+def test_text_helper_strips_fenced_response(monkeypatch):
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    monkeypatch.setattr(
+        model,
+        "post_json",
+        Mock(return_value={"choices": [{"message": {"content": '```json\n{"text": "Zurich"}\n```'}}]}),
+    )
+    value, _meta = model.field_text({"goal": "Find a flight"})
+    assert value == "Zurich"
+
+
+def test_text_helper_retries_malformed_sample(monkeypatch):
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    responses = [
+        {"choices": [{"message": {"content": "not json at all"}}]},
+        {"choices": [{"message": {"content": '{"text": "Zurich"}'}}]},
+    ]
+    monkeypatch.setattr(model, "post_json", Mock(side_effect=lambda *a, **k: responses.pop(0)))
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    value, _meta = model.field_text({"goal": "Find a flight"})
+    assert value == "Zurich"
+    assert not responses
+
+
+def test_text_helper_reports_response_after_retries(monkeypatch):
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    monkeypatch.setattr(
+        model, "post_json", Mock(return_value={"choices": [{"message": {"content": "not json"}}]})
+    )
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    with pytest.raises(ValueError, match=r"nothing typed\. Response: 'not json'"):
+        model.field_text({"goal": "Find a flight"})
+
+
+def test_text_helper_reports_request_failure(monkeypatch):
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    monkeypatch.setattr(model, "post_json", Mock(side_effect=RuntimeError("Model connection failed")))
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    with pytest.raises(ValueError, match="Request failed: Model connection failed"):
+        model.field_text({"goal": "Find a flight"})
+
+
+def test_post_json_raises_on_200_with_error_body(monkeypatch):
+    response = httpx.Response(200, json={"error": {"message": "Model overloaded", "code": 500}})
+    monkeypatch.setattr(model.CLIENT, "post", Mock(return_value=response))
+    with pytest.raises(RuntimeError, match="Model provider returned an error: Model overloaded"):
+        model.post_json("https://x.test/v1", "key", {})
+
+
+def test_post_json_retries_retryable_error_body(monkeypatch):
+    bad = httpx.Response(200, json={"error": {"message": "busy", "code": 503}})
+    good = httpx.Response(200, json={"ok": True})
+    monkeypatch.setattr(model.CLIENT, "post", Mock(side_effect=[bad, good]))
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    assert model.post_json("https://x.test/v1", "key", {}) == {"ok": True}
+
+
+def test_post_json_retries_504_status(monkeypatch):
+    bad = httpx.Response(504, json={"error": "gateway timeout"})
+    good = httpx.Response(200, json={"ok": True})
+    post = Mock(side_effect=[bad, good])
+    monkeypatch.setattr(model.CLIENT, "post", post)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    assert model.post_json("https://x.test/v1", "key", {}) == {"ok": True}
+    assert post.call_count == 2
+
+
+def test_post_json_retries_string_error_code(monkeypatch):
+    bad = httpx.Response(200, json={"error": {"message": "busy", "code": "503"}})
+    good = httpx.Response(200, json={"ok": True})
+    monkeypatch.setattr(model.CLIENT, "post", Mock(side_effect=[bad, good]))
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    assert model.post_json("https://x.test/v1", "key", {}) == {"ok": True}
+
+
+def test_field_text_does_not_retry_auth_errors(monkeypatch):
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    post = Mock(side_effect=RuntimeError("Model provider returned HTTP 401; no action executed."))
+    monkeypatch.setattr(model, "post_json", post)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    with pytest.raises(ValueError, match="Request failed: Model provider returned HTTP 401"):
+        model.field_text({"goal": "Find a flight"})
+    assert post.call_count == 1
+
+
+def test_field_text_does_not_retry_deterministic_shape(monkeypatch):
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    post = Mock(return_value={"choices": [{"message": {"content": '{"text":"Zurich","extra":true}'}}]})
+    monkeypatch.setattr(model, "post_json", post)
+    with pytest.raises(ValueError, match="nothing typed"):
+        model.field_text({"goal": "Find a flight"})
+    assert post.call_count == 1
 
 
 def test_navigation_during_prediction_reobserves_without_action(runner):

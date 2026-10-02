@@ -54,7 +54,7 @@ Then open **Plugins → jev-driver** in Hermes and set:
 |---|---|
 | TypeSafe API key | Required. Jev decisions. Stored in `~/.hermes/.env` as `TYPESAFE_API_KEY`, never in `config.yaml`. |
 | OpenRouter API key (typing) | Optional. Writes the text for form fields (`inception/mercury-2.5`). Without it the driver clicks but does not type. |
-| Debug overlay | Shows the Jev panel and target outlines in the page. The model cannot turn it on or off. |
+| Debug overlay | Shows the Jev panel and target outlines in the page. On by default. The model cannot turn it on or off. |
 
 Restart the Hermes session after changing plugin settings.
 
@@ -132,6 +132,30 @@ uv run python scripts/read.py --json --script "document.title"
 ```
 
 Model DONE is not proof. Check `final_url` or `page_text`.
+
+## Other agents (MCP, OpenCode)
+
+The Hermes plugin under `plugin/` is untouched. Two thin adapters expose the
+same `jev_drive` / `jev_read` tools elsewhere; the core stays in
+`scripts/drive.py` + `scripts/read.py`:
+
+- **Any MCP-capable agent** (Claude Code, Crush, OpenCode fallback): stdlib-only
+  stdio server, no new dependencies. Schemas are imported from `plugin/`, so
+  they cannot drift.
+  ```bash
+  uv run --directory <repo> python scripts/mcp.py
+  JEV_DEBUG=1 uv run --directory <repo> python scripts/mcp.py  # debug overlay
+  ```
+  Client config: `{"command": "uv", "args": ["run", "--directory", "<repo>",
+  "python", "scripts/mcp.py"]}`. API keys come from the host process env.
+- **OpenCode (native tools)**: `opencode-plugin/jev-driver.ts` spawns the same
+  CLI via `Plugin.define` + `ctx.tool.transform`. Copy or symlink it to
+  `~/.config/opencode/plugins/jev-driver.ts`. Debug overlay is on by default;
+  opt out with plugin options `{ debug: false }` in `opencode.json`, or
+  `JEV_DEBUG=0`.
+
+`tests/test_adapter_parity.py` fails the suite if either adapter drifts from
+the canonical schemas in `plugin/__init__.py`.
 
 ## Tests
 
