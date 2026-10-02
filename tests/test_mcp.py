@@ -100,7 +100,21 @@ def test_call_strips_client_debug(mcp, monkeypatch):
         return {"success": True, "status": "done"}
 
     monkeypatch.setattr(handler, "run_drive", fake_drive)
+    monkeypatch.delenv("JEV_DEBUG", raising=False)
     mcp.dispatch(req("tools/call", {"name": "jev_drive", "arguments": {"goal": "g", "debug": True}}))
+    assert seen["debug"] is True  # overlay on by default; model flag ignored
+
+
+def test_debug_opt_out(mcp, monkeypatch):
+    seen = {}
+
+    def fake_drive(payload):
+        seen.update(payload)
+        return {"success": True, "status": "done"}
+
+    monkeypatch.setattr(handler, "run_drive", fake_drive)
+    monkeypatch.setenv("JEV_DEBUG", "0")
+    mcp.dispatch(req("tools/call", {"name": "jev_drive", "arguments": {"goal": "g"}}))
     assert seen["debug"] is False
 
 

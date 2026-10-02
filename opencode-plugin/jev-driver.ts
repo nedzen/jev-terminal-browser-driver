@@ -421,9 +421,10 @@ async function executeRead(rawArgs: Args, execCtx: { signal?: AbortSignal; debug
 export default Plugin.define({
   id: "jev-driver",
   async setup(ctx) {
-    const debug =
-      (ctx.options as Record<string, unknown> | undefined)?.debug === true ||
-      ["1", "true", "yes"].includes((process.env.JEV_DEBUG || "").trim().toLowerCase());
+    const debugOff =
+      (ctx.options as Record<string, unknown> | undefined)?.debug === false ||
+      ["0", "false", "no"].includes((process.env.JEV_DEBUG || "").trim().toLowerCase());
+    const debug = !debugOff;
 
     if (!hasDecisionKey()) {
       console.error("[jev-driver] no decision API key in env (TYPESAFE_API_KEY); tools will report errors until set.");

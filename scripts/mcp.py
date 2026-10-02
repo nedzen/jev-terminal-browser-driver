@@ -47,7 +47,8 @@ INTERNAL_ERROR = -32603
 
 
 def debug_default() -> bool:
-    return os.environ.get("JEV_DEBUG", "").strip().lower() in {"1", "true", "yes"}
+    """Overlay on unless explicitly disabled: JEV_DEBUG=0/false/no opts out."""
+    return os.environ.get("JEV_DEBUG", "").strip().lower() not in {"0", "false", "no"}
 
 
 def _tool_list() -> list[dict]:
