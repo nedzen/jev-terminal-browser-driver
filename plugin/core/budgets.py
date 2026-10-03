@@ -1,12 +1,4 @@
-"""Budget validation: one place that decides what a number may be.
-
-Every adapter reaches the driver through these rules, so a cap that lives in two
-places is a cap that will disagree. Validation rejects rather than clamps: the
-caller is told what it asked for and refused, instead of getting a run on a
-budget nobody chose.
-
-Stdlib only. See plugin/core/result.py for why that is a hard rule.
-"""
+"""Budget validation: reject rather than clamp. Stdlib only."""
 
 from __future__ import annotations
 
@@ -20,9 +12,7 @@ DEFAULT_TIMEOUT = 300
 
 
 def budget(value, lo: int, hi: int, name: str, default: int) -> int:
-    """Strict budget validation: reject (don't silently clamp) so the caller
-    knows the budget it got. Missing/None falls back to the default.
-    Integral floats (12.0) are accepted for JSON cross-adapter parity."""
+    """Validate a budget; reject rather than clamp. None → default."""
     if value is None:
         return default
     if isinstance(value, bool):
@@ -35,13 +25,7 @@ def budget(value, lo: int, hi: int, name: str, default: int) -> int:
 
 
 def deny_names(value) -> list[str]:
-    """The denylist as a list of patterns, or a pre-spawn rejection.
-
-    A pattern that does not compile, an empty one (it would deny every name and
-    leave the run nothing to drive), or a list that is not made of strings is a
-    malformed argument, not something to clamp quietly: the caller is told
-    instead of getting a browser opened against a denylist nobody asked for.
-    """
+    """Compiled denylist patterns, or a pre-spawn rejection for bad input."""
     if value is None:
         return []
     bad = "deny_names must be a list of regular expressions; no action executed."

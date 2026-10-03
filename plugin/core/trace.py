@@ -1,24 +1,6 @@
-"""The run-log record builder: what survives after the process exits.
+"""Run-log record builder. Explicit nulls (unlike tick/result omit); stdlib only.
 
-A trace record is not a tick row and not an agent result, and it is built here
-rather than in result.py because the three disagree in a way that is invisible
-until a run is compared byte for byte:
-
-- a tick row and an agent result *omit* a field that has nothing to say, so the
-  wire stays small. A trace record writes the key with an explicit null, because
-  a log reader asks "was this run's reason recorded?" and "absent" and "null"
-  are not the same answer.
-- the record carries the decision's ranked operations and targets, which exist
-  nowhere else, and it caps page text at its own limit rather than the row's.
-- the ordering is the log's on-disk order, so it is data, not dict-literal luck.
-
-`write_event` stays in jev_driver/runlog.py on purpose. That module is the
-sanitize-and-append boundary and the redaction vocabulary, and it also serves
-`redact_for_wire`, which is a property of an outgoing request body rather than
-of this record. Moving it would put a wire concern in the leaf both adapters
-load and would break every module that patches its module globals.
-
-Stdlib only. See plugin/core/result.py for why that is a hard rule.
+``write_event`` stays in jev_driver/runlog.py (sanitize + redact_for_wire).
 """
 
 from __future__ import annotations
@@ -34,14 +16,7 @@ TRACE_PROBS_LIMIT = 8
 
 @dataclass(frozen=True)
 class TraceField:
-    """One declared trace field.
-
-    ``present`` is the difference from result.Field: False means the key is
-    written only when it carries something, True means the key is always there
-    and a missing value is an explicit null. ``cap`` is this record's own size
-    limit, and ``truthy`` collapses an empty value to null instead of writing
-    "" or 0 into an append-only log that a human reads.
-    """
+    """Declared trace field (``present`` forces explicit null when missing)."""
 
     name: str
     cap: int | None = None
@@ -90,12 +65,7 @@ TRACE_CONDITIONAL = (TraceField("final_view", truthy=True, present=False),)
 
 
 def trace_kind(status, error) -> str:
-    """The event name this tick gets in the log.
-
-    A tick that errored reads as blocked whatever its status claimed: the log
-    exists to explain a run that did not finish, and a "tick" line next to an
-    error is the one line nobody can act on.
-    """
+    """Log event name for this tick (errors always read as blocked)."""
     if error or status == "blocked":
         return "blocked"
     if status == "done":
@@ -133,13 +103,7 @@ def last_decision(snap: dict) -> dict:
 
 
 def decision_provenance(decision: dict) -> dict:
-    """Which model answered, which version of it, how sure it was, and under which prompt.
-
-    ``model`` is the id this run *asked* for, read off the recorded request rather
-    than off the response, because the resolved id is the operator's configuration
-    and the response's own ``model`` is the provider's echo of it. Keeping the two
-    apart is what makes a silent substitution visible instead of plausible.
-    """
+    """Model id (from request), response model, confidence, and prompt hash."""
     decision = decision or {}
     request = decision.get("request") or {}
     return {
@@ -151,12 +115,7 @@ def decision_provenance(decision: dict) -> dict:
 
 
 def build_trace_record(rec: dict, decision: dict, *, goal: str) -> dict:
-    """One run-log record: the tick row's facts, plus what the decision ranked.
-
-    ``rec`` is the tick row as `build_tick_row` produced it and ``decision`` the
-    snapshot's last decision, so the record reads the row rather than reaching
-    back into the snapshot for the same facts twice.
-    """
+    """Run-log record from a tick row plus the decision's ranked ops/targets."""
     rec = rec or {}
     decision = decision or {}
     labels = target_labels(decision)

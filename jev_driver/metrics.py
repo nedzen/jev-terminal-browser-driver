@@ -1,37 +1,7 @@
-"""Per-run aggregate counters: counts and timings, in one small file.
+"""Per-run counters and timings. Secret-free by construction (closed vocabularies).
 
-The run log records what happened, event by event, so comparing two runs
-means grepping JSONL (upstream PR browser-use/jev-ultrafast#141). This module
-keeps the numbers that comparison actually needs -- how many model calls, how
-many browser inputs, how long each phase took -- so a run can be summarised
-without reading its log.
-
-Secret-free by construction, not by scrubbing: no record method accepts page
-text, a URL, a label, or a key. The only strings that can reach a snapshot
-come from the closed vocabularies below (``_KINDS``, ``_STATUSES``,
-``_ERROR_KINDS``, ``_STOP_REASONS``), plus the *type name* of an exception,
-never its message, plus the run's own identity (see ``bind_run``). There is no
-door for a hostile page to smuggle anything through.
-
-Run identity, and why the file needs it
----------------------------------------
-``metrics.json`` is one file, overwritten at close, so a run that was killed
-before closing leaves the *previous* run's numbers sitting there looking
-current. Three identity fields travel with every snapshot — ``run_id``,
-``started_at`` and ``goal_hash`` — and the same ``run_id`` is written into the
-run's own ``event: run`` line, so a stale file is provably stale: its ``run_id``
-is not the one the log says the last run had. ``goal_hash`` is a digest, never
-the goal: a goal can hold anything a user typed, and the identity only has to
-say "the same goal".
-
-``Metrics`` is backend-independent: no browser, no CDP, no network, and a
-single instance owned by the agent. ``instrument_browser`` is the one
-backend-aware piece -- it times the browser's own methods in place, so the
-phases the base loop spends inside its own code are counted too. It only
-delegates and re-raises, and every recorder call is wrapped so a metrics
-failure can never reach the caller.
-
-``Metrics.write`` never raises: a metrics failure must not break a run.
+``metrics.json`` is overwritten at close; ``run_id``/``started_at``/``goal_hash``
+make a stale file detectable. ``write`` never raises.
 """
 
 from __future__ import annotations
@@ -102,7 +72,6 @@ _METHOD_PHASES = {
 }
 _ATTACHED = "_jev_metrics"
 
-
 def _number(value) -> float:
     """A finite, non-negative float. NaN, infinity, negatives and junk all become 0.0."""
     try:
@@ -113,37 +82,27 @@ def _number(value) -> float:
         return 0.0
     return out
 
-
 def _kind(value) -> str:
     text = value.strip().lower() if isinstance(value, str) else ""
     return text if text in _KINDS else "other"
 
-
 def _status(value) -> str | None:
     text = value.strip().lower() if isinstance(value, str) else ""
     return text if text in _STATUSES else ("unknown" if text else None)
-
 
 def _stop_reason(value) -> str | None:
     """The stop vocabulary, or None when there was no stop to name."""
     text = value.strip().lower() if isinstance(value, str) else ""
     return text if text in _STOP_REASONS else ("other" if text else None)
 
-
 def _goal_digest(goal) -> str | None:
-    """A short digest of the goal, or None when there is no goal to digest.
-
-    The goal itself never reaches a snapshot — it is free text a caller typed
-    and can hold anything — so identity is a sha256 over it, truncated. Equal
-    goals give equal digests, which is all a reader compares.
-    """
+    """Truncated sha256 of the goal, or None — never stores the goal text."""
     if goal is None:
         return None
     try:
         return hashlib.sha256(str(goal).encode("utf-8", "replace")).hexdigest()[:GOAL_HASH_CHARS]
     except Exception:
         return None
-
 
 def _error_kind(error) -> str | None:
     """Classify an exception by its type name. The message is never read."""
@@ -155,14 +114,12 @@ def _error_kind(error) -> str | None:
             return kind
     return "other"
 
-
 def _book(fn, *args, **kwargs) -> None:
     """Call a recorder, ignoring its failures. Telemetry must not break a run."""
     try:
         fn(*args, **kwargs)
     except Exception:
         return
-
 
 class _Timer:
     """One running total, max and count -- the only shape a timing takes."""
@@ -188,14 +145,8 @@ class _Timer:
             "avg_ms": round(self.total / self.count, 1) if self.count else 0.0,
         }
 
-
 class Metrics:
-    """Counters and timings for one run. Owned by the agent, never global.
-
-    Every instance is born with an identity — a ``run_id``, the moment it was
-    constructed and, once the caller supplies one, a digest of the goal — so two
-    snapshots on the same disk can always be told apart.
-    """
+    """Per-run counters/timings with identity (``run_id``, ``started_at``, ``goal_hash``)."""
 
     def __init__(self) -> None:
         self._run_id = uuid.uuid4().hex
@@ -219,13 +170,7 @@ class Metrics:
 
     # -- recorders -----------------------------------------------------
     def bind_run(self, goal=None) -> None:
-        """Name the run this snapshot belongs to. First call wins, like ``finish``.
-
-        The goal is digested, never stored: identity only has to say "the same
-        goal", and a goal is free text that can carry anything. A caller that
-        never binds one still gets a ``run_id`` and a ``started_at``, which is
-        what makes a stale ``metrics.json`` detectable.
-        """
+        """Attach goal digest (first call wins). Never raises."""
         if self._goal_hash is None:
             self._goal_hash = _goal_digest(goal)
 
@@ -270,28 +215,14 @@ class Metrics:
         self._cleanup_ms = _number(ms)
 
     def record_stop(self, reason=None) -> None:
-        """Why the run stopped, as one vocabulary token.
-
-        Recorded through the closed vocabulary, never as the driver's sentence:
-        a ``time_budget`` stop has to be readable as ``time_budget`` without
-        anyone parsing prose, and an unrecognised reason collapses to
-        ``other`` rather than widening the snapshot's shape.
-        """
+        """Record stop reason as a closed-vocabulary token."""
         stop = _stop_reason(reason)
         if stop is not None:
             self._stop = stop
 
     # -- results -------------------------------------------------------
     def finish(self, status=None, error=None) -> dict:
-        """Freeze the run's outcome and return the snapshot.
-
-        The first call wins: a later call with a different status or a
-        different error changes nothing, so ``close()`` twice is harmless.
-        An exception's kind always outranks the stop reason, so a stale page
-        that ended the run is still reported as ``stale``; a deadline stop with
-        no exception behind it is recorded as ``budget`` rather than as the
-        ``null`` that means "no error kind was ever determined".
-        """
+        """Freeze outcome (first call wins); exception kind outranks stop reason."""
         if not self._finished:
             self._finished = True
             self._status = _status(status)
@@ -329,15 +260,7 @@ class Metrics:
         }
 
     def write(self, path=None) -> bool:
-        """Write the snapshot next to the run log. Never raises; True if it landed.
-
-        Written to a sibling and renamed, so a reader never sees half a file and
-        a failed write leaves the previous run's snapshot readable. The scratch
-        name carries the pid and a uuid: a fixed ``.tmp`` is only atomic while
-        there is one writer, and two runs (an MCP server driving one while a
-        second process drives another) would otherwise rename each other's
-        half-written body into place.
-        """
+        """Atomic write beside the run log. Never raises; True if it landed."""
         try:
             target = Path(path) if path is not None else metrics_path()
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -350,8 +273,6 @@ class Metrics:
                 )
                 scratch.replace(target)
             finally:
-                # A failed or renamed scratch leaves nothing behind to be mistaken
-                # for a snapshot; a scratch we cannot remove is not worth raising over.
                 try:
                     scratch.unlink()
                 except OSError:
@@ -360,19 +281,16 @@ class Metrics:
         except Exception:
             return False
 
-
 def metrics_path(jsonl_path=None) -> Path:
     """The run log's own directory, so the two files stay together."""
     base = Path(jsonl_path) if jsonl_path is not None else runlog.JSONL_PATH
     return base.parent / METRICS_NAME
-
 
 def _action_kind(args, kwargs):
     action = kwargs.get("action")
     if action is None and args:
         action = args[0]
     return action.get("kind") if isinstance(action, dict) else None
-
 
 def _timed(busy, metrics, phase, original, *, with_action):
     """Wrap one browser method: time the outermost call, book the outcome."""
@@ -397,25 +315,16 @@ def _timed(busy, metrics, phase, original, *, with_action):
             busy.discard(phase)
             if with_action:
                 _book(metrics.record_action, kind, ok=ok)
-            # Phases overlap: act's total includes the fresh probe it triggers.
             _book(metrics.record_phase, phase, elapsed)
 
     return timed
 
-
 def instrument_browser(browser, metrics) -> None:
-    """Time a browser's own methods in place. Idempotent, and a no-op without a browser.
-
-    Phase times come from the methods themselves rather than from the driver's
-    call sites, so the reads and inputs the base loop performs internally are
-    counted too. Nothing about the returned values changes: each wrapper calls
-    the original, returns its result, and re-raises whatever it raised.
-    """
+    """Wrap browser methods to record phase times. Idempotent; no-op if missing."""
     if browser is None or metrics is None:
         return
     try:
-        # vars(), not getattr(): a Mock invents any attribute asked of it, which
-        # would read as "already instrumented" and leave the browser untouched.
+        # vars() — getattr on a Mock invents attributes.
         if vars(browser).get(_ATTACHED) is not None:
             return
     except TypeError:

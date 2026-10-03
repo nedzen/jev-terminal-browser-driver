@@ -8,26 +8,13 @@ from urllib.parse import urlsplit
 
 DONE_MIN = 0.6
 
-# A DONE that executed nothing is a claim that the page was *already* the end
-# state, so it has to be near-certain rather than merely more likely than not.
-#
-# Calibrated from the seven sev-1 rows in the live ledger: the legitimate
-# already-satisfied DONEs scored 1.00 (S1d, Tether price) and 0.99 (S6a,
-# notifications list), while the zero-action false-dones scored 0.81 (S7b),
-# 0.69 (S5b) and 0.60 (M15) -- every one of them at or above DONE_MIN, which is
-# why DONE_MIN alone let them through. 0.95 separates the two groups on the frozen
-# evidence without touching any run that acted.
-#
-# The cost is a real false-negative risk: a genuine already-satisfied DONE landing
-# between 0.90 and 0.94 would now be rejected and the run would keep driving. That
-# is the cheaper error -- it ends blocked (sev-2) rather than falsely done (sev-1).
+# Zero-action DONE claims the page was already the end state — require near-certainty.
+# Prefer a false blocked over a false done.
 ZERO_ACTION_DONE_MIN = 0.95
 
 REASON_WHY = {
     "shell": "Stopped: the page was still only short labels, not a document. Here is the visible text.",
     "weak_done": "Model chose DONE with low confidence. The goal is not confirmed. Use the visible text.",
-    # Kept under runlog's 200-char string cap, so the reason reaches the log and the agent
-    # verbatim instead of arriving clipped.
     "low_confidence": (
         "Stopped: two ticks in a row decided with no real preference. The second was discarded, "
         "so nothing was clicked or typed on it. Read the visible text and drive again deliberately."
@@ -65,20 +52,14 @@ REASON_WHY = {
     ),
 }
 
-
 def _is_sentence(line: str) -> bool:
     words = line.split()
     if len(words) < 4:
         return False
     return line.endswith((".", "!", "?")) or ". " in line or "! " in line or "? " in line
 
-
 def page_is_shell(text: str | None) -> bool:
-    """True when the visible text is empty or only short labels, with no sentence yet.
-
-    This is not a site list. Any page that has not drawn a sentence is treated
-    as not ready, whether that is a nav bar, a spinner, or an empty result chrome.
-    """
+    """True when visible text is empty or only short labels (no sentence yet)."""
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
     if not lines:
         return True
@@ -89,7 +70,6 @@ def page_is_shell(text: str | None) -> bool:
     if len(lines) >= 40 or sum(len(line) for line in lines) >= 1200:
         return False
     return len(lines) >= 3
-
 
 def done_probability(decision: dict | None) -> float:
     decision = decision or {}
@@ -106,13 +86,8 @@ def done_probability(decision: dict | None) -> float:
     except (TypeError, ValueError):
         return 0.0
 
-
 def done_acceptable(decision: dict | None, page: dict | None, *, executed_actions=None) -> bool:
-    """Whether a DONE may end the run (confidence + shell + zero-action floor).
-
-    Mid-band acted-DONE goal evidence is applied in ``verdict()`` / callers that
-    have a goal — this helper stays the pure probability/shell gate for unit tests.
-    """
+    """Whether a DONE may end the run (confidence + shell + zero-action floor)."""
     probability = done_probability(decision)
     if probability < DONE_MIN:
         return False
@@ -123,9 +98,8 @@ def done_acceptable(decision: dict | None, page: dict | None, *, executed_action
         return False
     return True
 
-
 def degenerate(decision: dict | None) -> bool:
-    """True when the operation spread carries no real preference: a low top and a narrow gap."""
+    """True when the operation spread has no real preference (low top, narrow gap)."""
     if not decision:
         return False
     probs = decision.get("operation_probabilities") or {}
@@ -136,30 +110,9 @@ def degenerate(decision: dict | None) -> bool:
     gap = top - (ranked[1] if len(ranked) > 1 else 0)
     return top < 0.6 and gap < 0.1
 
+# BLOCKED end-state rescue: if the run already reached the goal's end state,
+# report done rather than looping on model_blocked. One-sided — false done is worse.
 
-# ---------------------------------------------------------------------------
-# End-state rescue on the BLOCKED path.
-#
-# A model that answers BLOCKED is usually right: the target is below the fold,
-# the page is a shell, the form will not submit. But it is sometimes wrong in a
-# way the model cannot see — the run already arrived where the goal pointed, and
-# the model is looking at a page whose visible text no longer repeats the goal's
-# words (the 21:30 release-gate run: DONE 0.19, blocked on an end state it had
-# reached). That reads as `model_blocked` and the caller re-asks forever.
-#
-# The guard below is the code-side half of the P1 prompt fix (questions.py):
-# DONE already accepts "arriving at the page the goal named, by an action in
-# your own history". BLOCKED does not, so a correct end state reached by
-# BLOCKED has nowhere to go. This gives it one.
-#
-# It is deliberately one-sided. Every condition must hold; there is no partial
-# credit and no retry. A false `done` is worse than an honest `blocked`: the
-# caller stops asking, the goal was not met, and nothing in the result says so.
-# ---------------------------------------------------------------------------
-
-# Words in a goal that are never the thing being looked for: grammar, politeness,
-# and the driver's own vocabulary. "Click the Search button" names Search; every
-# other token is scaffolding.
 _STOPWORDS = frozenset(
     """
     a an the this that these those there here it its it's is are was were be been being am
@@ -171,8 +124,6 @@ _STOPWORDS = frozenset(
     """.split()
 )
 
-# Verbs the driver itself performs. A goal is about the thing acted on, not the
-# acting, so "click", "scroll" and "go" carry no end-state signal.
 _VERBS = frozenset(
     """
     click clicks clicked clicking tap taps tapped go goes going goto navigate navigates
@@ -214,15 +165,8 @@ _END_STATE_CLAUSE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
-
 def goal_end_state_tokens(goal: str | None) -> set[str]:
-    """The words in a goal that name the thing the goal is about.
-
-    Split on everything that is not a letter or digit, lowercased. Stopwords,
-    driver verbs and scaffolding are dropped because they are true of nearly every
-    goal and so discriminate nothing; what survives is what the run would have to
-    produce for this particular goal to count as met.
-    """
+    """Content words from a goal (drop stopwords, verbs, scaffolding)."""
     raw = "".join(ch if ch.isalnum() else " " for ch in (goal or "").lower())
     return {
         token
@@ -233,17 +177,8 @@ def goal_end_state_tokens(goal: str | None) -> set[str]:
         and token not in _SCAFFOLDING
     }
 
-
 def goal_steps(goal: str | None) -> tuple[list[set[str]], set[str]]:
-    """The goal's steps, plus the words of any end-state clause that trails them.
-
-    Split on the connectives goals use to chain steps, then set aside any clause
-    that says what "done" should look like. That clause is evidence the run must
-    produce (the destination page has to carry those words) but not an action the
-    run still has to perform, so it is returned separately instead of being
-    counted as a step. Counting it as one is what would make a single
-    action-completed goal look like an unfinished two-step goal.
-    """
+    """Step token sets plus trailing end-state qualifier words (not a step)."""
     text = (goal or "").lower()
     qualifier = goal_end_state_tokens(_END_STATE_CLAUSE.search(text).group(0) if _END_STATE_CLAUSE.search(text) else "")
     body = _END_STATE_CLAUSE.sub("", text)
@@ -254,20 +189,14 @@ def goal_steps(goal: str | None) -> tuple[list[set[str]], set[str]]:
             steps.append(tokens)
     return steps, qualifier
 
-
 def _url_path_evidence(url: str | None) -> str:
-    """Path (+ query) only — the host is never goal evidence.
-
-    Live S2a: goal token ``coin`` matched ``coinmarketcap.com`` in the URL host
-    and a 0.47 DONE on the wrong page cleared the nav bypass.
-    """
+    """Path (+ query) only — host is never goal evidence."""
     if not url:
         return ""
     parts = urlsplit(str(url))
     path = parts.path or ""
     query = f"?{parts.query}" if parts.query else ""
     return f"{path}{query}".lower()
-
 
 def _visible_text(page: dict | None) -> str:
     """Title, body text, and URL path/query — never the host."""
@@ -280,15 +209,8 @@ def _visible_text(page: dict | None) -> str:
         )
     )
 
-
 def _history_text(history: list | None) -> str:
-    """Everything this run itself acted on: the labels and values it touched.
-
-    Half the evidence lives here rather than on the page. "Click the Learn more
-    link" is satisfied by the run having clicked Learn more; the destination page
-    never repeats the words "learn" or "more", so a page-only match would reject
-    every run that actually succeeded.
-    """
+    """Labels/values this run acted on (destination pages often omit goal words)."""
     bits = []
     for entry in history or []:
         if not isinstance(entry, dict):
@@ -296,20 +218,15 @@ def _history_text(history: list | None) -> str:
         bits.extend(str(entry.get(key) or "") for key in ("action", "label", "text", "operation", "kind"))
     return " ".join(bits).lower()
 
-
 def _token_in_evidence(token: str, evidence: str) -> bool:
     """Whole-word match: ``coin`` must not hit ``coinmarketcap``."""
     if not token or not evidence:
         return False
     return re.search(rf"(?<![a-z0-9]){re.escape(token)}(?![a-z0-9])", evidence) is not None
 
-
 def model_action_count(history: list | None) -> int:
-    """Actions the *model* performed — driver auto-scrolls after a rejected DONE/BLOCKED
-    do not count (live S7c: auto-scroll laundered a zero-action DONE onto DONE_MIN).
-    """
+    """Model actions only — auto-scrolls after rejected DONE/BLOCKED do not count."""
     return sum(1 for entry in (history or []) if isinstance(entry, dict) and not entry.get("auto"))
-
 
 def progressed_action_count(history: list | None) -> int:
     """Non-scroll, non-wait, non-auto actions — the end-state step counter."""
@@ -321,7 +238,6 @@ def progressed_action_count(history: list | None) -> int:
         and str(entry.get("kind") or "") not in {"scroll", "wait"}
     )
 
-
 def goal_evidenced(page: dict | None, *, goal: str | None, history: list | None) -> bool:
     """Every goal step (and qualifier) has at least one whole-word token in evidence."""
     steps, qualifier = goal_steps(goal)
@@ -331,22 +247,8 @@ def goal_evidenced(page: dict | None, *, goal: str | None, history: list | None)
     required = [*steps, qualifier] if qualifier else steps
     return all(any(_token_in_evidence(token, evidence) for token in step) for step in required)
 
-
 def end_state_reached(page: dict | None, *, goal: str | None, history: list | None, moved_on: bool) -> bool:
-    """True when this run performed every step of the goal and reached its end state.
-
-    Every clause must hold; there is no partial credit. A false ``done`` is worse
-    than an honest ``blocked``, because the caller stops asking and the result
-    never says the goal was missed.
-
-    1. ``moved_on`` — the run navigated away from where it started.
-    2. the page is not a shell.
-    3. **every step** is whole-word evidenced in title/text/URL-path or history
-       (host excluded — see ``_url_path_evidence``).
-    4. progressed (non-scroll) actions ≥ step count.
-
-    Returns False whenever any clause fails.
-    """
+    """True when moved_on, non-shell, every step evidenced, and progressed ≥ steps."""
     steps, _qualifier = goal_steps(goal)
     if not steps:
         return False
@@ -357,12 +259,6 @@ def end_state_reached(page: dict | None, *, goal: str | None, history: list | No
     if not goal_evidenced(page, goal=goal, history=history):
         return False
     return progressed_action_count(history) >= len(steps)
-
-
-# ---------------------------------------------------------------------------
-# Single stop/finish verdict. DriveAgent owns browser I/O; this owns the decision.
-# ---------------------------------------------------------------------------
-
 
 @dataclass(frozen=True)
 class Evidence:
@@ -385,7 +281,6 @@ class Evidence:
     end_state: bool
     goal_evidenced: bool = False
 
-
 @dataclass(frozen=True)
 class Verdict:
     """What DriveAgent should do next. Side effects stay in the agent."""
@@ -394,20 +289,11 @@ class Verdict:
     status: str | None = None
     stop_reason: str | None = None
 
-
-# Acted DONEs in [DONE_MIN, ACTED_DONE_EVIDENCE_MAX) need goal-token evidence.
-# Live S2a window-2: DONE 0.68 after 5 clicks on the wrong page cleared DONE_MIN alone.
+# Mid-band acted DONEs need goal-token evidence.
 ACTED_DONE_EVIDENCE_MAX = 0.8
 
-
 def verdict(ev: Evidence) -> Verdict:
-    """Finish/stop decision. DriveAgent owns browser I/O.
-
-    BLOCKED order matches main: look-budget/no-browser → shell/short *wait*
-    (even with no scroll_down) → scroll or rescue. snapshot.js only offers
-    scroll_down when the page is taller than the viewport, so short loading
-    pages must wait first (Kalshi/Polymarket/X).
-    """
+    """Finish/stop decision (DriveAgent owns browser I/O)."""
     if ev.degenerate_streak >= 2:
         return Verdict("stop", "blocked", "low_confidence")
 
@@ -436,8 +322,6 @@ def verdict(ev: Evidence) -> Verdict:
         return Verdict("reject_done")
 
     if ev.choice == "BLOCKED":
-        # Match main `_look_further`: budget or missing browser first, then wait on
-        # shell/short while budget remains (scroll_down may be absent), then scroll.
         if ev.looked >= ev.look_budget or not ev.has_browser:
             if ev.end_state:
                 return Verdict("rescue_done", "done", "end_state_reached")
@@ -451,7 +335,6 @@ def verdict(ev: Evidence) -> Verdict:
         return Verdict("look_scroll")
 
     return Verdict("noop")
-
 
 def unsupported_goal(goal: str | None) -> str | None:
     text = (goal or "").lower()

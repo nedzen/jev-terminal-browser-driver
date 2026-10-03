@@ -1,12 +1,4 @@
-"""Env walks: where the driver lives, and whether this machine can drive.
-
-The answers come from the environment, the filesystem and PATH — never a browser,
-never the network, never key material. They are read the same way by the Hermes
-gate (``check_fn``), the MCP status tool and the driver's own preflight, so
-they live here once.
-
-Stdlib only. See plugin/core/result.py for why that is a hard rule.
-"""
+"""Driver home and capability probes (env/fs/PATH only). Stdlib only."""
 
 from __future__ import annotations
 
@@ -39,12 +31,7 @@ def log_handler_event(tool: str, error: str, stderr: str = "") -> None:
 
 
 def driver_home() -> Path:
-    """Directory that contains scripts/drive.py.
-
-    Walks up from this file so a catalog install works without a checkout at
-    ~/Projects. WWWDRIVE_HOME overrides it; JEV_DRIVER_HOME is still read as a
-    fallback so pre-1.0 configs keep working.
-    """
+    """Directory containing scripts/drive.py (WWWDRIVE_HOME / JEV_DRIVER_HOME)."""
     env = os.environ.get("WWWDRIVE_HOME", "").strip() or os.environ.get("JEV_DRIVER_HOME", "").strip()
     if env:
         return Path(env).expanduser()

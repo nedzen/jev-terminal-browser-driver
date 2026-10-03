@@ -28,7 +28,6 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_FIXTURE = (ROOT / "fixtures" / "click.html").resolve()
 TIME_BUDGET_CAP = 900  # same ceiling as the outer timeout_s kill
 
-
 def same_document(left, right) -> bool:
     """True when both URLs are the same page, ignoring a trailing slash and fragment."""
 
@@ -41,13 +40,8 @@ def same_document(left, right) -> bool:
         return False
     return norm(left) == norm(right)
 
-
 def choose_lease(*, url, target_id, continuable, default_url, navigate_explicit=True, dropped=None):
-    """Decide which tab to drive.
-
-    An explicit target id wins. Otherwise reuse the driver's own live tab and
-    navigate it when a url was passed. Open a new tab only when that tab is gone.
-    """
+    """Pick tab: explicit id, else reuse driver's tab (navigate if url), else new."""
     if target_id:
         return {
             "tab": "target",
@@ -73,7 +67,6 @@ def choose_lease(*, url, target_id, continuable, default_url, navigate_explicit=
         "continuity": None if url else dropped,
     }
 
-
 def no_page_error(plan, url):
     """A call without url must reuse the remembered tab, never fall back to the local fixture."""
     if url or plan["tab"] != "new":
@@ -81,26 +74,12 @@ def no_page_error(plan, url):
     reason = plan.get("continuity") or "no remembered tab"
     return f"No page to reuse ({reason}). Pass url to open one."
 
-
 def trace_fields(snap: dict, rec: dict, *, goal: str) -> dict:
-    """The run-log record for one tick. No request body, no API key.
-
-    The shape belongs to plugin.core.trace: the log's field set is declared
-    there, so a field is added in one place rather than to a dict literal here
-    that the log reader has to be told about separately.
-    """
+    """Run-log record for one tick (shape from plugin.core.trace)."""
     return build_trace_record(rec, last_decision(snap), goal=goal)
 
-
 def tick_record(snap: dict, *, debug: bool = False, **overrides) -> dict:
-    """One tick row, assembled by plugin.core.result.build_tick_row.
-
-    The driver reads a tick here and an agent reads the folded result there, so
-    the row is built by the same builder that folds it. `overrides` are the
-    caller's fields (a max_steps budget, a time_budget stop, a final re-read);
-    they win over the snapshot's and go through the same builder, which is what
-    keeps the two sides from drifting.
-    """
+    """One tick row via plugin.core.result.build_tick_row (overrides win)."""
     history = snap.get("history") or []
     decisions = snap.get("decisions") or []
     last = history[-1] if history else None
@@ -172,14 +151,8 @@ def tick_record(snap: dict, *, debug: bool = False, **overrides) -> dict:
         **fields,
     )
 
-
 def _final_view(snap: dict, browser) -> dict:
-    """Re-read the page once after DONE and compare it with the decision-time read.
-
-    A DONE choice is the model's claim, not evidence. This attaches the evidence
-    and nothing else: the status never changes on account of it, and a failed
-    re-read is reported rather than raised.
-    """
+    """Re-read after DONE for evidence; never changes status. Never raises."""
     page = snap.get("page") or {}
     decisions = snap.get("decisions") or []
     decision = (decisions[-1] if decisions else None) or {}
@@ -201,36 +174,15 @@ def _final_view(snap: dict, browser) -> dict:
         "title": fresh.get("title"),
     }
 
-
 def _record_processes(goal) -> None:
-    """Write the close-time process evidence: what this run spawned, and whether
-    anything it started is still running after the detach-only close.
-
-    Never raises and never returns a value. It runs from a `finally` block, where
-    an exception would replace the run's exit code — accounting must be able to
-    lose evidence, not the result. A zombie is not a leak, so the check reads the
-    process state and not just `kill(pid, 0)`.
-    """
+    """Close-time spawn/orphan evidence. Never raises (safe for ``finally``)."""
     try:
         write_event(proc_mod.process_evidence(goal=goal))
     except Exception:
         return
 
-
 def _instance_pid(ws_url):
-    """The pid of the terminal-browser instance serving ``ws_url``, or None.
-
-    `terminal-browser ls --all --json` reports every instance with its cdpPort
-    and pid, so the port this run is driving identifies the process the
-    auto-launch started. Without that pid the spawn is counted but untracked,
-    and the close-time check can only fall back to a command-pattern scan —
-    evidence about the box, never a verdict about this run.
-
-    Every failure answers None, which is the state the orphan check already
-    handled: a port we cannot read, no binary installed, an unreadable answer, or
-    an instance `ls` cannot see from a no-TTY caller all leave the spawn
-    counted and untracked rather than guessing at a pid.
-    """
+    """Pid of the terminal-browser serving ``ws_url``, or None. Never raises."""
     try:
         port = urlsplit(ws_url or "").port
     except ValueError:
@@ -253,7 +205,6 @@ def _instance_pid(ws_url):
         return pid if pid > 0 else None
     return None
 
-
 def _metrics_of(agent):
     """This run's ``Metrics``, or None for an agent that has none. Never raises."""
     try:
@@ -261,13 +212,8 @@ def _metrics_of(agent):
     except Exception:
         return None
 
-
 def _bind_run(agent, goal) -> None:
-    """Give the run's counters the goal digest, so metrics.json is attributable.
-
-    Before this, a snapshot knows its own ``run_id`` but not which run that is.
-    Never raises: telemetry identity is not worth a run.
-    """
+    """Bind goal digest onto metrics. Never raises."""
     metrics = _metrics_of(agent)
     if metrics is None:
         return
@@ -276,15 +222,8 @@ def _bind_run(agent, goal) -> None:
     except Exception:
         return
 
-
 def _note_stop(agent) -> None:
-    """Record why the run stopped, as a token, before close freezes the snapshot.
-
-    The reason lives in the agent's state and the snapshot is written by
-    ``close()``, so a deadline stop recorded after that would read as a blocked
-    run with no error kind at all — indistinguishable from a blocked run that
-    stopped for any other reason. Never raises.
-    """
+    """Record stop reason before close freezes the snapshot. Never raises."""
     metrics = _metrics_of(agent)
     if metrics is None:
         return
@@ -295,17 +234,8 @@ def _note_stop(agent) -> None:
     except Exception:
         return
 
-
 def _run_event(identity, *, stage: str, agent=None) -> dict:
-    """The per-run record: which code, which tab, and this run's counters.
-
-    Written twice, once when the run is identified and once when it finishes,
-    both carrying the same ``run_id`` inside the embedded snapshot. The first
-    copy is what survives a run that is killed before it can close; the second
-    is the run's numbers in the append-only log, where an overwritten
-    metrics.json cannot reach them. ``metrics`` is absent for an agent that has
-    no counters, which is every test double and no real run.
-    """
+    """Per-run log record (start + finish share ``run_id``)."""
     record = {"event": "run", "stage": stage, **(identity or {})}
     metrics = _metrics_of(agent)
     if metrics is None:
@@ -315,7 +245,6 @@ def _run_event(identity, *, stage: str, agent=None) -> dict:
     except Exception:
         return record
     return record
-
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Drive a terminal-browser tab with Jev decisions.")
@@ -371,17 +300,10 @@ def parse_args(argv=None):
         parser.error("the following arguments are required: --goal (or pass --check)")
     return args
 
-
 def _print_blocked(error: str, *, stream=None, flush: bool = False) -> int:
-    """Print a blocked status row and return exit code 1. Shared by early rejects.
-
-    ``stream`` is resolved at call time so pytest's capsys (and any other
-    stderr swap) still sees the row — a default of ``sys.stderr`` would bind
-    the import-time handle forever.
-    """
+    """Print blocked status and return 1 (resolve stream at call time)."""
     print(json.dumps({"status": "blocked", "error": error}), file=stream or sys.stderr, flush=flush)
     return 1
-
 
 def _prepare_drive(args):
     """Validate drive args and install the denylist. Returns an exit code on reject."""
@@ -397,7 +319,6 @@ def _prepare_drive(args):
     except ValueError as exc:
         return _print_blocked(str(exc))
     return None
-
 
 def _drive(args) -> int:
     """Discover a browser, lease a tab, run ticks. Same exits as the pre-split main."""
@@ -580,7 +501,6 @@ def _drive(args) -> int:
             finally:
                 _record_processes(args.goal)
 
-
 def main(argv=None) -> int:
     args = parse_args(argv)
     if args.check:
@@ -593,7 +513,6 @@ def main(argv=None) -> int:
     if rejected is not None:
         return rejected
     return _drive(args)
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

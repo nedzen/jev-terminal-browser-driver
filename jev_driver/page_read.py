@@ -30,7 +30,6 @@ OUTLINE_JS = r"""
 })()
 """
 
-
 def clamp_scrolls(value) -> int:
     try:
         scrolls = int(value or 0)
@@ -38,13 +37,8 @@ def clamp_scrolls(value) -> int:
         scrolls = 0
     return max(0, min(scrolls, MAX_SCROLLS))
 
-
 def read_expression(script: str | None, scrolls: int, *, as_expression: bool = False) -> str:
-    """Async page function. Scrolls first, then either the outline or the caller script.
-
-    The script may be a statement body with `return`, a bare expression, or a function.
-    A function result is called, so `() => {...}` works the same as its body.
-    """
+    """Page read expression: scroll, then outline or caller script."""
     n = clamp_scrolls(scrolls)
     scroll = (
         f"for (let i = 0; i < {n}; i++) {{"
@@ -64,7 +58,6 @@ def read_expression(script: str | None, scrolls: int, *, as_expression: bool = F
         f" return {{ json: text }}; }})()"
     )
 
-
 def evaluate_async(browser, expression: str):
     response = browser.call(
         "Runtime.evaluate",
@@ -77,7 +70,6 @@ def evaluate_async(browser, expression: str):
         text = ((details.get("exception") or {}).get("description")) or details.get("text") or "script failed"
         return {"error": str(text)[:500]}
     return response.get("result", {}).get("value")
-
 
 def read_page(browser, script: str | None, scrolls: int) -> dict:
     if (script or "").strip():

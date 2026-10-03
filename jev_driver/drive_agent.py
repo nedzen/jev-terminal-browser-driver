@@ -25,7 +25,6 @@ TIME_BUDGET_WHY = (
     "The decision that crossed the deadline was discarded, so nothing was clicked or typed after it."
 )
 
-
 def _label_stem(label: str) -> str:
     """Drop a leading count so '12 comments' still matches '13 comments'."""
     parts = label.split(None, 1)
@@ -33,15 +32,8 @@ def _label_stem(label: str) -> str:
         return parts[1].strip()
     return label.strip()
 
-
 def _observed_label(page: dict | None, target) -> str:
-    """The observed page's own label for a target index, or "" when it has none.
-
-    The fallback `_decision_label` reaches for when the request's criteria carry
-    no entry for the chosen target. The index the model was offered is assigned by
-    `action_space`, so the page's own name for it comes from the same call — this
-    is the control's label, not a guess at one.
-    """
+    """Observed label for a target index, or ""."""
     if not isinstance(target, str) or not target:
         return ""
     elements = action_space((page or {}).get("actions") or [])[0]
@@ -51,7 +43,6 @@ def _observed_label(page: dict | None, target) -> str:
             if label:
                 return label.split(";")[0].strip()
     return ""
-
 
 def _click_named(actions, label: str):
     """Find the click target again. Exact label, or the same stem when the count changed."""
@@ -72,14 +63,12 @@ def _click_named(actions, label: str):
         return stemmed[0]
     return None
 
-
 def label_of(text, fallback, width=60) -> str:
     """A criterion's readable label: drop the "[KEY]" prefix and the ";" tail, clipped to width."""
     raw = str(text or fallback or "")
     if raw.startswith("[") and "]" in raw:
         raw = raw.split("]", 1)[1]
     return raw.split(";")[0].strip()[:width]
-
 
 def _why(status, decision, history, reason=None):
     if reason in REASON_WHY:
@@ -100,10 +89,8 @@ def _why(status, decision, history, reason=None):
         return "Stopped before the goal was visibly done."
     return ""
 
-
 _PAGINATION = re.compile(r"^(next|previous|prev|more|load more|show more|continue|older|newer)\b|[›»→←‹«]|^\d+$")
 _REPEAT_GOAL = re.compile(r"\b(twice|times|each|every|until|pages|all of)\b")
-
 
 def _top_operation(decision) -> str | None:
     probs = (decision or {}).get("operation_probabilities") or {}
@@ -111,28 +98,15 @@ def _top_operation(decision) -> str | None:
         return None
     return max(probs.items(), key=lambda kv: float(kv[1] or 0))[0]
 
-
 _TERMINAL = {"DONE", "BLOCKED"}
 
-
 def _performs_input(decision) -> bool:
-    """False for DONE and BLOCKED: they only settle the run, they never click or type.
-
-    `choice` is the field the base loop branches on to decide between settling the run
-    and touching the page, so it alone decides this. `operation` is deliberately not
-    consulted: a decision whose two fields disagree must be read as input, because that
-    is the reading that cannot type or click after the deadline.
-
-    The deadline's promise is that nothing is typed or clicked after it, so a decision
-    that performs no input is still worth honouring once the clock is spent.
-    """
+    """False for DONE/BLOCKED (settle-only). Uses ``choice`` only, not ``operation``."""
     return (decision or {}).get("choice") not in _TERMINAL
-
 
 def _ranked(probs, limit=6):
     items = sorted((probs or {}).items(), key=lambda kv: -float(kv[1] or 0))
     return [[str(key), round(float(val), 3)] for key, val in items[:limit]]
-
 
 class DriveAgent(Agent):
     """Exempt advancing scrolls from the 3-repeat guard; optional debug HUD."""
@@ -143,7 +117,7 @@ class DriveAgent(Agent):
         self._metrics = Metrics()
         self._metrics.record_startup((time.perf_counter() - started) * 1000)
         self.debug = debug
-        # Optional inner deadline (upstream PR #3 idea). timeout_s stays the
+        # Optional inner deadline. timeout_s stays the
         # outer subprocess kill; this one is checked inside the tick loop.
         self.time_budget_s = None if time_budget_s in (None, "") else int(time_budget_s)
         self._budget_deadline = None
@@ -201,12 +175,7 @@ class DriveAgent(Agent):
         return deadline is not None and time.perf_counter() >= deadline
 
     def _stop_time_budget(self):
-        """Stop on the inner deadline. The pending decision is discarded, never executed.
-
-        One tick reaches this twice: predict refuses the model call, then the tick's
-        unconditional act finds the same spent clock. The second visit re-asserts the
-        state but must not log again, so a consumer sees exactly one time_budget event.
-        """
+        """Stop on the inner deadline; discard the pending decision (log once)."""
         state = self.state
         state["decision"] = None
         state["status"] = "blocked"
@@ -315,15 +284,7 @@ class DriveAgent(Agent):
             state["stop_reason"] = "model_blocked"
 
     def _log_model_blocked(self, decision: dict) -> None:
-        """The four facts that decide whether a BLOCKED was earned: what DONE was
-        worth on the same page, how many targets were even on offer, where the run
-        ended up, and whether this run had navigated to get here.
-
-        `done_p` is the number that was compared against DONE_MIN, and
-        `moved_on` is the precondition of the `_reject_weak_done` bypass, so both
-        are what a reader needs to say whether a BLOCKED was the model's honest
-        read or the framing losing a coin-flip.
-        """
+        """Log DONE confidence, targets, URL, and moved_on for a BLOCKED decision."""
         state = self.state
         page = state.get("page") or {}
         write_event(
@@ -346,19 +307,7 @@ class DriveAgent(Agent):
                 self.metrics.record_text_helper(row.get("latency_ms"))
 
     def _decision_label(self, decision: dict, page: dict | None = None) -> str:
-        """The readable label for the target this decision chose, or "" when unknowable.
-
-        Reads the request's own criteria first, which is the only source that names a
-        target the page no longer shows. When the criteria carry no entry for this
-        target it falls back to the observed page's own label for the same index — the
-        same fallback the HUD uses (_hud_payload) — because a retry that cannot name the
-        control it is retrying clicks by target key instead, which is a different
-        control or nothing at all.
-
-        Returns "" rather than the bare target key when neither source has a label.
-        Callers use "" to decline the retry; a caller that logs must not be handed a
-        target id and print it as if it were a label.
-        """
+        """Readable label for the chosen target, or "" (never a bare target key)."""
         operation = (decision.get("operation") or "").lower()
         questions = ((decision.get("request") or {}).get("questions") or {})
         criteria = (questions.get(operation + "_target") or {}).get("criteria") or {}
