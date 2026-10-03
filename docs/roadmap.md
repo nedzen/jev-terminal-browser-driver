@@ -14,14 +14,15 @@ plugin, Tier 1–4, hardening A–C, debloat, rename. Reinstall sweep done.
 | Test matrix (battery + tokens) | main-ops (wire/suite), w4 (tasks 1–5), w5 (tasks 6–10) | COMPLETE with contamination caveat (below) | tables reported in chat |
 | Token epic `feat/tokens` | w4 (request de-dup), w5 (H2 insights gate) | MERGED (PR #12) — H1 bench −17.5/−21.4%, H2 −1.8KB/call, 625 green | caller-payload gate held; driver totals diagnosis-only |
 | Architecture batch (core/ + builder) | arch (wR:p1) | MERGED (PR #13, ca1ce07) — batches A+B, one epic review, 657 green | §6 verify done (suite/ruff/mutation, merger spot-checks B5×2/B6/B8 killed); reviewer approved after M1 withdrawn (delta verdict, 2026-10-02) |
-| H4 experiment | unassigned | gated on H1/H2 holding | reviewer design sign-off first |
+| H4 experiment | unassigned | CONDITIONAL design sign-off by reviewer (direction sound, gate under-specified; 7 conditions incl. frozen per-tick A/B, live all-10-green + tick counts, keyframe rationale, adversarial pages, suite+mutation, gated rollout, ceiling restated) — future H4 PR must prove each |
 
 ## Fleet (one writer per tree, workers never commit)
 
 | Name | Tree | Role |
 |---|---|---|
 | megabosss2 | main checkout | merger/orchestrator (old megaboss wJ:p23 retired by owner, 2026-10-02 — token cost) |
-| ceo | wJ:p2Z | oversight: watches verdicts/panes, co-owns finish pipeline |
+| ceo | wJ:p20 | plenary supervisory/decision authority (owner out for good); successions logged in FLEEET.md |
+| god | wJ:p2Z (ex-ceo) | owner's personal check-in point only — passive, never a report target |
 | reviewer | feat-reviewer (wS:p1) | reviews epic PRs only (Muse Spark 1.3 Contributor; pane formerly mislabeled guard-r, renamed) |
 | degen | feat-degen | done, releasable |
 | main-ops | main checkout | matrix wire/suite |
