@@ -43,3 +43,5 @@ both real drives, both HIT; the duplication is operator re-invocation, noted.
 | S2b-c30ada0579 | S2b | github.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | github.com/nedzen/jev-terminal-browser-driver | 1 | 0 | 2215.0 | feca83330992f854 | 2da12a5 | 0.73 |
 | S2c-R-97c766ad27 | S2c-R | polymarket.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | polymarket.com/ | 6 | 0 | 849.0 | feca83330992f854 | fc91f2c | 8.1 |
 | S2c-R-a1bf0d1770 | S2c-R | polymarket.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | polymarket.com/ | 5 | 0 | 980.0 | feca83330992f854 | fc91f2c | 5.07 |
+| S3a-725f4bb5df | S3a | x.com | R | mandatory | MISS | sev-2 | wrong-end-state | action_budget | x.com/home | 13 | 0 | 1593.0 | feca83330992f854 | 1007df3 | 8.3 |
+| S3a-07db7b4b5a | S3a | x.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | x.com/home | 5 | 0 | 1653.0 | feca83330992f854 | 1007df3 | 5.41 |
