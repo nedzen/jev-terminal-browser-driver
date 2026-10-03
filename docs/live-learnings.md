@@ -100,3 +100,5 @@ History stays above; scoreboard counts only rows below this line.
 | S1d-efdb25761e | S1d | coinmarketcap.com/currencies/tether/ | R | mandatory | HIT | - | - | model_done | coinmarketcap.com/currencies/tether | 1 | 0 | 1567.0 | f8b13c650cc5ddf6 | ac7df8b | 2.8 |
 | S2a-aee6ace2ec | S2a | coinmarketcap.com | R | mandatory | FALSE-DONE | sev-1 | false-done | model_done | coinmarketcap.com/exchanges/picol | 7 | 0 | 2294.0 | f8b13c650cc5ddf6 | 9953fd3 | 5.92 |
 | S2b-9ddd1f7181 | S2b | github.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | github.com/nedzen/jev-terminal-browser-driver | 4 | 0 | 2516.0 | f8b13c650cc5ddf6 | 9953fd3 | 3.93 |
+| S2c-R-e657345d5c | S2c-R | polymarket.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | polymarket.com/event/btc-updown-5m-1791018000 | 4 | 0 | 2693.0 | f8b13c650cc5ddf6 | 1b12992 | 6.19 |
+| S3a-2a581d3ebc | S3a | x.com | R | mandatory | HIT | - | - | model_done | x.com/bfl_ai/status/2105734605621825738 | 6 | 0 | 1601.0 | f8b13c650cc5ddf6 | 1b12992 | 7.1 |
