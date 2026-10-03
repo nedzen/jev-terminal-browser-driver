@@ -177,6 +177,10 @@ plugin, Tier 1–4, hardening A–C, debloat, rename. Reinstall sweep done.
   937 green + ruff clean re-verified on merged main): bypass requires
   end_state_reached (M7 shape refused, S1a shape rescues); M4 (0.68 accepted
   outright) explicitly out of scope — needs confidence-gate tightening cycle.
+- Stale branches swept: feat/drop-opencode-plugin (above) + tier-b-c, tokens,
+  wwwdrive-rename, fix/tui-only (all ancestors, remote refs deleted);
+  plan/wwwdrive-release (42-line release-plan doc, superseded by executed
+  v1.0.0/v1.1.0 — left on origin, delete on owner call).
 - Owner-only pending, untouched: GitHub repo rename click (owner, very end);
   `founder` / `intern` profile re-link + settings re-entry.
 - Follow-up queue (non-blocking polish, worked only when the suite waits):
