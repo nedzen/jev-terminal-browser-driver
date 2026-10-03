@@ -75,15 +75,22 @@ Model DONE is a claim — check `final_url` / `page_text`.
 `~/.cache/wwwdrive/drive.log` and `drive.jsonl`. Tail the log while a run is
 live. Pre-1.0 `~/.cache/jev-driver/` is orphaned.
 
-## Tests
+## Docs
+
+| Doc | Role |
+|---|---|
+| [docs/architecture.md](docs/architecture.md) | Layout, tick loop, gates |
+| [docs/decisions.md](docs/decisions.md) | Why the gates and boundaries look like this |
+| [docs/live-testing.md](docs/live-testing.md) | Offline + live S-batch, scoreboard lessons |
+| [docs/known-issues.md](docs/known-issues.md) | Open faults and gotchas |
+| [docs/roadmap.md](docs/roadmap.md) | Open work |
+| [CHANGELOG.md](CHANGELOG.md) | User-facing versions |
+| [AGENTS.md](AGENTS.md) | Contributor agreement |
 
 ```bash
 uv run pytest
 uv run ruff check .
 ```
-
-Live S-batch and more: **[docs/how-to-test.md](docs/how-to-test.md)**.
-How it works: **[docs/architecture.md](docs/architecture.md)**.
 
 ## Safety
 

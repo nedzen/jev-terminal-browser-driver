@@ -1,4 +1,4 @@
-# Architecture (≈10 minutes)
+# Architecture
 
 wwwdrive drives a visible [terminal-browser](https://terminal-browser.dev) tab
 with [Jev](https://docs.typesafe.ai/introduction) decisions. Agents speak MCP
@@ -14,11 +14,11 @@ scripts/mcp.py          stdio MCP server
 scripts/drive.py        → jev_driver.cli
 scripts/live/           S-batch harness + manifests/
 jev_driver/
-  cli.py                argparse; discover/lease/open/tick helpers
+  cli.py                argparse; discover / lease / open / tick helpers
   drive_agent.py        observe→decide→act loop, finish/stop gates, HUD
   agent.py              compatibility alias: Agent = DriveAgent
   readiness.py          DONE thresholds, end_state_reached, Evidence+verdict()
-  browser.py            Browser class; re-exports lease/probe/ops for callers
+  browser.py            Browser class; re-exports lease / probe / ops
   lease.py              tab lease, last-page memory, tab-open helpers
   probe.py              fingerprinting, read-only freshness probe
   ops.py                CDP read/act executor (browser_operation)
@@ -48,17 +48,18 @@ AST-walks it). `jev_driver` may import `plugin.core`; Hermes must not need
 6. **Result** — `plugin.core.result.compact_result` folds tick rows; stop taxonomy
    in `stopped_reason()`.
 
-## Finish / stop (the gates that matter)
+## Finish / stop gates
 
-| Gate | Threshold / rule |
+| Gate | Rule |
 |---|---|
 | `DONE_MIN` | 0.6 |
 | `ZERO_ACTION_DONE_MIN` | 0.95 when `model_action_count == 0` (auto-scrolls excluded) |
-| Nav / rescue bypass | `end_state_reached`: moved_on, not shell, whole-word goal tokens in title/text/URL-**path**/history (host excluded), progressed actions ≥ steps |
+| Mid-band acted DONE | `[0.6, 0.8)` needs `goal_evidenced` |
+| Nav / rescue | `end_state_reached`: moved_on, non-shell, whole-word goal tokens in title/text/URL-**path**/history (host excluded), progressed ≥ steps |
 | Low confidence | 2 consecutive degenerate ticks |
 
-Calibrated from live sev-1 rows (see `docs/live-learnings.md` and module
-comments in `readiness.py`). Do not retune from one run.
+Calibrated from live sev-1 rows — see [live-testing.md](live-testing.md) and
+[decisions.md](decisions.md). Do not retune from one run.
 
 ## Continuity and panes
 
@@ -66,6 +67,8 @@ comments in `readiness.py`). Do not retune from one run.
 - Inside cmux: provision via control socket at **root terminal** level, tabs
   after first pane — never nest inside herdr.
 - Elsewhere: `terminal-browser open URL --split right --no-merge`.
+- CDP: `new-tab` / detach-only close; never `Target.closeTarget` (TUI PageHost
+  crash); websocket `suppress_origin=True`.
 
 ## Safety
 
@@ -75,18 +78,25 @@ comments in `readiness.py`). Do not retune from one run.
   (`runlog.redact_for_wire`).
 - Per-test denylists on R-tier live manifests.
 
+## Envelope
+
+Drive is a **one-viewport click-path actor**. Aggregation / extraction over tall
+multi-viewport pages is out of envelope — use `read` with `scrolls`, or an API.
+Desktop Hermes preview webview is not driveable; the product is TUI-visible only.
+
 ## Logs
 
 - `~/.cache/wwwdrive/drive.log` / `drive.jsonl` — events, never raw secrets.
 - Live slices: `/tmp/wwwdrive-runs/<run_id>.jsonl`.
+- Live ledger: `docs/live-ledger.jsonl` (append-only).
 
 ## Where to go next
 
 | Doc | Role |
 |---|---|
-| [how-to-test.md](how-to-test.md) | Offline pytest + live S-batch |
-| [known-faults.md](known-faults.md) | Open product/fleet faults |
-| [live-learnings.md](live-learnings.md) | Scoreboard ledger (raw rows) |
-| [roadmap.md](roadmap.md) / [upstream-ideas-backlog.md](upstream-ideas-backlog.md) | Plans |
-| [archive/](archive/) / [research/](research/) | Historical intel (later synthesis pass) |
-| [archive/architecture-long.md](archive/architecture-long.md) | Pre-handoff long form of this doc |
+| [live-testing.md](live-testing.md) | How to run tests + distilled live lessons |
+| [decisions.md](decisions.md) | Why the gates and layout look like this |
+| [known-issues.md](known-issues.md) | Open faults and gotchas |
+| [roadmap.md](roadmap.md) | Open work and parked ideas |
+| [../CHANGELOG.md](../CHANGELOG.md) | User-facing version history |
+| [../AGENTS.md](../AGENTS.md) | Contributor working agreement |

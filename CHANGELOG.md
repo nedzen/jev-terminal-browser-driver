@@ -8,133 +8,60 @@ All notable user-facing changes, newest first. Version numbers follow
 
 ### Changed
 
-- **insights trace explicit-only on MCP** (~1.8KB/call saved by default):
-  the ranked operations/targets trace rides an explicit opt-in
-  (`WWWDRIVE_DEBUG=1`); the debug overlay default is unchanged.
-- **`WWWDRIVE_REQUEST_DEDUP` opt-in**: request-assembly de-duplication
-  (bench −17.5/−21.4% input, accuracy flat), env-gated, default off.
+- **Insights trace explicit-only on MCP** (~1.8KB/call saved by default): the
+  ranked operations/targets trace needs `WWWDRIVE_DEBUG=1`; the debug overlay
+  default is unchanged.
+- **`WWWDRIVE_REQUEST_DEDUP` opt-in**: request-assembly de-duplication (bench
+  −17.5/−21.4% input, accuracy flat), env-gated, default off.
 
-### Internal (no behavior change)
+### Internal
 
-- **`plugin/core/`**: a new stdlib-only leaf holding the env walks, the budget
-  validation, and the result builder. `plugin/handler.py` thins to the
-  subprocess shell and re-exports the same names, so no caller moves.
-- **One result builder**: `cli.tick_record` now assembles tick rows through
-  `plugin.core.result.build_tick_row`, driven by the same field table
-  `compact_result` folds with. A new tick field can no longer be added to the
-  row and silently dropped from the agent result — the bug class that nearly
-  killed `final_view` and `omitted_actions`.
-- **Run-log record declared once**: `plugin/core/trace.py` owns the `drive.jsonl`
-  record's field set and `cli.trace_fields` delegates to it. The record is
-  byte-identical — same keys, same order, same nulls. `write_event` and the
-  redaction vocabulary stay in `jev_driver/runlog.py`, which is the
-  sanitize-and-append boundary and also serves the outgoing-wire redactor.
+- `plugin/core/` stdlib-only leaf (env, budgets, result builder, trace fields).
+- One result field table shared by tick rows and compact results.
+- Run-log record shape declared once in `plugin/core/trace.py`.
 
 ## 1.0.0
 
 ### Renamed
 
-- The product is **wwwdrive**. The MCP server reports `wwwdrive`, the Hermes
-  plugin directory is `~/.hermes/plugins/wwwdrive`, and the Hermes plugin id
-  (so the settings key) is `wwwdrive`.
-- Tools lost their prefix and are now bare under that namespace: `jev_drive` →
-  `drive`, `jev_read` → `read`, `jev_status` → `status`. A host that
-  namespaces MCP tools shows them as `mcp__wwwdrive__drive` and friends. A
-  host with a native `read` and no namespacing can collide; that is called out
-  in the README.
-- `JEV_DRIVER_HOME` → `WWWDRIVE_HOME` and `JEV_DEBUG` → `WWWDRIVE_DEBUG`. Both
-  old names are still read as fallbacks, so existing configs keep working.
-- Logs, the remembered tab, and the overlay's remembered panel state moved to
-  `~/.cache/wwwdrive`. Anything in `~/.cache/jev-driver` is orphaned and is
-  never read again; the README says so.
-- The rename is a clean break for tool names and the plugin directory: no
-  compatibility alias, no leftover symlink. Re-register the MCP server and
-  re-enter plugin settings once.
+- Product is **wwwdrive** (MCP server name, Hermes plugin id, settings key).
+- Tools are bare: `drive`, `read`, `status` (hosts may show
+  `mcp__wwwdrive__drive`).
+- `JEV_DRIVER_HOME` → `WWWDRIVE_HOME`, `JEV_DEBUG` → `WWWDRIVE_DEBUG` (old names
+  still read as fallbacks).
+- Cache moves to `~/.cache/wwwdrive` (`~/.cache/jev-driver` is orphaned).
+- Clean break for tool names and plugin directory — re-register MCP and plugin
+  settings once.
 
 ### Added
 
-- **MCP server for every host.** One stdlib-only stdio server
-  (`scripts/mcp.py`) exposes the same three tools to Hermes, OpenCode, omp,
-  Grok, Claude Code/Crush, and anything else that speaks MCP — no per-host
-  code, no new dependencies. Tool schemas are imported from `plugin/`, so the
-  Hermes and MCP surfaces cannot drift; a parity test fails the suite if they
-  do.
-- **`status`**: a preflight tool that reports whether this machine can drive a
-  browser at all, with no browser, no spend, and no key material — every field
-  is `ok` or `missing`, plus the fixes. The same checks back `python
-  scripts/drive.py --check`.
-- **Honest results.** Every result now carries `verified: null` and an
-  `outcome_verification` note: the model's DONE is a choice, never an
-  independent check. `stopped_reason` gives a small stop taxonomy
-  (`model_done`, `action_budget`, `time_budget`, `model_blocked`, `error`,
-  `cancelled`) instead of a free-form `reason` alone, and `page_text` is
-  capped so a page dump cannot flood the agent's context.
-- **Budgets that reject rather than clamp.** `max_steps`, `time_budget_s`,
-  and `timeout_s` are validated strictly before anything runs, so a caller
-  learns the budget it got instead of silently getting a different one.
-- **`time_budget_s`**: an inner deadline measured from the first decision and
-  checked before every model call *and* before every click or type. A decision
-  that outlives it is discarded without acting on the page. `timeout_s` stays
-  the outer kill.
-- **Final-view probe.** After DONE the driver re-observes the page and returns
-  a fingerprint of what it believes it finished on, so a claimed success can
-  be checked instead of trusted.
-- **Freshness retries.** The read-only freshness probe now retries with settle
-  waits and hit-tests the target, and reports why it gave up
-  (`target_detached`, `target_changed`, `not_actionable`, `not_writable`).
-- **Run metrics and process accounting.** Each run writes a `metrics.json`
-  aggregate (decision latency, actions attempted vs succeeded, stale count,
-  per-phase timings, text-helper calls), counts spawns, checks for orphans
-  after cleanup, and records a version manifest (git commit plus a hash over
-  the implementation files) so a trace can be tied to the code that produced
-  it.
-- **Decision provenance.** The run log records the backend, model, and prompt
-  hashes behind every decision, and usage for both the decision stage and the
-  text helper.
-- **A hardened log.** Every record is redacted (secret-looking keys and
-  assignments), size-capped, and coerced; `write_event` cannot raise, and the
-  same event written twice produces the same record.
-- **`read` can attach in the background**, like `drive` did: `background: true`
-  plus a `cdp_url` the caller already holds. Neither tool launches a hidden
-  browser.
-- **Test-plan and agent guides** for driving the server live and pasting the
-  release checklist.
+- MCP stdio server for every host (`scripts/mcp.py`); schemas from `plugin/`.
+- **`status`** preflight (no browser, no spend).
+- Honest results: `verified: null`, stop taxonomy, capped `page_text`.
+- Strict budgets (`max_steps`, `time_budget_s`, `timeout_s`) — reject, never clamp.
+- Inner `time_budget_s` from first decision; outer `timeout_s` remains the kill.
+- Final-view re-observe after DONE; freshness probe retries with reasons.
+- Run metrics, spawn/orphan evidence, version manifest, decision provenance.
+- Hardened redacted log; `read` background attach (never launches hidden browser).
 
 ### Changed
 
-- The debug overlay is on by default, because a visible browser you cannot
-  explain is worse than a busy one. Opt out with `WWWDRIVE_DEBUG=0` over MCP
-  (`JEV_DEBUG=0` still works) or with the plugin setting. As before, the model
-  cannot change it.
-- Timeouts and driver crashes are logged as handler events, so a run that died
-  outside the driver's own logging still leaves a record.
-- Error handling in the MCP server is split: a client's mistake (unknown tool,
-  bad arguments) is answered as such and never runs a handler, while anything
-  the server itself hits answers `internal error` and keeps the stdio loop
-  alive. Only the exception class is logged, never its message, which can
-  carry a URL with a key in it.
+- Debug overlay on by default (`WWWDRIVE_DEBUG=0` to opt out).
+- MCP error bifurcation: bad client args vs internal error (class only logged).
 
 ### Fixed
 
-- Detached drive subprocesses are killed as a process group, so a 900-second
-  call cannot leave an orphan driving your browser.
-- A cancelled run is distinguishable from a timeout.
-- A stale fill cache no longer crosses same-labeled fields (upstream #191).
-- Retries are tightened so a retry cannot re-send an action the page already
-  rejected.
+- Process-group kill for detached drives; cancelled ≠ timeout.
+- Stale fill cache no longer crosses same-labeled fields (upstream #191).
 
 ### Removed
 
-- The OpenCode TypeScript plugin. MCP is the single adapter, so the schemas
-  live in one place instead of two that can drift.
-- Dead code and near-duplicate helpers, and shared test fakes in place of
-  per-file copies.
+- OpenCode TypeScript plugin (MCP is the single adapter).
 
 ### Migration
 
-1. Re-register the MCP server under the name `wwwdrive`.
-2. If you used the Hermes plugin: delete the old `jev-driver` plugin link,
-   re-run `scripts/install_plugin.sh`, and re-enter the settings under
-   **Plugins → wwwdrive**.
-3. Update your agent's prompts or scripts to call `drive`, `read`, `status`.
-4. Optionally delete `~/.cache/jev-driver` — it is no longer read.
+1. Re-register the MCP server as `wwwdrive`.
+2. Hermes: delete old `jev-driver` plugin link, re-run `scripts/install_plugin.sh`,
+   re-enter **Plugins → wwwdrive**.
+3. Call `drive` / `read` / `status`.
+4. Optionally delete `~/.cache/jev-driver`.
