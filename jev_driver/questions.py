@@ -1,4 +1,6 @@
-# Verbatim from https://github.com/browser-use/jev-ultrafast (c) 2026 Browser Use, MIT License.
+# NEXT_ACTION is adapted from https://github.com/browser-use/jev-ultrafast (c) 2026 Browser Use,
+# MIT License: its DONE criterion is a local addition, the rest is verbatim. TARGET and TEXT_VALUE
+# are verbatim.
 """Instructions for the dynamic operation/element policy and the text helper."""
 
 NEXT_ACTION = """Advance the user's entire goal from the CURRENT page using one operation.
@@ -11,8 +13,12 @@ Submit populated search fields before opening a result; a populated field alone 
 WAIT only when the needed control is absent/disabled, or submitted results are still loading.
 If Search/Submit is visible and the required fields are ready, CLICK it immediately.
 Recent WAIT actions are not evidence of loading. Prefer a useful visible control over WAIT.
-DONE requires visible evidence that ALL requirements are satisfied. If asked to open a result,
-a matching link is not enough. BLOCKED means no supported operation can make progress."""
+DONE requires visible evidence that ALL requirements are satisfied. That evidence may be the current
+URL and title, the field values you can see, and what your recent actions already did. If asked to open
+a result, a matching link is not enough; arriving at the page the goal named, by an action in your own
+history, is enough. A goal that asks only for an action you have already performed is satisfied once
+that action changed the page, even when the new page repeats nothing from the goal. BLOCKED means no
+supported operation can make progress."""
 
 TARGET = """Choose the best observed target if the next operation is the one specified in this question.
 Use the user's entire goal, field values, nearby text, and recent actions. This question chooses only
