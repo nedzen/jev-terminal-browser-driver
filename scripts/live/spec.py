@@ -49,7 +49,13 @@ REDACT_PRESENCE_ONLY = "presence_only"
 # v3.1 machine predicates. `url_contains` and `text_present` are what make a
 # verdict auto-judgeable; `final_view_contains` is the older spelling of
 # `text_present` and is accepted so a v3 manifest still validates.
-MACHINE_PREDICATES = ("url_host_path", "url_contains", "text_present", "final_view_contains")
+MACHINE_PREDICATES = (
+    "url_host_path",
+    "url_contains",
+    "text_present",
+    "final_view_contains",
+    "any_of",
+)
 
 
 class ManifestError(ValueError):
@@ -191,6 +197,16 @@ def validate_test(test: dict, *, index: int | None = None) -> dict:
         raise ManifestError(
             f"{where}: unknown expected key(s) {sorted(unknown)}; known: {sorted(MACHINE_PREDICATES)}"
         )
+    if "any_of" in expected:
+        options = expected["any_of"]
+        if not isinstance(options, list) or not options:
+            raise ManifestError(f"{where}: any_of must be a non-empty list")
+        for i, option in enumerate(options):
+            if not isinstance(option, dict) or not option:
+                raise ManifestError(f"{where}: any_of[{i}] must be a non-empty object")
+            bad = set(option) - (set(MACHINE_PREDICATES) - {"any_of"})
+            if bad:
+                raise ManifestError(f"{where}: any_of[{i}] unknown key(s) {sorted(bad)}")
     # v3.1: auto-judged where a machine predicate exists, human-judged otherwise.
     # Checked before the "needs an end state" rule, because with human_judged set
     # an empty `expected` is legitimate -- the run simply waits for a person.

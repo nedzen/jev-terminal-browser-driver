@@ -20,7 +20,7 @@ provision tests must mock `resolve_terminal_browser`.
 | Agent loop / budgets | `test_time_budget`, `test_agent`, `test_freshness` |
 | Plugin / MCP | `test_plugin_handler`, `test_mcp`, `test_core` |
 | Provisioning | `test_discover`, `test_cmux_provision` |
-| Process evidence | `test_processes`, `test_lifecycle` |
+| Process evidence | `test_processes`, `test_lifecycle` (both import `jev_driver.instances`) |
 | Live harness (fake MCP) | `scripts/live/test_harness.py` |
 
 Full name index: [test-catalog.md](test-catalog.md).
@@ -34,6 +34,7 @@ Requirements: `terminal-browser` on PATH, kitty-graphics terminal (or cmux),
 uv run python -m scripts.live --dry-validate    # offline schema check
 uv run python -m scripts.live                   # all default manifests
 uv run python -m scripts.live S2a S7c S4a-chain
+uv run python -m scripts.live --ledger /tmp/live-ledger.md   # optional override
 ```
 
 Manifests live in `scripts/live/manifests/`. The default suite prefers

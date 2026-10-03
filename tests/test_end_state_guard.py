@@ -339,6 +339,32 @@ def test_look_further_scrolls_before_the_guard_is_consulted():
     assert agent.state.get("stop_reason") != "end_state_reached"
 
 
+def test_look_further_waits_on_a_short_page_that_has_no_scroll_down(monkeypatch):
+    """Regression vs main: snapshot.js omits scroll_down when the page is not
+    taller than the viewport. A BLOCKED on a short loading page must wait/hydrate
+    while look budget remains, not jump to rescue (Kalshi/Polymarket/X)."""
+    monkeypatch.setattr("jev_driver.drive_agent.write_event", lambda event: None)
+
+    class Hydrating:
+        HYDRATE_SLEEP_S = 0
+
+        def sleep(self, _s):
+            return None
+
+        def _observe_once(self, screenshot=False):
+            return {**IANA_PAGE, "actions": []}
+
+    agent = _blocked_agent(page={"url": IANA_URL, "title": "", "text": "Loading"})
+    agent._looked = 0
+    agent.state["browser"] = Hydrating()
+    agent.state["page"] = {"url": IANA_URL, "title": "", "text": "Loading", "actions": []}
+    snap = agent._look_further()
+    assert snap["status"] == "ready"
+    assert agent._looked == 1
+    assert agent.state["decision"] is None
+    assert agent.state.get("stop_reason") != "end_state_reached"
+
+
 # --------------------------------------------------------------------------
 # V4: the BLOCKED is legible in the log without reconstructing it
 # --------------------------------------------------------------------------

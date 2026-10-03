@@ -104,6 +104,12 @@ def main(argv: list[str] | None = None) -> int:
         default=Path("/tmp/wwwdrive-runs"),
         help="Where to write per-run JSONL slices.",
     )
+    parser.add_argument(
+        "--ledger",
+        type=Path,
+        default=None,
+        help="Learnings ledger path (default: docs/live-learnings.md).",
+    )
     ns = parser.parse_args(argv)
 
     try:
@@ -119,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     # Lazy import of the product state dir so --dry-validate never needs the driver.
-    from scripts.live.runner import driver_state_dir
+    from scripts.live.runner import LEDGER, driver_state_dir
 
     log_dir = ns.log_dir or driver_state_dir()
     try:
@@ -128,6 +134,7 @@ def main(argv: list[str] | None = None) -> int:
             log_dir=log_dir,
             slice_dir=ns.slice_dir,
             suite=manifest["suite"],
+            ledger=ns.ledger if ns.ledger is not None else LEDGER,
         )
     except SuiteAbort as exc:
         print(f"suite abort: {exc}", file=sys.stderr)

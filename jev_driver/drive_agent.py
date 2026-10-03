@@ -13,6 +13,7 @@ from .readiness import (
     degenerate,
     done_probability,
     end_state_reached,
+    goal_evidenced,
     model_action_count,
     page_is_shell,
     verdict,
@@ -635,8 +636,10 @@ class DriveAgent(Agent):
         decision = state.get("decision") or {}
         page = state.get("page") or {}
         text = page.get("text") or ""
+        browser = state.get("browser")
         scroll = next((item for item in (page.get("actions") or []) if item.get("id") == "scroll_down"), None)
         history = state.get("history") or []
+        goal = state.get("goal")
         moved = self._moved_on(page)
         return Evidence(
             choice=decision.get("choice"),
@@ -649,12 +652,12 @@ class DriveAgent(Agent):
             degenerate_streak=getattr(self, "_degenerate_streak", 0),
             looked=getattr(self, "_looked", 0),
             look_budget=self.LOOK_SCROLLS,
-            has_scroll_down=scroll is not None and state.get("browser") is not None,
+            has_browser=browser is not None,
+            has_scroll_down=scroll is not None and browser is not None,
             short_page=len(text.strip()) < 160,
             model_history=model_action_count(history),
-            end_state=end_state_reached(
-                page, goal=state.get("goal"), history=history, moved_on=moved
-            ),
+            end_state=end_state_reached(page, goal=goal, history=history, moved_on=moved),
+            goal_evidenced=goal_evidenced(page, goal=goal, history=history),
         )
 
     def _stop_low_confidence(self):
@@ -761,24 +764,12 @@ class DriveAgent(Agent):
         decision = state.get("decision") or {}
         if decision.get("choice") != "BLOCKED":
             return None
-        # Force the look budget spent so verdict() takes the rescue branch.
-        ev = self._evidence()
-        judgment = verdict(
-            Evidence(
-                **{
-                    **ev.__dict__,
-                    "looked": max(ev.looked, ev.look_budget),
-                    "has_scroll_down": False,
-                    "end_state": end_state_reached(
-                        page,
-                        goal=state.get("goal"),
-                        history=state.get("history"),
-                        moved_on=self._moved_on(page),
-                    ),
-                }
-            )
-        )
-        if judgment.kind != "rescue_done":
+        if not end_state_reached(
+            page,
+            goal=state.get("goal"),
+            history=state.get("history"),
+            moved_on=self._moved_on(page),
+        ):
             return None
         state["decision"] = None
         state["status"] = "done"

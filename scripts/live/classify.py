@@ -66,8 +66,9 @@ BLOCKED_STOP_REASONS = (
 def host_and_path(url: str | None) -> str:
     """`host/path`, dropping scheme, port, query and fragment, lowercased.
 
-    v3's regression diff compares host+path so a cache buster does not read as a
-    regression; lowercasing because a host is case-insensitive.
+    A bare homepage (`https://example.com/` or `https://example.com`) is `example.com`
+    with no trailing slash, so an exact `url_host_path` can name the home without
+    also matching every deeper path.
     """
     if not url:
         return ""
@@ -76,6 +77,8 @@ def host_and_path(url: str | None) -> str:
     path = parts.path or "/"
     if len(path) > 1 and path.endswith("/"):
         path = path[:-1]
+    if path == "/":
+        return host
     return f"{host}{path}"
 
 
@@ -128,17 +131,24 @@ def _page_text(page_text) -> str:
 def end_state_matched(expected: dict, final_url: str | None, final_view, page_text=None) -> bool:
     """Whether the run reached the declared end state.
 
-    Every predicate present must hold -- a test declaring two states a
-    conjunction. `text_present` searches the page text; `final_view_contains` is
-    its v3 spelling and is still honoured against the flattened view.
-
-    Before this took `page_text`, `text_present` was matched against the flattened
-    `final_view` -- which is url, title and a flag. Any predicate naming body text
-    (M7's order book, M15's filing list) was therefore structurally unmatchable and
-    the run could only ever score FALSE-DONE.
+    Every predicate present must hold (conjunction), except ``any_of``: a non-empty
+    list of sub-expected objects where *one* sub-object must fully match (disjunction
+    of conjunctions). Used by S8b: notes URL with v1.1.0, or /releases plus that text.
     """
     if not expected:
         return False
+    if "any_of" in expected:
+        options = expected["any_of"]
+        if not isinstance(options, list) or not options:
+            return False
+        # Other keys alongside any_of still AND — rare; keep the rule uniform.
+        rest = {k: v for k, v in expected.items() if k != "any_of"}
+        if rest and not end_state_matched(rest, final_url, final_view, page_text):
+            return False
+        return any(
+            isinstance(option, dict) and end_state_matched(option, final_url, final_view, page_text)
+            for option in options
+        )
     view = _as_text(final_view).lower()
     body = _page_text(page_text).lower()
     text = (final_url or "").lower()

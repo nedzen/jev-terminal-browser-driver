@@ -108,16 +108,10 @@ def done_probability(decision: dict | None) -> float:
 
 
 def done_acceptable(decision: dict | None, page: dict | None, *, executed_actions=None) -> bool:
-    """Whether a DONE may end the run.
+    """Whether a DONE may end the run (confidence + shell + zero-action floor).
 
-    `executed_actions` is the count of actions the run actually performed. When it
-    is 0 the DONE is claiming the start page was already the end state, so it must
-    clear `ZERO_ACTION_DONE_MIN` as well -- DONE_MIN alone is a confidence gate, and
-    confidence is not evidence that the work got done.
-
-    `None` means "the caller does not know", and applies `DONE_MIN` only. That
-    default keeps every existing caller honest rather than silently tightening a
-    gate they were not asking about; `DriveAgent` passes the real count.
+    Mid-band acted-DONE goal evidence is applied in ``verdict()`` / callers that
+    have a goal — this helper stays the pure probability/shell gate for unit tests.
     """
     probability = done_probability(decision)
     if probability < DONE_MIN:
@@ -384,10 +378,12 @@ class Evidence:
     degenerate_streak: int
     looked: int
     look_budget: int
+    has_browser: bool
     has_scroll_down: bool
     short_page: bool
     model_history: int
     end_state: bool
+    goal_evidenced: bool = False
 
 
 @dataclass(frozen=True)
@@ -399,12 +395,18 @@ class Verdict:
     stop_reason: str | None = None
 
 
-def verdict(ev: Evidence) -> Verdict:
-    """One ordered decision for the finish/stop pile.
+# Acted DONEs in [DONE_MIN, ACTED_DONE_EVIDENCE_MAX) need goal-token evidence.
+# Live S2a window-2: DONE 0.68 after 5 clicks on the wrong page cleared DONE_MIN alone.
+ACTED_DONE_EVIDENCE_MAX = 0.8
 
-    Order matches DriveAgent.command("act"): low-confidence → weak DONE →
-    BLOCKED look-further/rescue. Bug fixes live here: ``model_history`` ignores
-    auto scrolls (#23); ``end_state`` uses whole-word/host-excluded evidence (#26).
+
+def verdict(ev: Evidence) -> Verdict:
+    """Finish/stop decision. DriveAgent owns browser I/O.
+
+    BLOCKED order matches main: look-budget/no-browser → shell/short *wait*
+    (even with no scroll_down) → scroll or rescue. snapshot.js only offers
+    scroll_down when the page is taller than the viewport, so short loading
+    pages must wait first (Kalshi/Polymarket/X).
     """
     if ev.degenerate_streak >= 2:
         return Verdict("stop", "blocked", "low_confidence")
@@ -417,11 +419,16 @@ def verdict(ev: Evidence) -> Verdict:
             "confidence": ev.done_p,
         }
         page = {"text": "" if ev.shell else "A real paragraph of visible text that is not only short labels."}
-        if done_acceptable(fake, page, executed_actions=executed):
+        floor_ok = done_acceptable(fake, page, executed_actions=executed)
+        mid_band = (
+            isinstance(executed, int)
+            and executed > 0
+            and DONE_MIN <= ev.done_p < ACTED_DONE_EVIDENCE_MAX
+        )
+        if floor_ok and (not mid_band or ev.goal_evidenced):
             return Verdict("allow")
         if ev.top_op == "DONE" and ev.end_state:
             return Verdict("allow")
-        # Shell: agent still tries hydrate before stopping — kind alone drives that.
         if ev.shell:
             return Verdict("reject_done")
         if ev.weak_done + 1 >= 2:
@@ -429,12 +436,18 @@ def verdict(ev: Evidence) -> Verdict:
         return Verdict("reject_done")
 
     if ev.choice == "BLOCKED":
-        if ev.looked >= ev.look_budget or not ev.has_scroll_down:
+        # Match main `_look_further`: budget or missing browser first, then wait on
+        # shell/short while budget remains (scroll_down may be absent), then scroll.
+        if ev.looked >= ev.look_budget or not ev.has_browser:
             if ev.end_state:
                 return Verdict("rescue_done", "done", "end_state_reached")
             return Verdict("noop")
         if ev.shell or ev.short_page:
             return Verdict("look_wait")
+        if not ev.has_scroll_down:
+            if ev.end_state:
+                return Verdict("rescue_done", "done", "end_state_reached")
+            return Verdict("noop")
         return Verdict("look_scroll")
 
     return Verdict("noop")

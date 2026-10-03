@@ -5,7 +5,8 @@
   "tier": "R",
   "satisfiable": true,
   "expected": {
-    "url_contains": "coinmarketcap.com"
+    "url_host_path": "coinmarketcap.com",
+    "final_view_contains": "Market Cap"
   },
   "hit_line": "error honestly recorded OR page read",
   "miss_line": "silent failure",
