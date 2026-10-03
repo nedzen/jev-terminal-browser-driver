@@ -127,6 +127,21 @@ scripts/drive.py
    selects, ARIA roles), assigns stable IDs (`e1…e250`), records per-element
    guards (value/checked/context) and a page marker, and reads at most 6,000
    chars of visible text. Actions are capped at 250.
+
+   **Freshness, and the driver's own URL fragment.** Before any input the marker
+   is compared against the one the decision was made from; a difference means the
+   page moved, and the decision is discarded rather than executed. The marker
+   embeds `location.href`, and the driver appends `#jev=<time_ns()>` to every new
+   tab's URL so a re-opened tab is distinct in CDP's target list. That fragment
+   is the driver's own bookkeeping, not site state, and it is not stable across
+   calls - so both comparisons (`MARKER`, and `page_key`, which reaches
+   `location.href` by a different route) normalize it away first. Without that, a
+   difference the driver authored itself, with an unchanged `performance.timeOrigin`
+   and an unchanged page, was reported as a stale page: the 2026-10-02T22:29 and
+   22:41 runs on example.com ended `click_not_sent` after two `field_changed` on
+   a link that was fully actionable. Only `jev=<digits>` inside the fragment is
+   dropped; a site fragment (`#section`, `#/route/2`) is the site moving and
+   still counts.
 3. **Decision.** `jev_driver/model.py` posts the state + goal to TypeSafe
    (`https://api.typesafe.ai/v1/systemone`, model `jev-1.13.0`, bearer
    `TYPESAFE_API_KEY`). `DECISION_GATE_URL` overrides the endpoint. The response must be a full probability distribution
