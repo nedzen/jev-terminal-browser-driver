@@ -46,8 +46,16 @@ both real drives, both HIT; the duplication is operator re-invocation, noted.
 | S3a-725f4bb5df | S3a | x.com | R | mandatory | MISS | sev-2 | wrong-end-state | action_budget | x.com/home | 13 | 0 | 1593.0 | feca83330992f854 | 1007df3 | 8.3 |
 | S3a-07db7b4b5a | S3a | x.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | x.com/home | 5 | 0 | 1653.0 | feca83330992f854 | 1007df3 | 5.41 |
 | S3b-e028dae50b | S3b | kalshi.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | kalshi.com/calendar | 2 | 0 | 969.0 | feca83330992f854 | 9ce1fe9 | 8.54 |
-| S4a-4a14b4702c | S4a | github.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | kalshi.com/calendar | 5 | 0 | 2037.0 | feca83330992f854 | 9ce1fe9 | 2.92 |
-| S4b-909fd7d95e | S4b | github.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | kalshi.com/calendar | 4 | 0 | 1311.0 | feca83330992f854 | 9ce1fe9 | 2.16 |
+| S4a-4a14b4702c | S4a | github.com | R | mandatory | VOID | - | harness-isolation | model_blocked | kalshi.com/calendar | 5 | 0 | 2037.0 | feca83330992f854 | 9ce1fe9 | 2.92 |
+| S4b-909fd7d95e | S4b | github.com | R | mandatory | VOID | - | harness-isolation | model_blocked | kalshi.com/calendar | 4 | 0 | 1311.0 | feca83330992f854 | 9ce1fe9 | 2.16 |
+
+VOID notes (§triaged audit 2026-10-03): both inherited S3b's Kalshi tab
+(no-url re-attach + navigate:False) — never reached a GitHub page; verdicts
+meaningless, excluded from rates. S4a manifest also fixed (empty
+text_present was vacuous → human_judged). 07:0x window ran without isolation
+guarantees (log_dir/quarantine silent no-ops; isolation_report hardcoded
+True) — other rows stand but unguaranteed until re-run. S5b/S7b sev-1 rows
+flagged for evidence re-read (landed on prior-run pages).
 | S5a-f5ae22880b | S5a | github.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | github.com/trending | 3 | 0 | 2273.0 | feca83330992f854 | f39449d | 4.24 |
 | S5b-a69a3c12bf | S5b | en.wikipedia.org | R | mandatory | FALSE-DONE | sev-1 | false-done | model_done | en.wikipedia.org/wiki/String_trimmer | 1 | 0 | 2934.0 | feca83330992f854 | f39449d | 1.21 |
 | S5c-e77a5c3c9e | S5c | x.com | R | mandatory | MISS | sev-2 | wrong-end-state | action_budget | x.com/home | 13 | 0 | 1553.0 | feca83330992f854 | 551783c | 7.97 |
