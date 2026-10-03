@@ -45,3 +45,6 @@ both real drives, both HIT; the duplication is operator re-invocation, noted.
 | S2c-R-a1bf0d1770 | S2c-R | polymarket.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | polymarket.com/ | 5 | 0 | 980.0 | feca83330992f854 | fc91f2c | 5.07 |
 | S3a-725f4bb5df | S3a | x.com | R | mandatory | MISS | sev-2 | wrong-end-state | action_budget | x.com/home | 13 | 0 | 1593.0 | feca83330992f854 | 1007df3 | 8.3 |
 | S3a-07db7b4b5a | S3a | x.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | x.com/home | 5 | 0 | 1653.0 | feca83330992f854 | 1007df3 | 5.41 |
+| S3b-e028dae50b | S3b | kalshi.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | kalshi.com/calendar | 2 | 0 | 969.0 | feca83330992f854 | 9ce1fe9 | 8.54 |
+| S4a-4a14b4702c | S4a | github.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | kalshi.com/calendar | 5 | 0 | 2037.0 | feca83330992f854 | 9ce1fe9 | 2.92 |
+| S4b-909fd7d95e | S4b | github.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | kalshi.com/calendar | 4 | 0 | 1311.0 | feca83330992f854 | 9ce1fe9 | 2.16 |
