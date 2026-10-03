@@ -12,8 +12,8 @@ from plugin.core.result import build_tick_row
 from plugin.core.trace import build_trace_record, last_decision, target_labels, top_probs
 
 from . import browser as browser_mod
+from . import instances as proc_mod
 from . import model as model_mod
-from . import processes as proc_mod
 from .browser import _log_continuity, find_continuable_page, set_lease
 from .cdp import connect, list_browsers
 from .discover import WatchUnavailable, discover
@@ -372,29 +372,35 @@ def parse_args(argv=None):
     return args
 
 
-def main(argv=None) -> int:
-    args = parse_args(argv)
-    if args.check:
-        # Statuses only: no browser, no model call, no key material. Exit 0 either
-        # way so a shell script can read the JSON without treating a missing
-        # dependency as a crash.
-        print(json.dumps(preflight()))
-        return 0
+def _print_blocked(error: str, *, stream=None, flush: bool = False) -> int:
+    """Print a blocked status row and return exit code 1. Shared by early rejects.
+
+    ``stream`` is resolved at call time so pytest's capsys (and any other
+    stderr swap) still sees the row — a default of ``sys.stderr`` would bind
+    the import-time handle forever.
+    """
+    print(json.dumps({"status": "blocked", "error": error}), file=stream or sys.stderr, flush=flush)
+    return 1
+
+
+def _prepare_drive(args):
+    """Validate drive args and install the denylist. Returns an exit code on reject."""
     if args.max_steps < 1 or args.max_steps > MAX_STEPS:
-        print(json.dumps({"status": "blocked", "error": f"--max-steps must be 1..{MAX_STEPS}"}), file=sys.stderr)
-        return 1
+        return _print_blocked(f"--max-steps must be 1..{MAX_STEPS}")
     if args.time_budget_s is not None and not (1 <= args.time_budget_s <= TIME_BUDGET_CAP):
-        err = f"--time-budget-s must be 1..{TIME_BUDGET_CAP}"
-        print(json.dumps({"status": "blocked", "error": err}), file=sys.stderr)
-        return 1
+        return _print_blocked(f"--time-budget-s must be 1..{TIME_BUDGET_CAP}")
     # Installed before the agent is built: the denylist is read by every decision
     # this run makes, and a pattern that cannot compile is rejected here rather
     # than after a browser and a paid call.
     try:
         model_mod.set_deny_names(args.deny_names)
     except ValueError as exc:
-        print(json.dumps({"status": "blocked", "error": str(exc)}), file=sys.stderr)
-        return 1
+        return _print_blocked(str(exc))
+    return None
+
+
+def _drive(args) -> int:
+    """Discover a browser, lease a tab, run ticks. Same exits as the pre-split main."""
     url = args.url
     launch = url or DEFAULT_FIXTURE.as_uri()
     # Spawn accounting starts here, so the count is about THIS run and not about
@@ -408,8 +414,7 @@ def main(argv=None) -> int:
             background=args.background,
         )
     except WatchUnavailable as exc:
-        print(json.dumps({"status": "blocked", "error": str(exc)}), flush=True)
-        return 1
+        return _print_blocked(str(exc), stream=sys.stdout, flush=True)
     if found.auto_launched:
         # This run provisioned the pane, so it started one browser process.
         # terminal-browser forks that pane itself, so the pid comes from
@@ -574,6 +579,20 @@ def main(argv=None) -> int:
                     write_event(_run_event(identity, stage="finish", agent=agent))
             finally:
                 _record_processes(args.goal)
+
+
+def main(argv=None) -> int:
+    args = parse_args(argv)
+    if args.check:
+        # Statuses only: no browser, no model call, no key material. Exit 0 either
+        # way so a shell script can read the JSON without treating a missing
+        # dependency as a crash.
+        print(json.dumps(preflight()))
+        return 0
+    rejected = _prepare_drive(args)
+    if rejected is not None:
+        return rejected
+    return _drive(args)
 
 
 if __name__ == "__main__":

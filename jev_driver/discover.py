@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
-from . import lifecycle as _lifecycle
+from . import instances as _instances
 from .cdp import TB, browser_websocket_url, list_browsers
 
 POST_LAUNCH_TRIES = 5
@@ -228,7 +228,7 @@ def resolve_terminal_browser() -> str | None:
 def _provision_env() -> dict:
     """Child env with every herdr trace stripped.
 
-    Delegates to `lifecycle.scrubbed_env`, which strips the `HERDR_*` prefix *and* the
+    Delegates to `instances.scrubbed_env`, which strips the `HERDR_*` prefix *and* the
     variables that carry a herdr trace without it — verified live: `SSH_AUTH_SOCK`
     points at ~/.config/herdr/herdr.sock.agent and `TERM_PROGRAM` is "herdr".
 
@@ -236,14 +236,14 @@ def _provision_env() -> dict:
     adapter chain picks cmux correctly once the prefix is gone, but its `open` only
     offers `--split`, which always splits the *current surface*. Under a herdr pane
     that surface is the agent's own pane, so a correct adapter still nests. See
-    `lifecycle.root_terminal_blocker`.
+    `instances.root_terminal_blocker`.
 
     CMUX_* is deliberately KEPT. On the cmux path the caller is a cmux process
     that has to be told which workspace and surface to split; scrub that and the
     split lands wherever cmux's own default points, which is not necessarily the
     workspace the user is looking at.
     """
-    return _lifecycle.scrubbed_env()
+    return _instances.scrubbed_env()
 
 
 def cmux_context() -> dict | None:
@@ -647,7 +647,7 @@ def discover(
         if _in_cmux_context(env):
             LAST = _provision_cmux_split(launch_url, env=env)
             return LAST
-        blocked = _lifecycle.root_terminal_blocker(env)
+        blocked = _instances.root_terminal_blocker(env)
         if blocked:
             raise WatchUnavailable(blocked)
         LAST = _provision_terminal_browser(launch_url)

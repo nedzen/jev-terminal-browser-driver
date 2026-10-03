@@ -89,7 +89,7 @@ DONE (Batch C): per-head deterministic bypass with mixed/deterministic tagging; 
     explicit nulls where a row omits, and keeps its own page-text cap (1500) and
     ranked-head depth (8). write_event stays in jev_driver/runlog.py: it is the
     sanitize-and-append boundary, it also serves redact_for_wire (a property of
-    an outgoing body, not of this record), and processes/metrics/model patch its
+    an outgoing body, not of this record), and instances/metrics/model patch its
     module globals.
 
 Known duplication left in place (out of this batch's scope):

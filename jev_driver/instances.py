@@ -1,10 +1,9 @@
-"""Spawn accounting, orphan detection, and which code produced a run.
+"""Instance process evidence, root-terminal placement, and which code produced a run.
 
-Stdlib only, and nothing in here raises. This module is evidence, not control
-flow: a run that finished its work must not fail because a status check could
-not answer.
+Stdlib only, and nothing in the evidence paths raises. A run that finished its
+work must not fail because a status check could not answer.
 
-Three jobs, one per run:
+Jobs this module owns:
 
 - **Spawn accounting.** ``note_spawn()`` is the seam a process-creating call
   site reports to, ``runtime_spawn_count()`` is how many this run created. Until
@@ -12,8 +11,12 @@ Three jobs, one per run:
 - **Orphan detection.** close is detach-only (see ``browser.Browser.close``), so
   a leftover terminal-browser keeps a pane and a CDP port and nothing in the log
   mentions it. After close, ``orphan_report()`` asks ``ps`` who is still there.
-- **Provenance.** ``version_manifest()`` names the code behind a run: git commit,
-  a SHA-256 over the implementation files, and the interpreter.
+- **Code provenance.** ``version_manifest()`` names the code behind a run: git
+  commit, a SHA-256 over the implementation files, and the interpreter.
+- **Root-terminal placement.** terminal-browser splits the *current* surface.
+  When the driver runs inside a herdr pane that is itself a cmux surface,
+  splitting nests the browser inside the agent's own pane. ``scrubbed_env`` and
+  ``root_terminal_blocker`` are the production APIs discover uses for that.
 
 Zombie semantics — the part worth reading twice
 -----------------------------------------------
@@ -847,3 +850,80 @@ def write_version_manifest(manifest: dict | None = None, *, path=None) -> dict:
             except OSError:
                 pass
     return body
+
+
+# --------------------------------------------------------- root-terminal placement
+
+
+# Variables that carry a herdr trace without starting with HERDR_. Verified against
+# the live environment: `SSH_AUTH_SOCK` points at ~/.config/herdr/herdr.sock.agent and
+# `TERM_PROGRAM` is literally "herdr". Scrubbing only the HERDR_ prefix leaves both.
+NON_PREFIXED_HERDR_VARS = ("SSH_AUTH_SOCK", "TERM_PROGRAM", "TERM_PROGRAM_VERSION")
+
+_HERDR_SOCKET_MARKERS = ("herdr",)
+
+
+def is_nested_in_herdr(env=None) -> bool:
+    """True when this process is running inside a herdr pane."""
+    env = os.environ if env is None else env
+    return bool(env.get("HERDR_PANE_ID"))
+
+
+def scrubbed_env(env=None) -> dict:
+    """Child env with every herdr trace removed, not just the HERDR_* prefix.
+
+    The prefix scrub is necessary and not sufficient. Two live variables identify
+    herdr without the prefix -- `SSH_AUTH_SOCK` (herdr's agent socket) and
+    `TERM_PROGRAM=herdr` -- and either is enough for a child to conclude it is in a
+    herdr pane. `SSH_AUTH_SOCK` is removed rather than blanked: a socket path that
+    points nowhere is worse than an absent one, because an agent that finds it
+    unconnectable falls back to a different auth path rather than reporting no agent.
+
+    `PWD`/`OLDPWD` are left alone even when they mention `.herdr`: they are the
+    caller's working directory, which the child legitimately needs, and a worktree
+    path is not a terminal signal.
+    """
+    env = os.environ if env is None else env
+    kept = {}
+    for key, value in env.items():
+        if key.startswith("HERDR_"):
+            continue
+        if key in NON_PREFIXED_HERDR_VARS and _mentions_herdr(value):
+            continue
+        kept[key] = value
+    return kept
+
+
+def _mentions_herdr(value) -> bool:
+    text = str(value or "").lower()
+    return any(marker in text for marker in _HERDR_SOCKET_MARKERS)
+
+
+def root_terminal_blocker(env=None) -> str | None:
+    """Why provisioning cannot proceed at root level from here, or None if it can.
+
+    Returns a human-readable reason rather than a bool so the caller can put the
+    actual remedy in the operator's hands, which is the whole point of refusing
+    instead of nesting.
+
+    terminal-browser cannot be told to open a root-level tab. Its adapter chain
+    (`@zenbu-labs/pixel`) exposes split/sendText/focusPane and nothing that creates a
+    tab, and `open` takes only `--split <direction>`, which always acts on the current
+    surface. So the browser half of the fix is not available at this version; the
+    remedy belongs to whoever owns the outer terminal (cmux calls tabs "workspaces":
+    `cmux new-workspace --command ...`).
+    """
+    env = os.environ if env is None else env
+    if not is_nested_in_herdr(env):
+        return None
+    outer = env.get("CMUX_SURFACE_ID") and "cmux" or env.get("TERM_PROGRAM") or "the outer terminal"
+    return (
+        f"refusing to provision inside a herdr pane: terminal-browser splits the current "
+        f"surface, and this surface belongs to herdr, so the browser would nest inside the "
+        f"agent's own pane. This is only reached when cmux cannot be addressed directly (no "
+        f"CMUX_SOCKET_PATH + CMUX_WORKSPACE_ID); in a cmux workspace the cmux route runs "
+        f"instead and creates the split at cmux level. Otherwise, open a root-level tab in "
+        f"{outer} and run the drive there (cmux new-workspace --command ...). Scrubbing "
+        f"HERDR_* is not the fix: it changes which adapter terminal-browser picks but not "
+        f"which surface it splits."
+    )

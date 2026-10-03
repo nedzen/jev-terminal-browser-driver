@@ -16,7 +16,7 @@ from unittest.mock import Mock
 import pytest
 
 from jev_driver import cli, runlog
-from jev_driver import processes as proc
+from jev_driver import instances as proc
 from jev_driver.discover import Discovery
 from jev_driver.metrics import Metrics, metrics_path
 

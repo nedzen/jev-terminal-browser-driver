@@ -76,7 +76,7 @@ where it would be least visible:
 `write_event` and the redaction vocabulary stay in `jev_driver/runlog.py`.
 That module is the sanitize-and-append boundary, it also serves
 `redact_for_wire` (a property of an outgoing request body, not of this record),
-and `processes.py`, `metrics.py` and `model.py` reach into its module globals.
+and `instances.py`, `metrics.py` and `model.py` reach into its module globals.
 Moving it into the leaf both adapters load would put a wire concern there and
 break every module that patches those globals. The seam is left where it is: the
 core builds the record, `runlog` decides whether it may touch disk.
@@ -266,7 +266,7 @@ Chromium, no agent-browser daemon, no loopback scan, no desktop preview.
    --no-merge`. The CDP port comes from the JSON record `open` prints.
 5. Raise `WatchUnavailable`. There is no quieter fallback.
 
-**Provisioning refuses from inside a herdr pane** (`lifecycle.root_terminal_blocker`).
+**Provisioning refuses from inside a herdr pane** (`instances.root_terminal_blocker`).
 Scrubbing the environment is necessary but *not* the fix, and the distinction is
 worth keeping because the scrub was believed to be the fix for a long time. Verified
 against the live adapter chain in `@zenbu-labs/pixel@0.0.15`:
@@ -282,30 +282,23 @@ owns the outer terminal (cmux calls tabs workspaces: `cmux new-workspace --comma
 
 Two variables carry a herdr trace *without* the `HERDR_` prefix and were surviving
 the old scrub: `SSH_AUTH_SOCK` (pointing at `~/.config/herdr/herdr.sock.agent`) and
-`TERM_PROGRAM=herdr`. `lifecycle.scrubbed_env` removes both. `SSH_AUTH_SOCK` is
+`TERM_PROGRAM=herdr`. `instances.scrubbed_env` removes both. `SSH_AUTH_SOCK` is
 removed rather than blanked — a socket path that points nowhere is worse than an
 absent one, because an agent that finds it unconnectable falls back to another auth
 path instead of reporting no agent. A *non*-herdr `SSH_AUTH_SOCK` is preserved.
 
-### Provenance and the idle reaper
+### Provenance
 
 `~/.cache/wwwdrive/last-page.json` carries an `auto_launched` flag recording who
 opened the *browser*. Without it a browser the driver opened is indistinguishable
-from one the human opened once the process exits, so nothing is reclaimable and any
-reaper would have to guess. The flag is deliberately **not** added to
-`LAST_PAGE_KEYS`: that tuple is a presence test, so requiring it would make every
-record written before the flag existed read as no record at all. An absent flag
-reads as `unknown`, never as `false`.
-
-`lifecycle.reap_plan` decides and never acts. Order is the safety order — origin is
-settled before idleness is considered, so an instance of unknown origin is never
-reaped for being old, and an owner-opened instance is never reaped at all. Lease
-holders are exempt. The two TTLs are different objects on different clocks:
-`INSTANCE_IDLE_TTL_S` (900s) ages a live browser process so an abandoned one is
-reclaimed; `LAST_PAGE_TTL_S` (1800s) ages a continuity record so a stale *tab* is not
-re-attached to. The daemon DB stores `started_at` in **milliseconds**; `lifecycle._age_s`
-normalises, because compared raw against a seconds clock every instance reads as
-freshly started and the reaper silently never reaps anything.
+from one the human opened once the process exits. The flag is deliberately **not**
+added to `LAST_PAGE_KEYS`: that tuple is a presence test, so requiring it would make
+every record written before the flag existed read as no record at all. An absent
+flag is unknown provenance, never `false`. Spawn accounting, orphan evidence, and
+the root-terminal helpers live in `jev_driver/instances.py`. An idle-instance reaper
+was sketched in PR #27 as decide-only code (`reap_plan` / `strays`) but never wired
+to a production caller; that cluster is gone. `LAST_PAGE_TTL_S` (1800s) still ages a
+continuity record so a stale *tab* is not re-attached to.
 
 `watch=true` uses that same ladder. The only extra behavior is takeover:
 if the page changes under the driver, the run stops with "user took over
