@@ -10,8 +10,8 @@ import subprocess
 import pytest
 from conftest import DEFAULT_FAKE_ACTION, Clock, FakeBrowser, _Time
 
-from jev_driver import agent as loop
 from jev_driver import cli, drive_agent
+from jev_driver import drive_agent as loop
 from jev_driver.browser import StalePage, fingerprint
 from jev_driver.discover import Discovery
 from plugin import handler
@@ -59,7 +59,7 @@ def clock(monkeypatch):
 
 @pytest.fixture
 def browsers(monkeypatch):
-    """Patch the Browser agent.py builds, and hand back the fakes it created."""
+    """Patch the Browser DriveAgent builds, and hand back the fakes it created."""
     made = []
 
     def factory(url):

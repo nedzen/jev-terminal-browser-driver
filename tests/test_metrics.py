@@ -15,8 +15,8 @@ import pytest
 from conftest import DEFAULT_FAKE_ACTION, Clock, _Time
 from conftest import FakeBrowser as _SharedFakeBrowser
 
-from jev_driver import agent as loop
 from jev_driver import drive_agent
+from jev_driver import drive_agent as loop
 from jev_driver import metrics as metrics_mod
 from jev_driver.browser import Browser, StalePage
 from jev_driver.metrics import Metrics, instrument_browser, metrics_path

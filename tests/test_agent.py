@@ -8,7 +8,7 @@ from unittest.mock import Mock
 import httpx
 import pytest
 
-from jev_driver import agent as loop
+from jev_driver import drive_agent as loop
 from jev_driver import model
 from jev_driver.browser import StalePage, browser_operation, fingerprint
 
@@ -177,7 +177,7 @@ def test_missing_text_credential_stops_before_guessing(monkeypatch):
 
 @pytest.fixture
 def runner():
-    a = loop.Agent.__new__(loop.Agent)
+    a = loop.DriveAgent.__new__(loop.DriveAgent)
     a.screenshots = False
     a.pending_text = None
     p = page()

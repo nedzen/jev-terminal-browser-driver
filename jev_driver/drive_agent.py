@@ -1,12 +1,14 @@
-"""Driver-side Agent subclass. agent.py stays verbatim."""
+"""Drive loop: observe → decide → act, plus finish/stop gates and HUD."""
 
+import base64
 import re
 import time
+from pathlib import Path
 
-from .agent import Agent
-from .browser import StalePage, without_counts
+from .browser import Browser, StalePage, without_counts
 from .metrics import Metrics, instrument_browser
-from .model import action_space, field_context, field_text
+from .model import action_space, choose, field_context, field_text
+from .questions import MAX_STEPS
 from .readiness import (
     REASON_WHY,
     Evidence,
@@ -108,17 +110,46 @@ def _ranked(probs, limit=6):
     items = sorted((probs or {}).items(), key=lambda kv: -float(kv[1] or 0))
     return [[str(key), round(float(val), 3)] for key, val in items[:limit]]
 
-class DriveAgent(Agent):
-    """Exempt advancing scrolls from the 3-repeat guard; optional debug HUD."""
+class DriveAgent:
+    """Observe → decide → act, with finish/stop gates and optional debug HUD."""
 
-    def __init__(self, url, goals, *, debug=False, time_budget_s=None, **kwargs):
+    def __init__(self, url, goals, *, debug=False, time_budget_s=None, record_dir=None, screenshots=False):
         started = time.perf_counter()
-        super().__init__(url, goals, **kwargs)
+        task = goals.strip() if isinstance(goals, str) else "\n".join(goals).strip()
+        if not task:
+            raise ValueError("Supply a task")
+        plan = [task]
+        self.pending_text = None
+        self.browser = Browser(url)
+        self.record_dir = Path(record_dir) if record_dir else None
+        self.screenshots = screenshots or bool(record_dir)
+        try:
+            page = self.browser.observe(screenshot=self.screenshots)
+        except Exception:
+            self.browser.close()
+            raise
+        self.state = dict(
+            browser=self.browser,
+            goal="\n".join(plan),
+            page=page,
+            decision=None,
+            history=[],
+            status="ready",
+            plan=plan,
+            plan_index=0,
+            decisions=[],
+            text_calls=[],
+            elapsed_ms=0,
+            started_at=None,
+            record=bool(self.record_dir),
+        )
+        if self.record_dir:
+            self.record_dir.mkdir(parents=True, exist_ok=True)
+            (self.record_dir / "000000.jpg").write_bytes(base64.b64decode(page["screenshot"]))
         self._metrics = Metrics()
         self._metrics.record_startup((time.perf_counter() - started) * 1000)
         self.debug = debug
-        # Optional inner deadline. timeout_s stays the
-        # outer subprocess kill; this one is checked inside the tick loop.
+        # Optional inner deadline; timeout_s stays the outer subprocess kill.
         self.time_budget_s = None if time_budget_s in (None, "") else int(time_budget_s)
         self._budget_deadline = None
         self._budget_stopped = False
@@ -135,6 +166,134 @@ class DriveAgent(Agent):
             if debug:
                 browser.paint_hud(self._hud_payload())
 
+    def snapshot(self):
+        return {
+            **{k: v for k, v in self.state.items() if k != "browser"},
+            "elements": action_space(self.state["page"]["actions"])[0],
+        }
+
+    def run(self):
+        while self.state["status"] not in {"done", "blocked"}:
+            yield self.command("tick")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
+
+    def _core_command(self, name, body=None):
+        """Core predict/act/tick (upstream loop + #191 cache key)."""
+        body = body or {}
+        state = self.state
+        if name == "tick":
+            try:
+                self.command("predict", {})
+                return self.command("act", {"fingerprint": state["page"]["fingerprint"]})
+            except StalePage:
+                state["decision"] = None
+                state["status"] = "ready"
+                state["page"] = state["browser"].observe(screenshot=self.screenshots)
+                state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
+                return self.snapshot()
+        if name == "predict":
+            if not state["browser"]:
+                raise ValueError("Start a demo first")
+            if state["started_at"] is None:
+                state["started_at"] = time.perf_counter()
+            if not state["browser"].fresh(state["page"]):
+                state["page"] = state["browser"].observe(screenshot=self.screenshots)
+            state["decision"] = None
+            if state["status"] in {"done", "blocked"}:
+                raise ValueError("This run has stopped. Start a fresh demo.")
+            if len(state["decisions"]) >= MAX_STEPS * 2:
+                raise ValueError("Reached the demo's model-call budget")
+            state["decision"] = choose(state["page"], state["goal"], state["history"])
+            state["decisions"].append(
+                {
+                    **state["decision"],
+                    "fingerprint": state["page"]["fingerprint"],
+                    "elapsed_ms": round((time.perf_counter() - state["started_at"]) * 1000),
+                }
+            )
+            state["status"] = "predicted"
+            return self.snapshot()
+        if name != "act":
+            raise ValueError("Unknown command")
+        decision, page = state["decision"], state["page"]
+        if not decision or body.get("fingerprint") != page["fingerprint"]:
+            raise ValueError("Observe and choose before acting")
+        # Consume once before mutation — a retry cannot double-click.
+        state["decision"] = None
+        selected = decision["choice"]
+        if selected in {"DONE", "BLOCKED"}:
+            if not state["browser"].fresh(page, {"kind": "done"}):
+                state["status"] = "ready"
+                raise StalePage("Page changed since the decision. Choose again.")
+            state["status"] = "done" if selected == "DONE" else "blocked"
+            state["plan_index"] = int(selected == "DONE")
+            state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
+            return self.snapshot()
+        action = next(a for a in page["actions"] if a["id"] == selected)
+        if len(state["history"]) >= MAX_STEPS:
+            state["status"] = "blocked"
+            raise ValueError(f"Stopped at the {MAX_STEPS}-action demo budget")
+        text, helper = None, None
+        if action["kind"] == "fill":
+            if not state["browser"].fresh(page):
+                raise StalePage("Page changed before text generation. Choose again.")
+            context = field_context(state["goal"], action, page, state["history"])
+            # Node is in the cache key so same-labeled fields do not share typed text (#191).
+            cache_key = (action.get("node"), context)
+            if self.pending_text and self.pending_text[0] == cache_key:
+                _, text, helper = self.pending_text
+            else:
+                text, helper = field_text(context)
+                self.pending_text = (cache_key, text, helper)
+                state["text_calls"].append({**helper, "field": action["label"], "value": text})
+        state["browser"].act(action, page, text=text)
+        self.pending_text = None
+        state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
+        state["history"].append(
+            {
+                "step": len(state["history"]) + 1,
+                "action": action["label"],
+                "kind": action["kind"],
+                "choice": selected,
+                "probability": decision["probabilities"][selected],
+                "confidence": decision["confidence"],
+                "latency_ms": decision["latency_ms"],
+                "text": text,
+                "text_helper": helper["model"] if helper else None,
+                "text_latency_ms": helper["latency_ms"] if helper else 0,
+                "operation": decision["operation"],
+                "target": decision["target"],
+                "page_changed": None,
+                "url": page["url"],
+                "usage": decision["usage"],
+                "executed_ms": round((time.perf_counter() - state["started_at"]) * 1000),
+                "elapsed_ms": state["elapsed_ms"],
+            }
+        )
+        state["page"] = state["browser"].observe(screenshot=self.screenshots)
+        state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
+        state["history"][-1].update(
+            page_changed=state["page"]["fingerprint"] != page["fingerprint"],
+            url=state["page"]["url"],
+            elapsed_ms=state["elapsed_ms"],
+        )
+        if state["record"]:
+            (self.record_dir / f"{state['elapsed_ms']:06d}.jpg").write_bytes(
+                base64.b64decode(state["page"]["screenshot"])
+            )
+        repeated = state["history"][-3:]
+        state["status"] = (
+            "blocked"
+            if len(repeated) == 3 and all(h["page_changed"] is False and h["kind"] != "wait" for h in repeated)
+            else "ready"
+        )
+        return self.snapshot()
+
     @property
     def metrics(self) -> Metrics:
         """This run's counters. Created on demand, so a bare instance still works."""
@@ -146,7 +305,7 @@ class DriveAgent(Agent):
         """Close the browser, then write this run's counters. Metrics never break cleanup."""
         started = time.perf_counter()
         try:
-            super().close()
+            self.browser.close()
         finally:
             self._write_metrics((time.perf_counter() - started) * 1000)
 
@@ -198,19 +357,14 @@ class DriveAgent(Agent):
     def command(self, name, body=None):
         if name == "predict":
             if self._time_budget_spent():
-                # Deadline already gone: stop without spending a model call.
                 return self._stop_time_budget()
             self._start_time_budget()
-            snap = super().command(name, body)
+            snap = self._core_command(name, body)
             self.metrics.record_jev((self.state.get("decision") or {}).get("latency_ms"))
             self._paint_hud()
             return snap
         if name == "act":
             if self._time_budget_spent() and _performs_input(self.state.get("decision")):
-                # The model call outlived the deadline: drop it unexecuted so the
-                # page is never mutated by a decision nobody waited for. DONE and
-                # BLOCKED are exempt; they type and click nothing, so a spent clock
-                # must not turn a free finish into a failure.
                 return self._stop_time_budget()
             rejected = self._stop_low_confidence() or self._reject_weak_done() or self._look_further()
             if rejected is not None:
@@ -227,7 +381,7 @@ class DriveAgent(Agent):
             steps_before = len(self.state.get("history") or [])
             typed_before = len(self.state.get("text_calls") or [])
             try:
-                snap = super().command("act", body)
+                snap = self._core_command("act", body)
             except StalePage as exc:
                 self._note_text_helper(typed_before)
                 self.metrics.record_stale()
@@ -237,9 +391,6 @@ class DriveAgent(Agent):
                         "event": "stale",
                         "goal": self.state.get("goal"),
                         "kind": decision.get("operation"),
-                        # The label, or nothing. A bare target key here used to read
-                        # as `label: "1"`, which looks like a control called "1" and
-                        # hides the fact that the label was never recovered.
                         "label": self._decision_label(decision, self.state.get("page")) or None,
                         "target": decision.get("target"),
                         "why": str(exc),
@@ -254,7 +405,7 @@ class DriveAgent(Agent):
                 if self._note_unexecuted(exc):
                     self._paint_hud()
                     return self.snapshot()
-                self._metrics_error = exc  # the run dies here; record why, not what it said
+                self._metrics_error = exc
                 raise
             self._note_text_helper(typed_before)
             if chosen is not None and len(self.state.get("history") or []) > steps_before:
@@ -265,7 +416,7 @@ class DriveAgent(Agent):
             snap = self._maybe_unblock_scroll(snap, before_y)
             self._paint_hud()
             return snap
-        snap = super().command(name, body)
+        snap = self._core_command(name, body)
         if name in {"predict", "tick"}:
             self._paint_hud()
         return snap

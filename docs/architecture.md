@@ -14,9 +14,9 @@ scripts/mcp.py          stdio MCP server
 scripts/drive.py        → jev_driver.cli
 scripts/live/           S-batch harness + manifests/
 jev_driver/
-  cli.py                argparse, lease, tick loop entry
-  drive_agent.py        finish/stop gates, HUD, retries
-  agent.py              upstream-verbatim act/predict loop (do not merge)
+  cli.py                argparse; discover/lease/open/tick helpers
+  drive_agent.py        observe→decide→act loop, finish/stop gates, HUD
+  agent.py              compatibility alias: Agent = DriveAgent
   readiness.py          DONE thresholds, end_state_reached, Evidence+verdict()
   browser.py            Browser class; re-exports lease/probe/ops for callers
   lease.py              tab lease, last-page memory, tab-open helpers

@@ -9,8 +9,8 @@ import json
 import pytest
 from conftest import DEFAULT_FAKE_ACTION, FakeBrowser
 
-from jev_driver import agent as loop
 from jev_driver import cli, drive_agent
+from jev_driver import drive_agent as loop
 from jev_driver.readiness import REASON_WHY, done_acceptable
 
 URL = "https://example.test/widget"
