@@ -77,6 +77,9 @@ Calibrated from live sev-1 rows — see [live-testing.md](live-testing.md) and
 - Credentials in visible text are redacted before the model request
   (`runlog.redact_for_wire`).
 - Per-test denylists on R-tier live manifests.
+- Agent contract is the `drive` / `read` descriptions in `plugin/__init__.py`
+  (Hermes does not load these markdown docs). `background: true` attaches an
+  existing `cdp_url` only — it never launches a hidden browser.
 
 ## Envelope
 
