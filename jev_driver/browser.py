@@ -944,8 +944,40 @@ def _clickable(live: bool, hit: bool, telemetry: dict) -> bool:
     return hit
 
 
+def _enter_is_read_only_submit(action: dict) -> bool:
+    """Whether Enter on this field is a search submit, which only navigates.
+
+    Enter is dispatched blind: `browser_operation` sends a bare keyDown/keyUp with
+    no node and no hit-test, so it lands on whatever the browser has focused rather
+    than on the field the model chose. That is safe while the field is a search box,
+    because submitting one navigates to a result list and mutates nothing. It is not
+    safe on a form field: the same keypress submits the form it belongs to.
+
+    `searchbox` is the role snapshot.js assigns to `input[type=search]` and to
+    nothing else, so this is a fact about the element rather than a guess read off
+    its label. A `textbox` named "Search" does not qualify, and neither does a
+    combobox: an autocomplete's Enter selects a suggestion and can carry a form
+    with it. Deliberately narrow — an unverifiable guess here is a mutation.
+    """
+    return (action.get("role") or "") == "searchbox"
+
+
 def _offer_enter(page: dict | None) -> None:
-    """Press Enter is its own action once a field holds text. Jev does not imply it."""
+    """Press Enter is its own action once a field can carry a submit. Jev does not imply it.
+
+    Two ways a field qualifies, and they are not interchangeable:
+
+    - It holds text. That is the original rule and it stays: a filled field is a
+      field the run has already committed to, so offering the submit costs nothing
+      that filling it did not already cost.
+    - It is a search box. Offering Enter without a value closes the no-button
+      search path, which is where the submit was otherwise never offered at all.
+
+    A non-search field that merely exists does not qualify. Widening to every
+    fillable field would put a blind keypress in reach of every comment box and
+    checkout on the page; see `_enter_is_read_only_submit` for why that is the
+    line, and docs/architecture.md for the audit behind it.
+    """
     if not isinstance(page, dict):
         return
     actions = page.get("actions")
@@ -953,7 +985,11 @@ def _offer_enter(page: dict | None) -> None:
         return
     if any(item.get("id") == "press_enter" for item in actions):
         return
-    if any(item.get("kind") == "fill" and str(item.get("value") or "").strip() for item in actions):
+    if any(
+        item.get("kind") == "fill"
+        and (str(item.get("value") or "").strip() or _enter_is_read_only_submit(item))
+        for item in actions
+    ):
         actions.append({"id": "press_enter", "kind": "enter", "label": "Press Enter"})
 
 

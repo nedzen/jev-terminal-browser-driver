@@ -200,8 +200,13 @@ a run that reached its end state, so the threshold binds only runs that never
 moved off their start URL. A covered
 fill target is focused and typed into. Fill freshness follows that field,
 not the rest of the page, so a changing feed does not cancel a search box.
-Once a field holds text, `Press Enter` is offered as its own action. Jev
-never implies the key. Two decisions that still execute nothing stop the
+`Press Enter` is offered as its own action once a field can carry a
+submit: either it holds text (the original rule — a filled field is one the
+run already committed to), or it is a `searchbox`, which gets it with nothing
+typed so a search page with no Search button still has a submit path. The
+`searchbox` role comes from `input[type=search]` and nothing else, so it is a
+fact about the element rather than a guess read off a label. Jev never implies
+the key. Two decisions that still execute nothing stop the
 run. The log records each act (`via` pointer, focus, wheel, or enter), each
 rejected `DONE`, and each stale attempt. Stops carry `reason` plus the
 visible text. Screenshot goals return that text immediately and do not act.
@@ -308,6 +313,26 @@ prompts:
   `chrome-extension://`, and workers are skipped. `target=_blank` pop-ups do
   not join the session and are treated as `BLOCKED`.
 - **Never** run `terminal-browser shutdown` — it kills every pane's browser.
+- **`Press Enter` is scoped to search submits.** `browser_operation` handles
+  `kind: "enter"` by dispatching a bare `keyDown`/`keyUp` with no node, no
+  `evaluate`, and no hit-test — unlike click and fill, which resolve the node
+  and hit-test it. It is therefore a *focus-scoped, untargeted* keypress: it
+  lands on whatever the browser has focused, not on the field the model chose.
+  Two consequences, both load-bearing:
+  - Enter is offered on a `searchbox` even when empty, because submitting a
+    search navigates to a result list and mutates nothing.
+  - Enter is **not** offered on an empty non-search field. The audited-and-
+    rejected widening was "any focused/fillable text field": that would put a
+    blind keypress in reach of every comment box, checkout and message field on
+    the page, where the same keypress submits the enclosing form. `deny_names`
+    is not a mitigation for that — it filters by *label*, and the control's
+    label is the constant `"Press Enter"` on every page, so a caller who wants
+    Enter gone must deny that one string; there is no per-form granularity to
+    configure. A `textbox` labelled "Search" and an autocomplete `combobox` are
+    both excluded for the same reason: the label is a guess, and a combobox's
+    Enter selects a suggestion that can carry a form with it.
+  - Withdrawing the feature wholesale is possible and cheap: `deny_names:
+    ["^Press Enter$"]` removes the control from the action space.
 - Shared cookies/profile: the driver sees the browser's profile. Don't point
   it at logged-in sessions you don't want automated.
 
