@@ -320,13 +320,8 @@ def _prepare_drive(args):
         return _print_blocked(str(exc))
     return None
 
-def _drive(args) -> int:
-    """Discover a browser, lease a tab, run ticks. Same exits as the pre-split main."""
-    url = args.url
-    launch = url or DEFAULT_FIXTURE.as_uri()
-    # Spawn accounting starts here, so the count is about THIS run and not about
-    # the process lifetime — one MCP server serves many runs per process.
-    proc_mod.reset_spawns()
+def _discover_browser(args, launch: str):
+    """Discover (and optionally note a spawn). Returns found, or an exit code."""
     try:
         found = discover(
             explicit=args.cdp_url,
@@ -337,141 +332,149 @@ def _drive(args) -> int:
     except WatchUnavailable as exc:
         return _print_blocked(str(exc), stream=sys.stdout, flush=True)
     if found.auto_launched:
-        # This run provisioned the pane, so it started one browser process.
-        # terminal-browser forks that pane itself, so the pid comes from
-        # `ls --all --json` matched by the port this run is driving. Without it
-        # the spawn is counted but untracked, and the close-time check can only
-        # answer with a command-pattern scan — evidence, not a verdict.
+        # Pid from ls --all --json matched by this run's CDP port.
         proc_mod.note_spawn("terminal-browser", _instance_pid(found.ws_url))
+    return found
+
+def _plan_lease(args, *, url, launch: str) -> tuple[dict | None, int | None]:
+    """Choose and install the tab lease. Returns (plan, None) or (None, exit)."""
+    continuable = (None, None)
+    dropped = None
+    if not args.target_id:
+        _log_continuity("lookup")
+        continuable = find_continuable_page()
+        dropped = None if continuable[0] else browser_mod.LAST_CONTINUITY
+    plan = choose_lease(
+        url=url,
+        target_id=args.target_id,
+        continuable=continuable,
+        default_url=launch,
+        navigate_explicit=args.navigate,
+        dropped=dropped,
+    )
+    missing = no_page_error(plan, url)
+    if missing:
+        write_event({"event": "blocked", "goal": args.goal, "error": missing, "continuity": plan.get("continuity")})
+        print(json.dumps({"status": "blocked", "error": missing, "reason": "no_page"}), flush=True)
+        return None, 1
+    set_lease(
+        tab=plan["tab"],
+        target_id=plan["target_id"],
+        browser_key=args.browser_key,
+        navigate=plan["navigate"],
+    )
+    return plan, None
+
+def _open_agent(args, *, plan: dict, found, visibility: str):
+    """Build the agent and run identity; optionally print the JSON browser meta line."""
+    continuity = plan["continuity"]
+    if args.json:
+        meta = {
+            "event": "browser",
+            "source": found.source,
+            "cdp_url": found.ws_url,
+            "auto_launched": found.auto_launched,
+            "visibility": visibility,
+            "log": str(JSONL_PATH),
+        }
+        if continuity:
+            meta["continuity"] = continuity
+        print(json.dumps(meta), flush=True)
+    identity = {
+        "goal": args.goal,
+        "url": args.url,
+        "continuity": continuity or ("new-tab" if plan["tab"] == "new" else "target"),
+        "target_id": plan["target_id"],
+        "source": found.source,
+        "visibility": visibility,
+        "version": proc_mod.write_version_manifest(),
+    }
+    agent_cls = WatchAgent if args.watch else DriveAgent
+    extra = {} if args.time_budget_s is None else {"time_budget_s": args.time_budget_s}
+    agent = agent_cls(plan["agent_url"], args.goal, screenshots=False, debug=args.debug, **extra)
+    _bind_run(agent, args.goal)
+    return agent, identity
+
+def _emit_tick(args, snap, rec):
+    print(json.dumps(rec), flush=True)
+    write_event(trace_fields(snap, rec, goal=args.goal))
+
+def _refuse_unsupported(args, agent) -> int | None:
+    refused = unsupported_goal(args.goal)
+    if not refused:
+        return None
+    snap = agent.snapshot()
+    snap["status"] = "blocked"
+    snap["stop_reason"] = refused
+    agent.state["status"] = "blocked"
+    agent.state["stop_reason"] = refused
+    rec = tick_record(snap, debug=args.debug, page_text=((snap.get("page") or {}).get("text") or ""))
+    _emit_tick(args, snap, rec)
+    return 1
+
+def _tick_loop(args, agent) -> int:
+    """Run ticks until done/blocked/max-steps. Returns the process exit code."""
+    steps = 0
+    snap = agent.snapshot()
+    while agent.state["status"] not in {"done", "blocked"}:
+        if steps >= args.max_steps:
+            kinds = {item.get("kind") for item in snap.get("history") or []}
+            why = REASON_WHY["max_steps"]
+            if kinds and kinds <= {"scroll", "wait"}:
+                why = REASON_WHY["scroll_only"]
+            rec = tick_record(
+                snap,
+                debug=args.debug,
+                status="blocked",
+                error="max-steps",
+                reason="max_steps",
+                why=why,
+                page_text=(snap.get("page") or {}).get("text") or "",
+            )
+            if args.debug and isinstance(rec.get("insight"), dict):
+                rec["insight"]["why"] = why
+            _emit_tick(args, snap, rec)
+            return 1
+        snap = agent.command("tick")
+        steps += 1
+        budget_stop = snap.get("stop_reason") == "time_budget"
+        rec = tick_record(
+            snap,
+            debug=args.debug,
+            # error=="timeout" maps to stopped_reason time_budget in the taxonomy.
+            error="timeout" if budget_stop else None,
+            why=TIME_BUDGET_WHY if budget_stop else None,
+            final_view=_final_view(snap, (agent.state or {}).get("browser"))
+            if snap.get("status") == "done"
+            else None,
+        )
+        _emit_tick(args, snap, rec)
+    return 0 if agent.state["status"] == "done" else 1
+
+def _drive(args) -> int:
+    """Discover a browser, lease a tab, run ticks."""
+    url = args.url
+    launch = url or DEFAULT_FIXTURE.as_uri()
+    proc_mod.reset_spawns()
+    found = _discover_browser(args, launch)
+    if isinstance(found, int):
+        return found
     agent = None
     identity: dict | None = None
-    # One try for everything from here to the end of the run: the close-time
-    # evidence and the counters are written from the finally below, so a path
-    # that returns early — no page to reuse, an unsupported goal, an agent that
-    # would not open — has to be inside it or the run would leave no evidence at
-    # all. Exit codes and printed rows are unchanged by where the try begins.
+    # try wraps every early return so finally still writes close-time evidence.
     try:
         connect(found.ws_url)
         visibility = "background" if args.background else "terminal-browser-pane"
-        continuable = (None, None)
-        dropped = None
-        if not args.target_id:
-            _log_continuity("lookup")
-            continuable = find_continuable_page()
-            dropped = None if continuable[0] else browser_mod.LAST_CONTINUITY
-        plan = choose_lease(
-            url=url,
-            target_id=args.target_id,
-            continuable=continuable,
-            default_url=launch,
-            navigate_explicit=args.navigate,
-            dropped=dropped,
-        )
-        missing = no_page_error(plan, url)
-        if missing:
-            write_event({"event": "blocked", "goal": args.goal, "error": missing, "continuity": plan.get("continuity")})
-            print(json.dumps({"status": "blocked", "error": missing, "reason": "no_page"}), flush=True)
-            return 1
-        set_lease(
-            tab=plan["tab"],
-            target_id=plan["target_id"],
-            browser_key=args.browser_key,
-            navigate=plan["navigate"],
-        )
-        agent_url = plan["agent_url"]
-        continuity = plan["continuity"]
-        if args.json:
-            meta = {
-                "event": "browser",
-                "source": found.source,
-                "cdp_url": found.ws_url,
-                "auto_launched": found.auto_launched,
-                "visibility": visibility,
-                "log": str(JSONL_PATH),
-            }
-            if continuity:
-                meta["continuity"] = continuity
-            print(json.dumps(meta), flush=True)
-        # Name the code that produced this run, in the run log's own directory and
-        # in the run's evidence line. Additive: a tree that cannot be hashed or a log
-        # directory that cannot be written is reported inside the manifest, never
-        # raised, and the run goes on unchanged.
-        manifest = proc_mod.write_version_manifest()
-        identity = {
-            "goal": args.goal,
-            "url": url,
-            "continuity": continuity or ("new-tab" if plan["tab"] == "new" else "target"),
-            "target_id": plan["target_id"],
-            "source": found.source,
-            "visibility": visibility,
-            "version": manifest,
-        }
-        agent_cls = WatchAgent if args.watch else DriveAgent
-        # Only pass the kwarg when asked, so an agent built without the flag is unchanged.
-        extra = {} if args.time_budget_s is None else {"time_budget_s": args.time_budget_s}
-        agent = agent_cls(agent_url, args.goal, screenshots=False, debug=args.debug, **extra)
-        _bind_run(agent, args.goal)
-
-        def emit(snap, rec):
-            print(json.dumps(rec), flush=True)
-            write_event(trace_fields(snap, rec, goal=args.goal))
-
-        # Written before the first decision, so a run killed mid-drive still says
-        # what it was aiming at and which code was answering.
+        plan, err = _plan_lease(args, url=url, launch=launch)
+        if err is not None:
+            return err
+        agent, identity = _open_agent(args, plan=plan, found=found, visibility=visibility)
         write_event(_run_event(identity, stage="start", agent=agent))
-
-        refused = unsupported_goal(args.goal)
-        if refused:
-            snap = agent.snapshot()
-            snap["status"] = "blocked"
-            snap["stop_reason"] = refused
-            agent.state["status"] = "blocked"
-            agent.state["stop_reason"] = refused
-            rec = tick_record(snap, debug=args.debug, page_text=((snap.get("page") or {}).get("text") or ""))
-            emit(snap, rec)
-            return 1
-
-        code = 1
+        refused = _refuse_unsupported(args, agent)
+        if refused is not None:
+            return refused
         try:
-            steps = 0
-            snap = agent.snapshot()
-            while agent.state["status"] not in {"done", "blocked"}:
-                if steps >= args.max_steps:
-                    kinds = {item.get("kind") for item in snap.get("history") or []}
-                    why = REASON_WHY["max_steps"]
-                    if kinds and kinds <= {"scroll", "wait"}:
-                        why = REASON_WHY["scroll_only"]
-                    rec = tick_record(
-                        snap,
-                        debug=args.debug,
-                        status="blocked",
-                        error="max-steps",
-                        reason="max_steps",
-                        why=why,
-                        page_text=(snap.get("page") or {}).get("text") or "",
-                    )
-                    if args.debug and isinstance(rec.get("insight"), dict):
-                        rec["insight"]["why"] = why
-                    emit(snap, rec)
-                    return 1
-                snap = agent.command("tick")
-                steps += 1
-                budget_stop = snap.get("stop_reason") == "time_budget"
-                rec = tick_record(
-                    snap,
-                    debug=args.debug,
-                    # The stop taxonomy reads error=="timeout" as stopped_reason
-                    # time_budget, so an in-loop deadline reports like the outer
-                    # timeout_s kill — without killing anything.
-                    error="timeout" if budget_stop else None,
-                    why=TIME_BUDGET_WHY if budget_stop else None,
-                    final_view=_final_view(snap, (agent.state or {}).get("browser"))
-                    if snap.get("status") == "done"
-                    else None,
-                )
-                emit(snap, rec)
-            code = 0 if agent.state["status"] == "done" else 1
-            return code
+            return _tick_loop(args, agent)
         except (ValueError, RuntimeError, TimeoutError) as exc:
             print(json.dumps({"status": "blocked", "error": str(exc)}), file=sys.stderr)
             write_event(
@@ -491,10 +494,6 @@ def _drive(args) -> int:
             if agent is not None:
                 agent.close()
         finally:
-            # Nested so that neither record can be lost to the other failing: a
-            # close that raises still leaves the run's numbers and its process
-            # evidence in the log, and the close's own exception still propagates
-            # exactly as it did when this was a single finally.
             try:
                 if agent is not None:
                     write_event(_run_event(identity, stage="finish", agent=agent))
