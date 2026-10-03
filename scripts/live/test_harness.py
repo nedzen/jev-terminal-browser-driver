@@ -410,6 +410,23 @@ def _client(scenarios, log_dir=None):
     return client
 
 
+def _isolated_driver_state(root):
+    """Point the *driver's* lease state at a tmp dir for the duration of a test.
+
+    The runner now refuses a `log_dir` that is not the driver's state directory,
+    so a self-test cannot pass `tmp_path` as `log_dir` while the driver still reads
+    `~/.cache/wwwdrive`. Redirecting the driver's own path is the honest way to
+    model an isolated environment -- and it is what `tests/conftest.py` already
+    does for the same reason. Using `pytest.MonkeyPatch.context` keeps it scoped to
+    the call rather than leaking into other tests.
+    """
+    from jev_driver import browser as browser_mod
+
+    patcher = pytest.MonkeyPatch()
+    patcher.setattr(browser_mod, "LAST_PAGE_PATH", Path(root) / "last-page.json")
+    return patcher
+
+
 def _run_one(scenarios, test=None, tmp_path=None, **kwargs):
     root = tmp_path or Path(".")
     client = _client(scenarios, log_dir=root)
@@ -422,6 +439,7 @@ def _run_one(scenarios, test=None, tmp_path=None, **kwargs):
     kwargs.setdefault("ledger", root / "ledger.md")
     kwargs.setdefault("log_dir", root)
     kwargs.setdefault("slice_dir", root / "slices")
+    patcher = _isolated_driver_state(root)
     try:
         return runner.run_test(
             client,
@@ -430,6 +448,7 @@ def _run_one(scenarios, test=None, tmp_path=None, **kwargs):
         )
     finally:
         client.close()
+        patcher.undo()
 
 
 def test_the_runner_scores_a_scripted_hit(tmp_path):
@@ -657,6 +676,7 @@ def test_every_shipped_ledger_row_has_one_cell_per_column():
 def test_a_written_row_has_one_cell_per_ledger_column(tmp_path):
     """One column per cell in the header; a short row reads as empty."""
     client = _client([HIT])
+    patcher = _isolated_driver_state(tmp_path)
     try:
         record = runner.run_test(client, _test(), log_dir=tmp_path,
                                  slice_dir=tmp_path / "slices",
@@ -664,6 +684,7 @@ def test_a_written_row_has_one_cell_per_ledger_column(tmp_path):
                                  ledger=tmp_path / "ledger.md")
     finally:
         client.close()
+        patcher.undo()
     rows = [line for line in (tmp_path / "ledger.md").read_text().splitlines()
             if line.startswith("| ") and "---" not in line]
     assert len(rows) == 2  # header + one run
@@ -1109,19 +1130,21 @@ def test_a_chain_quarantines_once_before_the_chain_and_never_between_drives(tmp_
     calls = []
     real = isolation.quarantine_last_page
 
-    def counting(log_dir=None):
+    def counting(log_dir=None, **kwargs):
         calls.append(log_dir)
-        return real(log_dir)
+        return real(log_dir, **kwargs)
 
     test = _chain_test("a", "b")
     client = _client([HIT, HIT], log_dir=tmp_path)
     import scripts.live.runner as runner_mod
     original = runner_mod.isolation.quarantine_last_page
     runner_mod.isolation.quarantine_last_page = counting
+    patcher = _isolated_driver_state(tmp_path)
     try:
         runner_mod.run_test(client, test, log_dir=tmp_path, slice_dir=tmp_path / "slices",
                             baseline_dir=tmp_path / "baseline", ledger=tmp_path / "ledger.md")
     finally:
+        patcher.undo()
         runner_mod.isolation.quarantine_last_page = original
         client.close()
     assert len(calls) == 1, f"quarantine ran {len(calls)} times for a two-drive chain"
@@ -1205,6 +1228,133 @@ def test_a_non_positive_chain_budget_is_refused():
         validate_test(_chain_test("a", "b", chain_budget_s=0))
 
 
+# --------------------------------------------------------------------------
+# Isolation contract: the harness's log_dir must be the driver's state dir
+# --------------------------------------------------------------------------
+
+REAL_STATE_DIR = Path.home() / ".cache" / "wwwdrive"
+
+
+def test_a_misdirected_log_dir_is_refused_before_any_drive(tmp_path):
+    """The check whose absence voided S4a and S4b.
+
+    Pointed at a directory with no last-page.json and no drive.jsonl, the old code
+    quarantined nothing, read no events, and reported success all the way into a
+    live ledger row while the driver kept re-attaching to the previous run's tab.
+    """
+    with pytest.raises(isolation.LogDirMismatch, match="not the driver's state directory"):
+        isolation.assert_log_dir_matches(tmp_path, REAL_STATE_DIR)
+
+
+def test_the_log_dir_check_passes_for_the_real_driver_state_dir():
+    isolation.assert_log_dir_matches(REAL_STATE_DIR, REAL_STATE_DIR)
+
+
+def test_the_log_dir_check_compares_resolved_paths_not_strings(tmp_path):
+    """A trailing slash or a `..` segment is the same directory, not a mismatch."""
+    noisy = tmp_path / "sub" / ".."
+    (tmp_path / "sub").mkdir()
+    isolation.assert_log_dir_matches(noisy, tmp_path)
+
+
+def test_a_run_whose_log_dir_is_misdirected_is_refused_and_never_drives(tmp_path):
+    """End to end: the run is recorded as a harness fault with zero drive calls,
+    not executed into a tab it never isolated."""
+    client = _client([HIT], log_dir=tmp_path)
+    try:
+        record = runner.run_test(client, _test(), log_dir=tmp_path,
+                                 slice_dir=tmp_path / "slices",
+                                 baseline_dir=tmp_path / "baseline",
+                                 ledger=tmp_path / "ledger.md")
+    finally:
+        client.close()
+    assert record["outcome_class"] == taxonomy.CRASH
+    assert record["calls"] == 0
+    assert "isolation" in (record["error"] or "")
+
+
+def test_quarantine_is_loud_when_the_target_is_absent_but_the_driver_has_one(tmp_path):
+    """Absence in the wrong directory is the signature; absence everywhere is a
+    legitimate first run. Only the first is an error."""
+    driver_dir = tmp_path / "driver"
+    driver_dir.mkdir()
+    (driver_dir / isolation.LAST_PAGE).write_text('{"targetId": "T1"}', encoding="utf-8")
+    empty = tmp_path / "wrong"
+    empty.mkdir()
+    with pytest.raises(isolation.LogDirMismatch, match="log_dir is misdirected"):
+        isolation.quarantine_last_page(empty, driver_state_dir=driver_dir)
+
+
+def test_quarantine_stays_quiet_when_the_file_is_absent_everywhere(tmp_path):
+    """A genuine first run has no remembered page anywhere."""
+    assert isolation.quarantine_last_page(tmp_path, driver_state_dir=tmp_path) is None
+
+
+def test_quarantine_still_returns_the_page_it_quarantined(tmp_path):
+    (tmp_path / isolation.LAST_PAGE).write_text(
+        '{"targetId": "T1", "url": "https://example.test/"}', encoding="utf-8")
+    previous = isolation.quarantine_last_page(tmp_path, driver_state_dir=tmp_path)
+    assert previous["targetId"] == "T1"
+    assert isolation.read_last_page(tmp_path) is None
+
+
+def test_the_isolation_report_computes_pane_idle_rather_than_asserting_it(tmp_path):
+    """It used to be a literal True, so a record could claim an idle pane on the
+    strength of a check that had read nothing."""
+    assert isolation.isolation_report(tmp_path)["pane_idle"] is False
+
+
+def test_the_isolation_report_reports_a_real_log_dir_as_idle(tmp_path):
+    (tmp_path / "drive.jsonl").write_text(
+        json.dumps({"event": "run", "stage": "start", "metrics": {"run_id": "a"}}) + "\n"
+        + json.dumps({"event": "run", "stage": "finish", "metrics": {"run_id": "a"}}) + "\n",
+        encoding="utf-8")
+    assert isolation.isolation_report(tmp_path)["pane_idle"] is True
+
+
+def test_the_isolation_report_is_not_idle_while_a_run_is_open(tmp_path):
+    (tmp_path / "drive.jsonl").write_text(
+        json.dumps({"event": "run", "stage": "start", "metrics": {"run_id": "a"}}) + "\n",
+        encoding="utf-8")
+    assert isolation.isolation_report(tmp_path)["pane_idle"] is False
+
+
+def test_the_isolation_report_records_whether_the_log_dir_is_the_driver_state_dir(tmp_path):
+    report = isolation.isolation_report(tmp_path, driver_state_dir=tmp_path)
+    assert report["log_dir_is_driver_state_dir"] is True
+    assert isolation.isolation_report(tmp_path, driver_state_dir=REAL_STATE_DIR)[
+        "log_dir_is_driver_state_dir"] is False
+
+
+def test_the_runner_refuses_on_the_directory_alone_not_only_via_quarantine(tmp_path):
+    """Kills the runner's *call* to the assertion, which fix 2 otherwise masks.
+
+    Both fixes raise `LogDirMismatch`, so an end-to-end refusal test cannot say
+    which one fired. Here the driver's state dir is a *different empty* directory:
+    quarantine has nothing to be loud about (absence everywhere is a legitimate
+    first run), so the only thing that can refuse is the runner's own assertion.
+    Removing that call makes this run proceed instead.
+    """
+    from jev_driver import browser as browser_mod
+
+    elsewhere = tmp_path / "driver-elsewhere"
+    elsewhere.mkdir()
+    patcher = pytest.MonkeyPatch()
+    patcher.setattr(browser_mod, "LAST_PAGE_PATH", elsewhere / "last-page.json")
+    client = _client([HIT], log_dir=tmp_path)
+    try:
+        record = runner.run_test(client, _test(), log_dir=tmp_path,
+                                 slice_dir=tmp_path / "slices",
+                                 baseline_dir=tmp_path / "baseline",
+                                 ledger=tmp_path / "ledger.md")
+    finally:
+        client.close()
+        patcher.undo()
+    assert record["outcome_class"] == taxonomy.CRASH
+    assert record["calls"] == 0
+    assert "not the driver's state directory" in (record["error"] or "")
+
+
 def test_the_pane_guard_refuses_two_concurrent_drives(tmp_path):
     """One drive at a time, enforced locally even though the mutex is the caller's."""
     from scripts.live import driver as driver_mod
@@ -1256,6 +1406,7 @@ def test_run_suite_accepts_a_goal_style_manifest(tmp_path):
     all run_test-level tests stayed green."""
     root = tmp_path
     client = _client([HIT], log_dir=root)
+    patcher = _isolated_driver_state(root)
     try:
         out = runner.run_suite(
             {"tests": [_test(goal="Go to example.com and click Learn more.")]},
@@ -1264,6 +1415,7 @@ def test_run_suite_accepts_a_goal_style_manifest(tmp_path):
             ledger=root / "ledger.md")
     finally:
         client.close()
+        patcher.undo()
     assert out["classified"] == 1
     assert out["by_class"].get("HIT") == 1
 

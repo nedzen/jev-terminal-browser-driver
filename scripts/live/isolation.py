@@ -56,6 +56,44 @@ def _events(log_dir: Path):
     return events
 
 
+class LogDirMismatch(IsolationError):
+    """The harness's log directory is not the one the driver keeps its state in.
+
+    Subclasses IsolationError so it lands in the existing "refused before the
+    drive" path and is recorded as a harness fault rather than a product outcome.
+    """
+
+
+def assert_log_dir_matches(log_dir, driver_state_dir) -> None:
+    """Refuse to run unless `log_dir` is where the driver keeps its lease state.
+
+    This is the check whose absence voided S4a and S4b. The harness takes
+    `log_dir` as a parameter while the driver *hardcodes* its state directory
+    (`browser.LAST_PAGE_PATH`), so pointing `log_dir` anywhere else does not fail
+    loudly -- `quarantine_last_page` finds no file to rename, `assert_pane_idle`
+    reads no events, and both report success while isolating nothing. The driver
+    meanwhile keeps re-attaching to whatever tab the previous run left, and a
+    no-url test inherits that page instead of its own.
+
+    Comparing resolved paths (not string forms) keeps a trailing slash or a `..`
+    segment from reading as a mismatch.
+    """
+    try:
+        wanted = Path(driver_state_dir).expanduser().resolve()
+        got = Path(log_dir).expanduser().resolve()
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise LogDirMismatch(f"could not resolve the isolation log_dir: {exc}") from exc
+    if got != wanted:
+        raise LogDirMismatch(
+            f"log_dir {got} is not the driver's state directory {wanted}; "
+            "quarantine and the pane-idle check would silently isolate nothing"
+        )
+
+
+def _driver_last_page(driver_state_dir) -> Path:
+    return Path(driver_state_dir) / LAST_PAGE
+
+
 def _dir(log_dir) -> Path:
     """Resolve a log directory at call time.
 
@@ -122,17 +160,29 @@ def read_last_page(log_dir=None) -> dict | None:
         return None
 
 
-def quarantine_last_page(log_dir=None) -> dict | None:
+def quarantine_last_page(log_dir=None, *, driver_state_dir=None) -> dict | None:
     """Clear the remembered tab and return what it was.
 
     Renamed rather than deleted: if a run then re-attaches to nothing and fails,
     the previous run's target is still on disk to diagnose the attach with. The
     rename is the isolation -- a driver that reads LAST_PAGE finds nothing -- and
     the retained file is the forensics.
+
+    Loud when the file is absent *while the driver's real one exists*. That
+    combination is the signature of a misdirected `log_dir`: the old behaviour
+    returned None, which reads as "nothing to quarantine" and let the run proceed
+    into a tab it had not isolated. Absence everywhere is still a legitimate
+    first run.
     """
     log_dir = _dir(log_dir)
     path = log_dir / LAST_PAGE
     if not path.is_file():
+        if driver_state_dir is not None and _driver_last_page(driver_state_dir).is_file():
+            raise LogDirMismatch(
+                f"no {LAST_PAGE} in {log_dir}, but the driver has one at "
+                f"{_driver_last_page(driver_state_dir)}: log_dir is misdirected, so "
+                "quarantine isolated nothing"
+            )
         return None
     previous = read_last_page(log_dir)
     try:
@@ -144,15 +194,30 @@ def quarantine_last_page(log_dir=None) -> dict | None:
     return previous
 
 
-def isolation_report(log_dir=None) -> dict:
-    """What the checklist saw, for the run record.
+def isolation_report(log_dir=None, *, driver_state_dir=None) -> dict:
+    """What the checklist actually observed, for the run record.
 
-    Records the previous target rather than just asserting on it, so a run that
-    re-attaches unexpectedly can be told apart from one that did not.
+    `pane_idle` is computed, not asserted. It used to be a literal True, so a
+    record could claim the pane was idle on the strength of a check that had read
+    nothing at all -- which is what happened for every row in the window that
+    voided S4a/S4b. Two conditions must hold: the directory has to look like a
+    driver log directory (a `drive.jsonl` is present, so there were events to
+    read), and no run may be left open.
     """
+    log_dir = _dir(log_dir)
     previous = read_last_page(log_dir)
+    looks_like_a_log_dir = (log_dir / "drive.jsonl").is_file()
+    matches = None
+    if driver_state_dir is not None:
+        try:
+            matches = (log_dir.expanduser().resolve()
+                       == Path(driver_state_dir).expanduser().resolve())
+        except (OSError, RuntimeError, TypeError, ValueError):
+            matches = False
     return {
-        "pane_idle": True,
-        "quarantined_target": (previous or {}).get("targetId"),
-        "quarantined_url": (previous or {}).get("url"),
+        "pane_idle": bool(looks_like_a_log_dir) and not open_run_ids(log_dir),
+        "log_dir_is_driver_state_dir": matches,
+        "log_dir_has_driver_log": looks_like_a_log_dir,
+        "quarantined_target": (previous.get("targetId") if previous else None),
+        "quarantined_url": (previous.get("url") if previous else None),
     }
