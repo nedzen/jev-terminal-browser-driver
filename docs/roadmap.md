@@ -152,8 +152,17 @@ plugin, Tier 1–4, hardening A–C, debloat, rename. Reinstall sweep done.
   729 green + ruff clean re-verified on merged main via scratch worktree;
   merger caught + closed a mutation gap pre-PR: _probe_reason ordering now
   pinned by integration test). Items 5–6 deferred follow-ups.
-  (b) `#jev=` marker observe/act staleness (run 1 evidence, intermittent —
-  did NOT reproduce on run 3) — filed, NOT started.
+  (b) `#jev=` marker observe/act staleness — MERGED (PR #20, 4d64bc9;
+  reviewer approved with marker; 869 green + ruff clean re-verified on merged
+  main via scratch; comparison-path normalization, writer untouched).
+- Live-test harness MERGED (PRs #18+#19, 835 green): manifest runner +
+  fake-MCP self-tests + learnings ledger + baseline dir; two live-use bugs
+  fixed same-motion (dict final_view, tick/string-action events).
+- Runner multi-call MERGED (PR #21, 886 green): same-lease drive chains +
+  PARTIAL verdicts + chain budget; parked parallel-drives epic filed
+  (owner, deferred). F5 closed.
+- S1a live: 3× HIT on Tether end state (1 CLI + 2 runner-driven, B/c 1320
+  measured). S1b next per cadence.
 - Owner-only pending, untouched: GitHub repo rename click (owner, very end);
   `founder` / `intern` profile re-link + settings re-entry.
 - Follow-up queue (non-blocking polish, worked only when the suite waits):
