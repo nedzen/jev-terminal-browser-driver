@@ -1,11 +1,4 @@
-"""Hermes shell around the stdlib-only core: subprocess in, JSON out.
-
-Hermes loads this module without jev_driver, so every rule that is not about
-spawning lives in plugin/core (also stdlib-only) and this file re-exports it.
-What stays here is the part that is genuinely the adapter's: argv construction,
-the subprocess lifecycle, and the JSON payload the tool returns. If a rule has to
-be enforced for both this tool and the driver's own CLI, it belongs in core.
-"""
+"""Hermes adapter: subprocess in, JSON out. Shared rules live in plugin/core."""
 
 from __future__ import annotations
 

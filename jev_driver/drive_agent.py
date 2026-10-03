@@ -1,19 +1,24 @@
-"""Driver-side Agent subclass. agent.py stays verbatim."""
+"""Drive loop: observe → decide → act, plus finish/stop gates and HUD."""
 
+import base64
 import re
 import time
+from pathlib import Path
 
-from .agent import Agent
-from .browser import StalePage, without_counts
+from .browser import Browser, StalePage, without_counts
 from .metrics import Metrics, instrument_browser
-from .model import action_space, field_context, field_text
+from .model import action_space, choose, field_context, field_text
+from .questions import MAX_STEPS
 from .readiness import (
     REASON_WHY,
+    Evidence,
     degenerate,
-    done_acceptable,
     done_probability,
     end_state_reached,
+    goal_evidenced,
+    model_action_count,
     page_is_shell,
+    verdict,
 )
 from .runlog import write_event
 
@@ -32,13 +37,7 @@ def _label_stem(label: str) -> str:
 
 
 def _observed_label(page: dict | None, target) -> str:
-    """The observed page's own label for a target index, or "" when it has none.
-
-    The fallback `_decision_label` reaches for when the request's criteria carry
-    no entry for the chosen target. The index the model was offered is assigned by
-    `action_space`, so the page's own name for it comes from the same call — this
-    is the control's label, not a guess at one.
-    """
+    """Observed label for a target index, or ""."""
     if not isinstance(target, str) or not target:
         return ""
     elements = action_space((page or {}).get("actions") or [])[0]
@@ -113,16 +112,7 @@ _TERMINAL = {"DONE", "BLOCKED"}
 
 
 def _performs_input(decision) -> bool:
-    """False for DONE and BLOCKED: they only settle the run, they never click or type.
-
-    `choice` is the field the base loop branches on to decide between settling the run
-    and touching the page, so it alone decides this. `operation` is deliberately not
-    consulted: a decision whose two fields disagree must be read as input, because that
-    is the reading that cannot type or click after the deadline.
-
-    The deadline's promise is that nothing is typed or clicked after it, so a decision
-    that performs no input is still worth honouring once the clock is spent.
-    """
+    """False for DONE/BLOCKED (settle-only). Uses ``choice`` only, not ``operation``."""
     return (decision or {}).get("choice") not in _TERMINAL
 
 
@@ -131,17 +121,46 @@ def _ranked(probs, limit=6):
     return [[str(key), round(float(val), 3)] for key, val in items[:limit]]
 
 
-class DriveAgent(Agent):
-    """Exempt advancing scrolls from the 3-repeat guard; optional debug HUD."""
+class DriveAgent:
+    """Observe → decide → act, with finish/stop gates and optional debug HUD."""
 
-    def __init__(self, url, goals, *, debug=False, time_budget_s=None, **kwargs):
+    def __init__(self, url, goals, *, debug=False, time_budget_s=None, record_dir=None, screenshots=False):
         started = time.perf_counter()
-        super().__init__(url, goals, **kwargs)
+        task = goals.strip() if isinstance(goals, str) else "\n".join(goals).strip()
+        if not task:
+            raise ValueError("Supply a task")
+        plan = [task]
+        self.pending_text = None
+        self.browser = Browser(url)
+        self.record_dir = Path(record_dir) if record_dir else None
+        self.screenshots = screenshots or bool(record_dir)
+        try:
+            page = self.browser.observe(screenshot=self.screenshots)
+        except Exception:
+            self.browser.close()
+            raise
+        self.state = dict(
+            browser=self.browser,
+            goal="\n".join(plan),
+            page=page,
+            decision=None,
+            history=[],
+            status="ready",
+            plan=plan,
+            plan_index=0,
+            decisions=[],
+            text_calls=[],
+            elapsed_ms=0,
+            started_at=None,
+            record=bool(self.record_dir),
+        )
+        if self.record_dir:
+            self.record_dir.mkdir(parents=True, exist_ok=True)
+            (self.record_dir / "000000.jpg").write_bytes(base64.b64decode(page["screenshot"]))
         self._metrics = Metrics()
         self._metrics.record_startup((time.perf_counter() - started) * 1000)
         self.debug = debug
-        # Optional inner deadline (upstream PR #3 idea). timeout_s stays the
-        # outer subprocess kill; this one is checked inside the tick loop.
+        # Optional inner deadline; timeout_s stays the outer subprocess kill.
         self.time_budget_s = None if time_budget_s in (None, "") else int(time_budget_s)
         self._budget_deadline = None
         self._budget_stopped = False
@@ -158,6 +177,134 @@ class DriveAgent(Agent):
             if debug:
                 browser.paint_hud(self._hud_payload())
 
+    def snapshot(self):
+        return {
+            **{k: v for k, v in self.state.items() if k != "browser"},
+            "elements": action_space(self.state["page"]["actions"])[0],
+        }
+
+    def run(self):
+        while self.state["status"] not in {"done", "blocked"}:
+            yield self.command("tick")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
+
+    def _core_command(self, name, body=None):
+        """Core predict/act/tick (upstream loop + #191 cache key)."""
+        body = body or {}
+        state = self.state
+        if name == "tick":
+            try:
+                self.command("predict", {})
+                return self.command("act", {"fingerprint": state["page"]["fingerprint"]})
+            except StalePage:
+                state["decision"] = None
+                state["status"] = "ready"
+                state["page"] = state["browser"].observe(screenshot=self.screenshots)
+                state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
+                return self.snapshot()
+        if name == "predict":
+            if not state["browser"]:
+                raise ValueError("Start a demo first")
+            if state["started_at"] is None:
+                state["started_at"] = time.perf_counter()
+            if not state["browser"].fresh(state["page"]):
+                state["page"] = state["browser"].observe(screenshot=self.screenshots)
+            state["decision"] = None
+            if state["status"] in {"done", "blocked"}:
+                raise ValueError("This run has stopped. Start a fresh demo.")
+            if len(state["decisions"]) >= MAX_STEPS * 2:
+                raise ValueError("Reached the demo's model-call budget")
+            state["decision"] = choose(state["page"], state["goal"], state["history"])
+            state["decisions"].append(
+                {
+                    **state["decision"],
+                    "fingerprint": state["page"]["fingerprint"],
+                    "elapsed_ms": round((time.perf_counter() - state["started_at"]) * 1000),
+                }
+            )
+            state["status"] = "predicted"
+            return self.snapshot()
+        if name != "act":
+            raise ValueError("Unknown command")
+        decision, page = state["decision"], state["page"]
+        if not decision or body.get("fingerprint") != page["fingerprint"]:
+            raise ValueError("Observe and choose before acting")
+        # Consume once before mutation — a retry cannot double-click.
+        state["decision"] = None
+        selected = decision["choice"]
+        if selected in {"DONE", "BLOCKED"}:
+            if not state["browser"].fresh(page, {"kind": "done"}):
+                state["status"] = "ready"
+                raise StalePage("Page changed since the decision. Choose again.")
+            state["status"] = "done" if selected == "DONE" else "blocked"
+            state["plan_index"] = int(selected == "DONE")
+            state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
+            return self.snapshot()
+        action = next(a for a in page["actions"] if a["id"] == selected)
+        if len(state["history"]) >= MAX_STEPS:
+            state["status"] = "blocked"
+            raise ValueError(f"Stopped at the {MAX_STEPS}-action demo budget")
+        text, helper = None, None
+        if action["kind"] == "fill":
+            if not state["browser"].fresh(page):
+                raise StalePage("Page changed before text generation. Choose again.")
+            context = field_context(state["goal"], action, page, state["history"])
+            # Node is in the cache key so same-labeled fields do not share typed text (#191).
+            cache_key = (action.get("node"), context)
+            if self.pending_text and self.pending_text[0] == cache_key:
+                _, text, helper = self.pending_text
+            else:
+                text, helper = field_text(context)
+                self.pending_text = (cache_key, text, helper)
+                state["text_calls"].append({**helper, "field": action["label"], "value": text})
+        state["browser"].act(action, page, text=text)
+        self.pending_text = None
+        state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
+        state["history"].append(
+            {
+                "step": len(state["history"]) + 1,
+                "action": action["label"],
+                "kind": action["kind"],
+                "choice": selected,
+                "probability": decision["probabilities"][selected],
+                "confidence": decision["confidence"],
+                "latency_ms": decision["latency_ms"],
+                "text": text,
+                "text_helper": helper["model"] if helper else None,
+                "text_latency_ms": helper["latency_ms"] if helper else 0,
+                "operation": decision["operation"],
+                "target": decision["target"],
+                "page_changed": None,
+                "url": page["url"],
+                "usage": decision["usage"],
+                "executed_ms": round((time.perf_counter() - state["started_at"]) * 1000),
+                "elapsed_ms": state["elapsed_ms"],
+            }
+        )
+        state["page"] = state["browser"].observe(screenshot=self.screenshots)
+        state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
+        state["history"][-1].update(
+            page_changed=state["page"]["fingerprint"] != page["fingerprint"],
+            url=state["page"]["url"],
+            elapsed_ms=state["elapsed_ms"],
+        )
+        if state["record"]:
+            (self.record_dir / f"{state['elapsed_ms']:06d}.jpg").write_bytes(
+                base64.b64decode(state["page"]["screenshot"])
+            )
+        repeated = state["history"][-3:]
+        state["status"] = (
+            "blocked"
+            if len(repeated) == 3 and all(h["page_changed"] is False and h["kind"] != "wait" for h in repeated)
+            else "ready"
+        )
+        return self.snapshot()
+
     @property
     def metrics(self) -> Metrics:
         """This run's counters. Created on demand, so a bare instance still works."""
@@ -169,7 +316,7 @@ class DriveAgent(Agent):
         """Close the browser, then write this run's counters. Metrics never break cleanup."""
         started = time.perf_counter()
         try:
-            super().close()
+            self.browser.close()
         finally:
             self._write_metrics((time.perf_counter() - started) * 1000)
 
@@ -198,12 +345,7 @@ class DriveAgent(Agent):
         return deadline is not None and time.perf_counter() >= deadline
 
     def _stop_time_budget(self):
-        """Stop on the inner deadline. The pending decision is discarded, never executed.
-
-        One tick reaches this twice: predict refuses the model call, then the tick's
-        unconditional act finds the same spent clock. The second visit re-asserts the
-        state but must not log again, so a consumer sees exactly one time_budget event.
-        """
+        """Stop on the inner deadline; discard the pending decision (log once)."""
         state = self.state
         state["decision"] = None
         state["status"] = "blocked"
@@ -226,19 +368,14 @@ class DriveAgent(Agent):
     def command(self, name, body=None):
         if name == "predict":
             if self._time_budget_spent():
-                # Deadline already gone: stop without spending a model call.
                 return self._stop_time_budget()
             self._start_time_budget()
-            snap = super().command(name, body)
+            snap = self._core_command(name, body)
             self.metrics.record_jev((self.state.get("decision") or {}).get("latency_ms"))
             self._paint_hud()
             return snap
         if name == "act":
             if self._time_budget_spent() and _performs_input(self.state.get("decision")):
-                # The model call outlived the deadline: drop it unexecuted so the
-                # page is never mutated by a decision nobody waited for. DONE and
-                # BLOCKED are exempt; they type and click nothing, so a spent clock
-                # must not turn a free finish into a failure.
                 return self._stop_time_budget()
             rejected = self._stop_low_confidence() or self._reject_weak_done() or self._look_further()
             if rejected is not None:
@@ -255,7 +392,7 @@ class DriveAgent(Agent):
             steps_before = len(self.state.get("history") or [])
             typed_before = len(self.state.get("text_calls") or [])
             try:
-                snap = super().command("act", body)
+                snap = self._core_command("act", body)
             except StalePage as exc:
                 self._note_text_helper(typed_before)
                 self.metrics.record_stale()
@@ -265,9 +402,6 @@ class DriveAgent(Agent):
                         "event": "stale",
                         "goal": self.state.get("goal"),
                         "kind": decision.get("operation"),
-                        # The label, or nothing. A bare target key here used to read
-                        # as `label: "1"`, which looks like a control called "1" and
-                        # hides the fact that the label was never recovered.
                         "label": self._decision_label(decision, self.state.get("page")) or None,
                         "target": decision.get("target"),
                         "why": str(exc),
@@ -282,7 +416,7 @@ class DriveAgent(Agent):
                 if self._note_unexecuted(exc):
                     self._paint_hud()
                     return self.snapshot()
-                self._metrics_error = exc  # the run dies here; record why, not what it said
+                self._metrics_error = exc
                 raise
             self._note_text_helper(typed_before)
             if chosen is not None and len(self.state.get("history") or []) > steps_before:
@@ -293,7 +427,7 @@ class DriveAgent(Agent):
             snap = self._maybe_unblock_scroll(snap, before_y)
             self._paint_hud()
             return snap
-        snap = super().command(name, body)
+        snap = self._core_command(name, body)
         if name in {"predict", "tick"}:
             self._paint_hud()
         return snap
@@ -301,9 +435,8 @@ class DriveAgent(Agent):
     def _note_model_blocked(self):
         state = self.state
         decision = (state.get("decisions") or [None])[-1] or {}
-        # Logged before the guards, and on every tick the model chose BLOCKED, so
-        # the record survives `_blocked_rescue` converting the run to done. A
-        # BLOCKED that was rescued is exactly the case worth being able to audit.
+        # Logged before the guards on every BLOCKED tick, so a later rescue still
+        # leaves an audit trail of the model's choice.
         if decision.get("choice") == "BLOCKED" or decision.get("operation") == "BLOCKED":
             self._log_model_blocked(decision)
         if state.get("status") != "blocked" or state.get("stop_reason"):
@@ -312,15 +445,7 @@ class DriveAgent(Agent):
             state["stop_reason"] = "model_blocked"
 
     def _log_model_blocked(self, decision: dict) -> None:
-        """The four facts that decide whether a BLOCKED was earned: what DONE was
-        worth on the same page, how many targets were even on offer, where the run
-        ended up, and whether this run had navigated to get here.
-
-        `done_p` is the number that was compared against DONE_MIN, and
-        `moved_on` is the precondition of the `_reject_weak_done` bypass, so both
-        are what a reader needs to say whether a BLOCKED was the model's honest
-        read or the framing losing a coin-flip.
-        """
+        """Log DONE confidence, targets, URL, and moved_on for a BLOCKED decision."""
         state = self.state
         page = state.get("page") or {}
         write_event(
@@ -343,19 +468,7 @@ class DriveAgent(Agent):
                 self.metrics.record_text_helper(row.get("latency_ms"))
 
     def _decision_label(self, decision: dict, page: dict | None = None) -> str:
-        """The readable label for the target this decision chose, or "" when unknowable.
-
-        Reads the request's own criteria first, which is the only source that names a
-        target the page no longer shows. When the criteria carry no entry for this
-        target it falls back to the observed page's own label for the same index — the
-        same fallback the HUD uses (_hud_payload) — because a retry that cannot name the
-        control it is retrying clicks by target key instead, which is a different
-        control or nothing at all.
-
-        Returns "" rather than the bare target key when neither source has a label.
-        Callers use "" to decline the retry; a caller that logs must not be handed a
-        target id and print it as if it were a label.
-        """
+        """Readable label for the chosen target, or "" (never a bare target key)."""
         operation = (decision.get("operation") or "").lower()
         questions = ((decision.get("request") or {}).get("questions") or {})
         criteria = (questions.get(operation + "_target") or {}).get("criteria") or {}
@@ -627,25 +740,45 @@ class DriveAgent(Agent):
 
     LOW_CONFIDENCE_STRIKES = 2
 
+    def _evidence(self) -> Evidence:
+        """Snapshot the facts verdict() needs for this act-tick."""
+        state = self.state
+        decision = state.get("decision") or {}
+        page = state.get("page") or {}
+        text = page.get("text") or ""
+        browser = state.get("browser")
+        scroll = next((item for item in (page.get("actions") or []) if item.get("id") == "scroll_down"), None)
+        history = state.get("history") or []
+        goal = state.get("goal")
+        moved = self._moved_on(page)
+        return Evidence(
+            choice=decision.get("choice"),
+            top_op=_top_operation(decision),
+            done_p=done_probability(decision),
+            shell=page_is_shell(text),
+            moved_on=moved,
+            time_budget_spent=self._time_budget_spent(),
+            weak_done=getattr(self, "_weak_done", 0),
+            degenerate_streak=getattr(self, "_degenerate_streak", 0),
+            looked=getattr(self, "_looked", 0),
+            look_budget=self.LOOK_SCROLLS,
+            has_browser=browser is not None,
+            has_scroll_down=scroll is not None and browser is not None,
+            short_page=len(text.strip()) < 160,
+            model_history=model_action_count(history),
+            end_state=end_state_reached(page, goal=goal, history=history, moved_on=moved),
+            goal_evidenced=goal_evidenced(page, goal=goal, history=history),
+        )
+
     def _stop_low_confidence(self):
-        """Stop on the second consecutive degenerate tick. The decision is discarded, never executed.
-
-        A degenerate operation spread is the model reporting that it sees no reason to prefer
-        anything: the top operation is low and the gap to the runner-up is narrow, so whichever
-        one it returns is close to a coin flip. One such tick is ordinary uncertainty and the
-        next observation may settle it, so a single one never stops. Two in a row means the run
-        is choosing what to click and type on the user's own profile by chance, and the cheapest
-        honest end is to stop before the second one lands.
-
-        The streak counts consecutive ticks, not decisions in total: a tick with a real preference
-        resets it. It is read here, ahead of every other rejection path, so nothing below can
-        execute a decision on its way out and no path can settle the run on a coin flip instead.
-        """
+        """Stop on the second consecutive degenerate tick. Decision discarded, never executed."""
         if not degenerate(self.state.get("decision")):
             self._degenerate_streak = 0
             return None
         self._degenerate_streak = getattr(self, "_degenerate_streak", 0) + 1
-        if self._degenerate_streak < self.LOW_CONFIDENCE_STRIKES:
+        if verdict(self._evidence()).kind != "stop":
+            return None
+        if getattr(self, "_degenerate_streak", 0) < self.LOW_CONFIDENCE_STRIKES:
             return None
         state = self.state
         state["decision"] = None
@@ -661,132 +794,100 @@ class DriveAgent(Agent):
         )
         return self.snapshot()
 
+    LOOK_SCROLLS = 3
+
+    def _hydrate(self, *, rounds: int, ready) -> bool:
+        """Sleep and re-observe until ``ready(text)`` or rounds run out."""
+        state = self.state
+        browser = state.get("browser")
+        if browser is None:
+            return False
+        for _ in range(rounds):
+            browser.sleep(getattr(browser, "HYDRATE_SLEEP_S", 0) or 0)
+            state["page"] = browser._observe_once(screenshot=False)
+            if ready((state["page"] or {}).get("text") or ""):
+                return True
+        return False
+
+    def _auto_scroll(self, page: dict, *, usage=None) -> bool:
+        """One driver corrective scroll_down (``history.auto`` — not a model action)."""
+        state = self.state
+        browser = state.get("browser")
+        scroll = next((item for item in (page.get("actions") or []) if item.get("id") == "scroll_down"), None)
+        if scroll is None or browser is None:
+            return False
+        try:
+            browser.act(scroll, page)
+        except StalePage:
+            self.metrics.record_stale()
+        state["page"] = browser.observe(screenshot=getattr(self, "screenshots", False))
+        history = state.setdefault("history", [])
+        history.append(
+            {
+                "step": len(history) + 1,
+                "action": "Scroll down",
+                "kind": "scroll",
+                "operation": "SCROLL_DOWN",
+                "page_changed": (state["page"] or {}).get("fingerprint") != page.get("fingerprint"),
+                "usage": usage or {},
+                "auto": True,
+            }
+        )
+        return True
+
     def _reject_weak_done(self):
-        """Do not finish on a weak DONE, on a zero-action DONE, or on a label-only page."""
+        """Do not finish on a weak DONE, zero-action DONE, or label-only page."""
         state = self.state
         decision = state.get("decision")
         page = state.get("page") or {}
         if not decision or decision.get("choice") != "DONE":
             return None
-        # `history` is the run's performed-action log: `_remember_click` appends
-        # only when an action actually went out, so its length is the count of
-        # actions executed, not the count of decisions made.
-        performed = len(state.get("history") or [])
-        # A run whose clock is already spent cannot click or type anything else, so
-        # refusing its zero-action DONE can only convert a finish into a failure.
-        # Exempt that case (DONE_MIN still applies); the certainty requirement is
-        # aimed at runs that still had options and spent none of them.
-        effective = None if (performed == 0 and self._time_budget_spent()) else performed
-        if done_acceptable(decision, page, executed_actions=effective):
-            return None
-        # The navigation bypass: a DONE below `DONE_MIN` may still end the run when
-        # the run got itself to the right page. `moved_on` alone does not say "right".
-        # M7 DONE'd at 0.56 on the event page with one click and no scroll, and a bare
-        # path difference accepted it; `moved_on` is a comparison of two strings, not a
-        # claim about the goal, and the goal named an order book the run never scrolled to.
-        # So the bypass now asks `end_state_reached` -- the same goal-progress bar
-        # `_blocked_rescue` already applies to a BLOCKED -- which requires the
-        # destination to carry the goal's own words and the run to have performed a
-        # non-scroll step for each step the goal names. Its `moved_on` and shell clauses
-        # are the ones this condition used to spell out by hand.
-        if _top_operation(decision) == "DONE" and end_state_reached(
-            page,
-            goal=state.get("goal"),
-            history=state.get("history"),
-            moved_on=self._moved_on(page),
-        ):
+        ev = self._evidence()
+        judgment = verdict(ev)
+        if judgment.kind == "allow":
             return None
         state["decision"] = None
-        text = page.get("text") or ""
-        probability = done_probability(decision)
         write_event(
             {
                 "event": "reject_done",
                 "goal": state.get("goal"),
-                "why": f"DONE p={probability:.2f} was not accepted",
+                "why": f"DONE p={done_probability(decision):.2f} was not accepted",
                 "url": page.get("url"),
             }
         )
-        if page_is_shell(text):
-            browser = state.get("browser")
-            for _ in range(6):
-                if browser is None:
-                    break
-                browser.sleep(getattr(browser, "HYDRATE_SLEEP_S", 0) or 0)
-                state["page"] = browser._observe_once(screenshot=False)
-                if not page_is_shell((state["page"] or {}).get("text") or ""):
-                    state["status"] = "ready"
-                    return self.snapshot()
+        if ev.shell:
+            if self._hydrate(rounds=6, ready=lambda text: not page_is_shell(text)):
+                state["status"] = "ready"
+                return self.snapshot()
             state["status"] = "blocked"
             state["stop_reason"] = "shell"
             return self.snapshot()
         self._weak_done = getattr(self, "_weak_done", 0) + 1
-        if self._weak_done >= 2:
-            state["status"] = "blocked"
-            state["stop_reason"] = "weak_done"
+        if judgment.kind == "stop":
+            state["status"] = judgment.status or "blocked"
+            state["stop_reason"] = judgment.stop_reason or "weak_done"
             return self.snapshot()
-        scroll = next((item for item in (page.get("actions") or []) if item.get("id") == "scroll_down"), None)
-        browser = state.get("browser")
-        if scroll is not None and browser is not None:
-            try:
-                browser.act(scroll, page)
-            except StalePage:
-                self.metrics.record_stale()
-            state["page"] = browser.observe(screenshot=self.screenshots)
-            history = state.setdefault("history", [])
-            history.append(
-                {
-                    "step": len(history) + 1,
-                    "action": "Scroll down",
-                    "kind": "scroll",
-                    "operation": "SCROLL_DOWN",
-                    "page_changed": True,
-                }
-            )
-        elif browser is not None:
-            browser.sleep(getattr(browser, "HYDRATE_SLEEP_S", 0) or 0)
-            state["page"] = browser._observe_once(screenshot=False)
+        if not self._auto_scroll(page):
+            browser = state.get("browser")
+            if browser is not None:
+                browser.sleep(getattr(browser, "HYDRATE_SLEEP_S", 0) or 0)
+                state["page"] = browser._observe_once(screenshot=False)
         state["status"] = "ready"
         return self.snapshot()
 
-    LOOK_SCROLLS = 3
-
     def _moved_on(self, page: dict) -> bool:
-        """This run already took the user to another page, so the goal's action has happened."""
+        """True when this run left the start URL (goal action likely happened)."""
         start = getattr(self, "_start_url", None)
         url = (page or {}).get("url")
         return bool(start and url) and start.split("#")[0] != url.split("#")[0]
 
-    def _blocked_rescue(self, page: dict):
-        """Last chance for a BLOCKED that this run had already earned its way out of.
-
-        Called only where `_look_further` has stopped helping — the scroll budget
-        is spent, or the page offers nothing to scroll. That ordering is the
-        conservatism: scrolling is tried first, on every BLOCKED, so this cannot
-        pre-empt a rescue that a scroll would have found anyway.
-
-        A BLOCKED the model is right about (the target is still below the fold,
-        the page is a shell) fails `end_state_reached` and the run stops blocked
-        exactly as before. Only a BLOCKED on a page this run navigated to, that
-        visibly carries the goal's own words, and that this run acted to reach,
-        is converted — and it converts to `done` with its own stop_reason, never
-        to a silent success.
-        """
+    def _apply_rescue(self, page: dict):
+        """Apply a verdict ``rescue_done`` — no re-check, no Evidence rebuild."""
         state = self.state
-        decision = state.get("decision") or {}
-        if decision.get("choice") != "BLOCKED":
-            return None
-        if not end_state_reached(
-            page,
-            goal=state.get("goal"),
-            history=state.get("history"),
-            moved_on=self._moved_on(page),
-        ):
-            return None
         state["decision"] = None
         state["status"] = "done"
         state["stop_reason"] = "end_state_reached"
-        if state.get("elapsed_ms") is None:
+        if state.get("elapsed_ms") is None and state.get("started_at") is not None:
             state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
         write_event(
             {
@@ -802,26 +903,21 @@ class DriveAgent(Agent):
         return self.snapshot()
 
     def _look_further(self):
-        """BLOCKED usually means the target is below the viewport. Scroll and ask again, a few times."""
+        """BLOCKED recovery: wait, scroll, or rescue — policy is entirely in verdict()."""
         state = self.state
         decision = state.get("decision") or {}
         if decision.get("choice") != "BLOCKED":
             return None
-        looked = getattr(self, "_looked", 0)
-        page = state.get("page") or {}
-        browser = state.get("browser")
-        if looked >= self.LOOK_SCROLLS or browser is None:
-            return self._blocked_rescue(page)
-        text = page.get("text") or ""
-        if page_is_shell(text) or len(text.strip()) < 160:
-            self._looked = looked + 1
+        judgment = verdict(self._evidence())
+        if judgment.kind == "rescue_done":
+            return self._apply_rescue(state.get("page") or {})
+        if judgment.kind == "look_wait":
+            self._looked = getattr(self, "_looked", 0) + 1
             state["decision"] = None
-            for _ in range(8):
-                browser.sleep(getattr(browser, "HYDRATE_SLEEP_S", 0) or 0)
-                state["page"] = browser._observe_once(screenshot=False)
-                now = (state["page"] or {}).get("text") or ""
-                if not page_is_shell(now) and len(now.strip()) >= 160:
-                    break
+            self._hydrate(
+                rounds=8,
+                ready=lambda text: not page_is_shell(text) and len(text.strip()) >= 160,
+            )
             state["status"] = "ready"
             write_event(
                 {
@@ -831,36 +927,24 @@ class DriveAgent(Agent):
                 }
             )
             return self.snapshot()
-        scroll = next((item for item in page.get("actions") or [] if item.get("id") == "scroll_down"), None)
-        if scroll is None:
-            return self._blocked_rescue(page)
-        self._looked = looked + 1
-        state["decision"] = None
-        try:
-            browser.act(scroll, page)
-        except StalePage:
-            self.metrics.record_stale()
-        state["page"] = browser.observe(screenshot=getattr(self, "screenshots", False))
-        history = state.setdefault("history", [])
-        history.append(
-            {
-                "step": len(history) + 1,
-                "action": "Scroll down",
-                "kind": "scroll",
-                "operation": "SCROLL_DOWN",
-                "page_changed": state["page"].get("fingerprint") != page.get("fingerprint"),
-                "usage": decision.get("usage") or {},
-            }
-        )
-        state["status"] = "ready"
-        write_event(
-            {
-                "event": "look_further",
-                "goal": state.get("goal"),
-                "why": f"Model chose BLOCKED; scrolled to look for the target ({self._looked}/{self.LOOK_SCROLLS}).",
-            }
-        )
-        return self.snapshot()
+        if judgment.kind == "look_scroll":
+            page = state.get("page") or {}
+            self._looked = getattr(self, "_looked", 0) + 1
+            state["decision"] = None
+            self._auto_scroll(page, usage=decision.get("usage") or {})
+            state["status"] = "ready"
+            write_event(
+                {
+                    "event": "look_further",
+                    "goal": state.get("goal"),
+                    "why": (
+                        f"Model chose BLOCKED; scrolled to look for the target "
+                        f"({self._looked}/{self.LOOK_SCROLLS})."
+                    ),
+                }
+            )
+            return self.snapshot()
+        return None
 
     def _maybe_unblock_scroll(self, snap, before_y):
         state = self.state

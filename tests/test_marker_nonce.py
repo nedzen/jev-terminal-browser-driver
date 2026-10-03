@@ -31,6 +31,7 @@ NONCE_URL = "https://example.com/#jev=1790980167661144000"
 BARE_URL = "https://example.com/"
 SITE = "https://www.iana.org/domains/example"
 
+
 # snapshot.js pageKey: [timeOrigin, href, scrollX, scrollY, innerW, innerH, fields]
 def page_key(href, time_origin=1000.0):
     return [time_origin, href, 0, 0, 1280, 720, []]

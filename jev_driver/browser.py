@@ -1,349 +1,129 @@
-"""Observed actions through terminal-browser CDP; one session, no per-step subprocess."""
+"""Observed actions through terminal-browser CDP; one session, no per-step subprocess.
 
-import hashlib
+Split across four modules: `lease.py` owns the tab lease and last-page memory,
+`probe.py` owns fingerprinting and the read-only freshness probe, `ops.py` owns
+the CDP-level read/act executor, and this module keeps the `Browser` class plus
+everything a `Browser` method calls as a module-level name — imported here so a
+test that monkeypatches `jev_driver.browser.X` still reaches the call site inside
+a `Browser` method. Pure helpers and constants are re-exported for import
+convenience; `jev_driver.lease` is the source of truth for the mutable lease
+state (`LAST_CONTINUITY`, `LAST_PAGE_PATH`, `HUD_STATE_PATH`).
+"""
+
 import json
-import re
-import subprocess
-import sys
 import time
-import urllib.request
 from pathlib import Path
-from urllib.parse import urlparse
 
-from . import discover as _discover
-from .cdp import TB, cdp, cdp_port, connect, list_browsers
+from . import lease
+from .cdp import cdp, connect, list_browsers
+from .lease import (
+    LAST_PAGE_KEYS,
+    LEASE,
+    PROVENANCE_KEY,
+    _attach,
+    _get_targets,
+    _is_ephemeral_url,
+    _json_pages,
+    _load_last_page,
+    _log_continuity,
+    _netloc_id,
+    _open_owned_tab,
+    _target_ok,
+    _unique_url,
+    find_continuable_page,
+    hud_open,
+    remember_page,
+    save_hud_open,
+    set_lease,
+)
+from .ops import _offer_enter, browser_operation
+from .probe import (
+    PROBE_REASONS,
+    PROBE_RETRIES,
+    _clickable,
+    _probe_expression,
+    _probe_flags,
+    _probe_reason,
+    _probe_telemetry,
+    _same_document,
+    _same_href,
+    _same_marker,
+    _same_target,
+    _strip_jev_marker,
+    fingerprint,
+    without_counts,
+)
 from .readiness import page_is_shell
 from .runlog import write_event
+
+__all__ = [
+    "Browser",
+    "StalePage",
+    "READ_STATE",
+    "HUD_JS",
+    "MARKER",
+    "LEASE",
+    "LAST_PAGE_KEYS",
+    "PROVENANCE_KEY",
+    "PROBE_REASONS",
+    "PROBE_RETRIES",
+    "cdp",
+    "connect",
+    "list_browsers",
+    "write_event",
+    "page_is_shell",
+    "set_lease",
+    "find_continuable_page",
+    "remember_page",
+    "hud_open",
+    "save_hud_open",
+    "browser_operation",
+    "fingerprint",
+    "without_counts",
+    "_attach",
+    "_get_targets",
+    "_is_ephemeral_url",
+    "_json_pages",
+    "_load_last_page",
+    "_log_continuity",
+    "_netloc_id",
+    "_open_owned_tab",
+    "_target_ok",
+    "_unique_url",
+    "_offer_enter",
+    "_clickable",
+    "_probe_expression",
+    "_probe_flags",
+    "_probe_reason",
+    "_probe_telemetry",
+    "_same_document",
+    "_same_href",
+    "_same_marker",
+    "_same_target",
+    "_strip_jev_marker",
+]
 
 READ_STATE = Path(__file__).with_name("snapshot.js").read_text()
 HUD_JS = Path(__file__).with_name("hud.js").read_text()
 MARKER = f"(() => {{ const state={READ_STATE}; return state?.marker ?? null; }})()"
-
-BLOCKED_SCHEMES = ("chrome:", "chrome-untrusted:", "devtools:", "chrome-extension:")
-DENYLIST_HOSTS = ("hindsight.vectorize.io",)
-
-# The one fragment parameter the driver authors itself, via `_unique_url`. Anchored
-# and fullmatch: `jev=<digits>` must be the whole parameter, so a site fragment like
-# `#jev=something-else` in a hash route, or `#notjev=1`, is not silently dropped.
-_JEV_MARKER_RE = re.compile(r"jev=\d+")
-
-# Settle windows before a target counts as stale. A framework that re-parents a row, or a
-# menu that re-renders, hands back the same node a frame later; re-reading one target is
-# cheap, re-snapshotting the page is not (it rebuilds the action list this decision came from).
-PROBE_RETRIES = (0.1, 0.2, 0.3)
-# Why a decision can no longer touch the node it names. Telemetry only: act() still reports
-# field_changed/page_changed, and these name the cause.
-PROBE_REASONS = ("target_detached", "target_changed", "not_actionable", "not_writable", "ok")
-
-LEASE = {
-    "tab": "new",
-    "target_id": None,
-    "browser_key": None,
-    "navigate": True,
-    "create_fallback": None,
-}
-
-LAST_PAGE_PATH = Path.home() / ".cache" / "wwwdrive" / "last-page.json"
-HUD_STATE_PATH = LAST_PAGE_PATH.parent / "hud.json"
-LAST_PAGE_TTL_S = 1800
-LAST_PAGE_KEYS = ("targetId", "url", "source", "browser_id", "ts")
-# `auto_launched` is deliberately NOT in LAST_PAGE_KEYS. That tuple is a *presence*
-# test (`any(key not in data ...)`), so adding a key makes every record written before
-# the flag existed fail the test and read as no record at all -- which would silently
-# void continuity for every existing install on upgrade. Extra keys are already
-# tolerated, so the flag rides along without being required. An absent flag is read as
-# `unknown`, not as False: `lifecycle.instance_origin` keeps what it cannot place.
-PROVENANCE_KEY = "auto_launched"
-LAST_CONTINUITY = None
-
-
-def set_lease(*, tab="new", target_id=None, browser_key=None, navigate=True):
-    LEASE.update(tab=tab, target_id=target_id, browser_key=browser_key, navigate=navigate, create_fallback=None)
 
 
 class StalePage(ValueError):
     """A decision no longer refers to the observed page."""
 
 
-def _pick_browser_key(data=None):
-    data = data or list_browsers()
-    browsers = data.get("browsers") or []
-    if LEASE["browser_key"]:
-        if not any(b.get("key") == LEASE["browser_key"] for b in browsers):
-            raise RuntimeError(f"Unknown terminal-browser key {LEASE['browser_key']}")
-        return LEASE["browser_key"]
-    current = [b for b in browsers if b.get("inCurrentTab")]
-    chosen = (current or browsers)[0]
-    return chosen["key"]
+def __getattr__(name):
+    """Forward reads of lease's rebound globals, so `browser.X` always sees the live value.
 
-
-def _target_ok(info, *, allow_denylist):
-    if (info.get("type") or "page") != "page":
-        return False
-    url = info.get("url") or ""
-    parsed = urlparse(url)
-    if parsed.scheme in {s.rstrip(":") for s in BLOCKED_SCHEMES} or url.startswith(BLOCKED_SCHEMES):
-        return False
-    if not allow_denylist and parsed.hostname in DENYLIST_HOSTS:
-        return False
-    return True
-
-
-def _is_ephemeral_url(url):
-    text = url or ""
-    if "jev-terminal-browser-driver/fixtures/" in text:
-        return True
-    if text.startswith(("about:", "chrome:", "devtools:", "chrome-untrusted:", "chrome-extension:")):
-        return True
-    return False
-
-
-def _netloc_id(url: str) -> str:
-    """Host:port from a ws/http URL. Bracket IPv6 so [::1]:9222 round-trips."""
-    if not url:
-        return ""
-    parsed = urlparse(url)
-    host = parsed.hostname or ""
-    port = parsed.port
-    if host:
-        if ":" in host and not host.startswith("["):
-            host = f"[{host}]"
-        return f"{host}:{port}" if port is not None else host
-    return (parsed.netloc or "").lower()
-
-
-def browser_identity():
-    last = _discover.LAST
-    if last is None:
-        return "", ""
-    source = last.source or ""
-    ident = _netloc_id(last.ws_url) or _netloc_id(last.http_origin)
-    return source, ident
-
-
-def _log_continuity(reason: str) -> None:
-    print(f"wwwdrive: continuity {reason}", file=sys.stderr)
-    if reason != "lookup":
-        write_event({"event": "continuity", "why": reason})
-
-
-def _load_last_page():
-    if not LAST_PAGE_PATH.is_file():
-        return None
-    try:
-        data = json.loads(LAST_PAGE_PATH.read_text())
-    except (json.JSONDecodeError, OSError):
-        return None
-    if not isinstance(data, dict) or any(key not in data for key in LAST_PAGE_KEYS):
-        return None
-    return data
-
-
-def _write_last_page(record: dict) -> None:
-    LAST_PAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    LAST_PAGE_PATH.write_text(json.dumps(record))
-
-
-def hud_open() -> bool:
-    """Whether the user left the debug panel expanded. Survives navigation and new runs."""
-    try:
-        return json.loads(HUD_STATE_PATH.read_text()).get("open") is True
-    except (OSError, ValueError, AttributeError):
-        return False
-
-
-def save_hud_open(opened: bool) -> None:
-    try:
-        HUD_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        HUD_STATE_PATH.write_text(json.dumps({"open": bool(opened)}))
-    except OSError:
-        return
-
-
-def remember_page(target_id, url):
-    """Remember the driver's tab, including fixture URLs, so the next run can reuse it.
-
-    `auto_launched` records who opened the *browser*, which is the fact a reaper needs
-    and which nothing else on disk carried: without it a browser this driver opened is
-    indistinguishable from one the human opened, so every idle instance looks
-    owner-owned and nothing is ever reclaimable. Written from the in-process
-    Discovery, which is authoritative for the instance this run is driving.
-
-    Preserved on the re-attach path rather than recomputed: a record for a tab this
-    run merely inherited keeps the flag of the run that actually opened the browser.
+    `LEASE` is a dict mutated in place, so the import above already shares one
+    object with `lease.LEASE`. These four are reassigned with `=` instead (plain
+    module globals, not containers), so a `from .lease import X` above would copy
+    the value at import time and go stale the moment `lease.X` is reassigned —
+    by production code (`LAST_CONTINUITY`) or by a test's `monkeypatch.setattr`.
     """
-    if not target_id:
-        return
-    source, browser_id = browser_identity()
-    spawned = bool(getattr(_discover.LAST, "auto_launched", False))
-    existing = _load_last_page()
-    if LEASE.get("tab") == "target":
-        if not existing or existing.get("targetId") != target_id:
-            return
-        existing["url"] = url or existing.get("url") or ""
-        existing["ts"] = time.time()
-        _write_last_page(existing)
-        return
-    _write_last_page(
-        {
-            "targetId": target_id,
-            "url": url or "",
-            "source": source,
-            "browser_id": browser_id,
-            "ts": time.time(),
-            PROVENANCE_KEY: spawned,
-        }
-    )
-
-
-def find_continuable_page():
-    """Re-attach to a previously driven page when the caller omitted --url."""
-    global LAST_CONTINUITY
-    LAST_CONTINUITY = None
-    existed = LAST_PAGE_PATH.is_file()
-    remembered = _load_last_page()
-    if remembered is None:
-        if existed:
-            LAST_CONTINUITY = "dropped:legacy-schema"
-            _log_continuity("legacy-schema")
-        return None, None
-    try:
-        age = time.time() - float(remembered["ts"])
-    except (TypeError, ValueError):
-        LAST_CONTINUITY = "dropped:legacy-schema"
-        _log_continuity("legacy-schema")
-        return None, None
-    if age > LAST_PAGE_TTL_S:
-        LAST_CONTINUITY = "dropped:ttl-expired"
-        _log_continuity("ttl-expired")
-        return None, None
-    source, browser_id = browser_identity()
-    try:
-        pages = _json_pages()
-    except (OSError, json.JSONDecodeError, TimeoutError):
-        pages = []
-    by_id = {p.get("id"): p for p in pages if p.get("type") == "page" and p.get("id")}
-    remembered_id = remembered.get("targetId")
-    same_label = (remembered.get("source"), remembered.get("browser_id")) == (source, browser_id)
-    if not same_label:
-        # The connected browser still has this tab. A host-string mismatch must not open another one.
-        info = by_id.get(remembered_id) if remembered_id else None
-        url = (info or {}).get("url") or ""
-        if info and _target_ok({"type": "page", "url": url}, allow_denylist=False):
-            _log_continuity(
-                "re-attach despite label mismatch "
-                f"remembered={remembered.get('source')}:{remembered.get('browser_id')} "
-                f"connected={source}:{browser_id}"
-            )
-            LAST_CONTINUITY = "re-attach"
-            return remembered_id, url
-        LAST_CONTINUITY = "dropped:browser-mismatch"
-        _log_continuity(
-            "browser-mismatch "
-            f"remembered={remembered.get('source')}:{remembered.get('browser_id')} "
-            f"connected={source}:{browser_id}"
-        )
-        return None, None
-    if remembered_id and remembered_id in by_id:
-        info = by_id[remembered_id]
-        url = info.get("url") or ""
-        # The id is the driver's own tab, even when it is still on a fixture or an error page.
-        if _target_ok({"type": "page", "url": url}, allow_denylist=False):
-            LAST_CONTINUITY = "re-attach"
-            return remembered_id, url
-    live = []
-    for page in pages:
-        if page.get("type") != "page":
-            continue
-        url = page.get("url") or ""
-        if _is_ephemeral_url(url):
-            continue
-        if not _target_ok({"type": "page", "url": url}, allow_denylist=False):
-            continue
-        live.append(page)
-    if remembered.get("url"):
-        stem = remembered["url"].split("?")[0].split("#")[0]
-        for page in live:
-            if (page.get("url") or "").split("?")[0].split("#")[0] == stem:
-                LAST_CONTINUITY = "re-attach"
-                return page["id"], page.get("url")
-    LAST_CONTINUITY = "dropped:stale-id"
-    _log_continuity("stale-id")
-    return None, None
-
-
-def _get_targets():
-    return cdp("Target.getTargets").get("targetInfos") or []
-
-
-def _attach(target_id):
-    return cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
-
-
-def _json_pages():
-    with urllib.request.urlopen(f"http://127.0.0.1:{cdp_port()}/json/list", timeout=5) as resp:
-        return json.loads(resp.read())
-
-
-def _unique_url(url):
-    """Distinct new-tab URL. A fragment, so the site never sees a changed request."""
-    sep = "&" if "#" in url else "#"
-    return f"{url}{sep}jev={time.time_ns()}"
-
-
-def _wait_new_page(before_ids, timeout=15):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        for page in _json_pages():
-            if page.get("type") == "page" and page.get("id") not in before_ids:
-                return page["id"]
-        time.sleep(0.05)
-    return None
-
-
-def _open_via_new_tab(url):
-    url = _unique_url(url)
-    data = list_browsers()
-    key = _pick_browser_key(data)
-    before_json = {page.get("id") for page in _json_pages()}
-    try:
-        subprocess.run(
-            [TB, "new-tab", "--browser", key, url],
-            check=True,
-            timeout=30,
-            capture_output=True,
-            text=True,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as exc:
-        detail = getattr(exc, "stderr", None) or str(exc)
-        raise RuntimeError(
-            "terminal-browser new-tab failed; Target.createTarget is not supported on this Electron. "
-            f"{detail}"
-        ) from exc
-    created = _wait_new_page(before_json)
-    if not created:
-        raise RuntimeError("new-tab did not appear in CDP /json/list")
-    return created, True
-
-
-def _open_via_chrome(url):
-    url = _unique_url(url)
-    try:
-        created = cdp("Target.createTarget", url=url, background=True)["targetId"]
-        return created, True
-    except RuntimeError as exc:
-        raise RuntimeError(
-            "Target.createTarget is not supported on this browser; "
-            "wwwdrive only provisions terminal-browser panes (TUI-only scope)."
-        ) from exc
-
-
-def _open_owned_tab(url):
-    last = _discover.LAST
-    source = last.source if last else "terminal-browser"
-    if source == "terminal-browser":
-        return _open_via_new_tab(url)
-    return _open_via_chrome(url)
+    if name in {"LAST_CONTINUITY", "LAST_PAGE_PATH", "HUD_STATE_PATH", "LAST_PAGE_TTL_S"}:
+        return getattr(lease, name)
+    raise AttributeError(name)
 
 
 class Browser:
@@ -589,20 +369,7 @@ class Browser:
         return self._fresh_reason == "ok"
 
     def _probe_target(self, kind, page, node, *, reprobe=True) -> str:
-        """Probe one target until it is actionable, so a re-parented node is not a stale page.
-
-        Same read-only probe every round: no re-snapshot, no action-list rebuild, no new page
-        to decide from. Returns one of PROBE_REASONS.
-
-        `target_detached` is final. snapshot.js hands ids out from a per-document counter and only
-        prunes disconnected nodes on the next snapshot, which this decision will not take: a node
-        that reads detached cannot re-attach inside it. Waiting out the full settle window would
-        spend 0.6s to learn the same thing. Every other reason can still turn into `ok`, so it is
-        retried.
-
-        `reprobe=False` skips the settle window for a caller that just re-read the page and is
-        about to retry regardless; the first probe still runs, so the verdict is unchanged.
-        """
+        """Probe until actionable (or detached). ``reprobe=False`` skips the settle window."""
         expression = _probe_expression(node)
         reason = "target_changed"
         attempts = len(PROBE_RETRIES) if reprobe else 0
@@ -617,15 +384,7 @@ class Browser:
         return reason
 
     def act(self, action, page, text=None, *, reprobe=True):
-        """Execute one action, gating it on the freshness probe first.
-
-        ``reprobe=False`` runs the probe once instead of retrying it. For a caller
-        that has *already* re-read the page and is retrying anyway
-        (`_retry_click`): that path re-observes immediately before acting, so the
-        four-probe settle window has nothing left to wait for, and running it twice
-        per click spent ~0.6s of duplicated wall clock to learn the same thing twice.
-        The verdict is identical — same probe, same expression, same reason.
-        """
+        """Execute one action after the freshness probe. ``reprobe=False`` probes once."""
         if not self.fresh(page, action, reprobe=reprobe):
             kind = action.get("kind")
             reason = "field_changed" if kind in {"click", "select", "fill"} else "page_changed"
@@ -673,9 +432,7 @@ class Browser:
         return result
 
     def close(self):
-        # Never Target.closeTarget on a TUI tab. Destroying Electron webContents
-        # while ViewRegistry still holds the PageHost raises
-        # "TypeError: Object has been destroyed" in PageHost.blurContent.
+        # Detach only — closing a TUI tab destroys Electron webContents under PageHost.
         if self.session:
             try:
                 cdp("Target.detachFromTarget", sessionId=self.session)
@@ -683,463 +440,3 @@ class Browser:
                 pass
         self.target = None
         self.session = None
-
-
-def fingerprint(state):
-    content = {k: state[k] for k in ("url", "text", "actions", "scroll")}
-    return hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()
-
-
-def _same_field_document(page: dict, page_key) -> bool:
-    """A fill survives a re-render of the same URL; it does not survive leaving that URL.
-
-    Deliberately not `_same_document`: a search box must survive a same-URL document swap.
-    """
-    if not isinstance(page_key, list) or len(page_key) < 2:
-        return False
-    stored = page.get("page_key")
-    if not isinstance(stored, list) or len(stored) < 2:
-        return False
-    return page_key[1] == stored[1]
-
-
-def _swapped_document(page: dict, page_key) -> bool:
-    """Whether `page_key` comes from a different document that kept the same URL."""
-    if not isinstance(page_key, list) or len(page_key) < 2:
-        return False
-    stored = page.get("page_key")
-    if not isinstance(stored, list) or len(stored) < 2:
-        return False
-    return page_key[0] != stored[0]
-
-
-def _same_field(page: dict, node: int, current) -> bool:
-    """A fill is still valid when this field's identity, value, and URL are unchanged.
-
-    The feed around a search box changes constantly. That must not cancel typing.
-    """
-    if not isinstance(current, list) or len(current) < 2:
-        return False
-    page_key, guard = current[0], current[1]
-    stored_guard = (page.get("guards") or {}).get(str(node))
-    if not _same_field_document(page, page_key):
-        return False
-    if not isinstance(guard, list) or not isinstance(stored_guard, list):
-        return False
-    if len(guard) < 4 or len(stored_guard) < 4:
-        return False
-    if guard[0] != stored_guard[0] or guard[3] != stored_guard[3]:
-        return False
-    if _swapped_document(page, page_key):
-        # Across a document swap an id match is a collision, not an identity: ids come from a
-        # per-document counter (snapshot.js `next:1`), so the new document hands id 4 to whatever
-        # it observed fourth. Two empty fields at id 4 in one URL are indistinguishable, so the
-        # value has to carry the match on its own: non-empty and equal. A field with no value to
-        # match (empty, or contenteditable, whose guard carries none) is refused and re-observed
-        # instead of being typed into blind — refusing costs a re-read, guessing costs the page.
-        return bool(guard[3]) and bool(stored_guard[3])
-    return True
-
-
-_COUNTS = re.compile(r"\d[\d.,]*\s*[KMBkmb]?")
-
-
-def without_counts(value):
-    """Live feeds tick like counts and relative times. Those must not cancel a click."""
-    return _COUNTS.sub("#", value) if isinstance(value, str) else value
-
-
-def _same_marker(stored, current) -> bool:
-    """Two `MARKER` readings are the same page, ignoring the driver's own nonce.
-
-    `marker[1]` is `location.href` (snapshot.js), so the whole marker is compared
-    with that one slot normalized. Every other slot is compared as the driver
-    recorded it: timeOrigin, scroll, viewport, title, text, the action list's
-    semantics, and the form-field page key. A nonce-only difference is the
-    driver's own bookkeeping and says nothing about the page having changed.
-    """
-    if not isinstance(stored, list) or not isinstance(current, list):
-        return stored == current
-    if len(stored) != len(current) or len(stored) < 2:
-        return stored == current
-    return _same_href(stored[1], current[1]) and stored[:1] == current[:1] and stored[2:] == current[2:]
-
-
-def _strip_jev_marker(href):
-    """A URL with the driver's own `#jev=<nonce>` fragment parameter removed.
-
-    The driver mints that nonce in `_unique_url` so a re-opened tab is a distinct
-    URL in CDP's target list. It is not site state and it is not stable: two calls
-    to `_unique_url` for the same page return different nonces. Since `marker[1]`
-    and `page_key[1]` are both `location.href`, comparing them verbatim asks "did
-    my own bookkeeping change?" and answers yes.
-
-    Only a `jev` name=value parameter inside the fragment is dropped. A site
-    fragment such as `#section`, `#/route/2` or a bare `#` is untouched and still
-    counts as navigation, because that is the site changing where it is.
-    """
-    if not isinstance(href, str):
-        return href
-    base, sep, fragment = href.partition("#")
-    if not sep or not fragment:
-        return href
-    kept = [part for part in fragment.split("&") if not _JEV_MARKER_RE.fullmatch(part)]
-    return f"{base}#{'&'.join(kept)}" if kept else base
-
-
-def _same_href(stored, current) -> bool:
-    """Two hrefs are the same place, ignoring the driver's own nonce fragment."""
-    return _strip_jev_marker(stored) == _strip_jev_marker(current)
-
-
-def _same_document(page: dict, current) -> bool:
-    stored = page.get("page_key")
-    if not isinstance(current, list) or len(current) < 2:
-        return False
-    if not isinstance(stored, list) or len(stored) < 2:
-        return _same_href(current[1], page.get("url"))
-    return current[0] == stored[0] and _same_href(current[1], stored[1])
-
-
-def _same_target(page: dict, node: int, current) -> bool:
-    """Same document and the same control. Scroll position and ticking numbers are ignored."""
-    if not isinstance(current, list) or len(current) < 2:
-        return False
-    page_key, guard = current[0], current[1]
-    if not _same_document(page, page_key):
-        return False
-    stored = (page.get("guards") or {}).get(str(node))
-    if not isinstance(guard, list) or not isinstance(stored, list) or len(guard) != len(stored):
-        return False
-    return [without_counts(item) for item in guard] == [without_counts(item) for item in stored]
-
-
-def _probe_expression(node: int) -> str:
-    """The read-only probe for one observed node.
-
-    Returns ``[pageKey, guard, [attached, live, inView, hit, writable]]``, or null when the
-    document that produced the observation is gone. The bits are observations, not policy:
-    `guard` is null unless the node is connected and visible, which is why `attached` and
-    `live` travel beside it, and `_probe_reason` decides what they mean.
-
-    `attached` connected; `live` also enabled (not :disabled, aria-disabled, or inert) and
-    visible; `inView` its centre is inside the viewport; `hit` it has a box to point at and
-    elementFromPoint at that centre does not return a stranger, so an overlay covering it is
-    visible to the probe. An off-screen centre is not covered — the executor scrolls the node
-    into view and re-hit-tests, and `page_key` ignores scroll, so gating on `inView` here
-    would refuse every element below the fold that the executor lands fine.
-
-    A fourth element carries telemetry: `enabled`, `visible`, `visiblePlain`,
-    `opacity`, `boxed` — the halves of `live`, recorded separately so a
-    `not_actionable` that never reaches the hit-test can say *which* half went
-    false. `live` folds enabled-ness and opacity-sensitive visibility into one bit,
-    and the opacity half is the one the executor's own gate does not test. Read by
-    the telemetry writer and by nothing that decides; the verdict is computed from
-    the five bits alone, exactly as before this field existed.
-    """
-    return (
-        "(() => { const c=window.__jevFast, e=c?c.nodes.get("
-        f"{node}"
-        "):null; if (!c) return null; "
-        "const g=c.guard(e), attached=!!(e&&e.isConnected), "
-        "r=attached?e.getBoundingClientRect():{x:0,y:0,width:0,height:0}, "
-        "x=r.x+r.width/2, y=r.y+r.height/2, "
-        "boxed=!!(r.width&&r.height), "
-        "inView=boxed&&x>=0&&y>=0&&x<innerWidth&&y<innerHeight, "
-        "hit=boxed&&(!inView||e.contains(document.elementFromPoint(x,y))), "
-        "live=attached&&!e.matches(':disabled')&&!e.closest('[aria-disabled=\"true\"],[inert]')"
-        "&&e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}), "
-        "writable=live&&!e.readOnly&&e.getAttribute('aria-readonly')!=='true'; "
-        "return [c.pageKey(),g,[attached,live,inView,hit,writable],"
-        "{enabled:attached&&!e.matches(':disabled')&&!e.closest('[aria-disabled=\"true\"],[inert]'),"
-        "visible:attached?e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}):false,"
-        "visiblePlain:attached?e.checkVisibility({}):false,"
-        "opacity:attached&&typeof getComputedStyle==='function'?getComputedStyle(e).opacity:null,boxed:boxed}]; })()"
-    )
-
-
-def _probe_flags(current) -> tuple | None:
-    """(attached, live, inView, hit, writable), or None when the probe answered nothing usable.
-
-    `inView` is telemetry: the verdict below does not read it, because the executor scrolls a
-    node into view before it hit-tests and `page_key` ignores scroll.
-    """
-    if not isinstance(current, list) or len(current) < 3:
-        return None
-    bits = current[2]
-    if not isinstance(bits, list) or len(bits) < 5:
-        return None
-    if any(bit is not True and bit is not False for bit in bits[:5]):
-        return None
-    return tuple(bits[:5])
-
-
-def _probe_telemetry(current) -> dict:
-    """The probe's diagnostic half, or {} when the answer carried none.
-
-    Diagnostic only, and deliberately total: a missing or malformed fourth element
-    must never change a verdict, so an old-shaped probe answer simply reports
-    nothing rather than raising here.
-    """
-    if not isinstance(current, list) or len(current) < 4:
-        return {}
-    extra = current[3]
-    return extra if isinstance(extra, dict) else {}
-
-
-def _probe_reason(kind: str, page: dict, node: int, current) -> str:
-    """One word for why this decision can no longer touch `node`.
-
-    target_detached  the node left the document
-    target_changed   another document, or a different control in this one
-    not_actionable   disabled, hidden, boxless, or covered at its centre
-    not_writable     a fill target that refuses text
-    ok               this decision may still be executed
-
-    Off-screen is not in that list. The executor scrollIntoViews an off-screen node and
-    re-hit-tests it (see browser_operation), and a self-scrolling feed moves nodes under a
-    decision without changing anything about them, so `hit` alone decides a pointer target.
-
-    Identity is checked last for the target kinds: a control that is covered or disabled is
-    still the control the model chose, and saying so beats reporting its state as a change.
-
-    A pointer target is refused by `_clickable`, which reads `hit` as decisive and lets
-    `live` refuse only what its telemetry can attribute to enabled-ness or a missing box.
-    """
-    flags = _probe_flags(current)
-    if flags is None:
-        return "target_changed"  # the document that produced the observation is gone
-    page_key = current[0]
-    if kind == "fill":
-        if not _same_field_document(page, page_key):
-            return "target_changed"
-    elif not _same_document(page, page_key):
-        return "target_changed"
-    attached, live, _in_view, hit, writable = flags
-    if not attached:
-        return "target_detached"
-    if kind == "fill":
-        # Typing needs a field, not a pointer: a field covered by its own label is focused and
-        # typed into (see _focus_covered_field), so the hit-test does not gate a fill.
-        if not live:
-            return "not_actionable"
-        if not writable:
-            return "not_writable"
-    elif not _clickable(live, hit, _probe_telemetry(current)):
-        return "not_actionable"
-    same = _same_field(page, node, current) if kind == "fill" else _same_target(page, node, current)
-    return "ok" if same else "target_changed"
-
-
-def _clickable(live: bool, hit: bool, telemetry: dict) -> bool:
-    """Whether a pointer target may still be clicked, given the probe's two bits.
-
-    `hit` is the decisive one and always has been: it is a real hit-test at the
-    node's centre. `live` folds enabled-ness together with an opacity-sensitive
-    visibility check, and the two halves disagree exactly when a node is briefly
-    mid-repaint — which is the shape behind the 14 `not_actionable` runs recorded
-    against example.com, a link whose box and hit-test were clean throughout.
-
-    So `live` refuses only what it can attribute:
-
-    - `enabled` false — genuinely disabled, inert, or aria-disabled. Nothing
-      recovers that, and refusing is right.
-    - `boxed` false — no box, so there is nothing to point at and `hit` would be
-      false anyway. Kept explicit because it is the attribution that matters.
-
-    Anything else (a false `live` whose telemetry says enabled and boxed, i.e. a
-    visibility blip) is deferred to the executor, which scrollIntoViews the node
-    and re-hit-tests it before dispatching anything (browser_operation). That gate
-    is authoritative because it is the one about to send input, and it is strictly
-    more capable than this one. With no telemetry at all the old rule stands, so a
-    probe answer that predates the diagnostic is judged exactly as it was.
-    """
-    if not telemetry:
-        return live and hit
-    if not telemetry.get("enabled", live):
-        return False
-    if not telemetry.get("boxed", True):
-        return False
-    return hit
-
-
-def _enter_is_read_only_submit(action: dict) -> bool:
-    """Whether Enter on this field is a search submit, which only navigates.
-
-    Enter is dispatched blind: `browser_operation` sends a bare keyDown/keyUp with
-    no node and no hit-test, so it lands on whatever the browser has focused rather
-    than on the field the model chose. That is safe while the field is a search box,
-    because submitting one navigates to a result list and mutates nothing. It is not
-    safe on a form field: the same keypress submits the form it belongs to.
-
-    `searchbox` is the role snapshot.js assigns to `input[type=search]` and to
-    nothing else, so this is a fact about the element rather than a guess read off
-    its label. A `textbox` named "Search" does not qualify, and neither does a
-    combobox: an autocomplete's Enter selects a suggestion and can carry a form
-    with it. Deliberately narrow — an unverifiable guess here is a mutation.
-    """
-    return (action.get("role") or "") == "searchbox"
-
-
-def _offer_enter(page: dict | None) -> None:
-    """Press Enter is its own action once a field can carry a submit. Jev does not imply it.
-
-    Two ways a field qualifies, and they are not interchangeable:
-
-    - It holds text. That is the original rule and it stays: a filled field is a
-      field the run has already committed to, so offering the submit costs nothing
-      that filling it did not already cost.
-    - It is a search box. Offering Enter without a value closes the no-button
-      search path, which is where the submit was otherwise never offered at all.
-
-    A non-search field that merely exists does not qualify. Widening to every
-    fillable field would put a blind keypress in reach of every comment box and
-    checkout on the page; see `_enter_is_read_only_submit` for why that is the
-    line, and docs/architecture.md for the audit behind it.
-    """
-    if not isinstance(page, dict):
-        return
-    actions = page.get("actions")
-    if not isinstance(actions, list):
-        return
-    if any(item.get("id") == "press_enter" for item in actions):
-        return
-    if any(
-        item.get("kind") == "fill"
-        and (str(item.get("value") or "").strip() or _enter_is_read_only_submit(item))
-        for item in actions
-    ):
-        actions.append({"id": "press_enter", "kind": "enter", "label": "Press Enter"})
-
-
-def _insert_fill(call, text: str) -> None:
-    modifier = 4 if sys.platform == "darwin" else 2
-    call(
-        "Input.dispatchKeyEvent",
-        type="keyDown",
-        key="a",
-        code="KeyA",
-        modifiers=modifier,
-        commands=["selectAll"],
-    )
-    call(
-        "Input.dispatchKeyEvent",
-        type="keyUp",
-        key="a",
-        code="KeyA",
-        modifiers=modifier,
-    )
-    call("Input.insertText", text=text)
-
-
-def _focus_covered_field(evaluate, action) -> bool:
-    """Focus a fill target the hit-test could not click. The field is often covered by its own label."""
-    try:
-        focused = evaluate(
-            """(action => {
-              const e=window.__jevFast?.nodes.get(action.node);
-              if (!e?.isConnected || e.matches(':disabled') || e.closest('[aria-disabled="true"],[inert]')) return null;
-              if (e.readOnly || e.getAttribute('aria-readonly')==='true') return null;
-              e.focus();
-              return true;
-            })("""
-            + json.dumps(action)
-            + ")"
-        )
-    except StalePage:
-        return False
-    return focused is True
-
-
-def browser_operation(request):
-    operation = request["operation"]
-    session = request["session"]
-
-    def call(method, **params):
-        return cdp(method, session_id=session, **params)
-
-    def evaluate(expression):
-        result = call("Runtime.evaluate", expression=expression, returnByValue=True)
-        if result.get("exceptionDetails"):
-            if operation == "act" and request["action"]["kind"] == "select":
-                raise RuntimeError("Dropdown execution was interrupted; inspect before retrying.")
-            raise StalePage("Document changed during evaluation")
-        return result.get("result", {}).get("value")
-
-    if operation == "act":
-        action = request["action"]
-        kind = action["kind"]
-        if kind == "enter":
-            for event in ("keyDown", "keyUp"):
-                call(
-                    "Input.dispatchKeyEvent",
-                    type=event,
-                    key="Enter",
-                    code="Enter",
-                    windowsVirtualKeyCode=13,
-                    nativeVirtualKeyCode=13,
-                )
-            return {"executed": action["id"], "via": "enter"}
-        if kind == "scroll":
-            size = evaluate("({h: innerHeight, w: innerWidth})") or {}
-            height = size.get("h") or 700
-            width = size.get("w") or 1100
-            sign = 1 if (action.get("delta") or 0) > 0 else -1
-            delta = sign * int(height * 0.8)
-            x, y = width / 2, height / 2
-            call("Input.dispatchMouseEvent", type="mouseWheel", x=x, y=y, deltaX=0, deltaY=delta)
-        elif kind != "wait":
-            if type(action["node"]) is not int:
-                raise ValueError("Invalid observed node")
-            target = evaluate("""(action => {
-              const e=window.__jevFast?.nodes.get(action.node);
-              if (!e?.isConnected || e.matches(':disabled') || e.closest('[aria-disabled="true"],[inert]') ||
-                  !e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})) return null;
-              if (action.kind==='fill' && (e.readOnly || e.getAttribute('aria-readonly')==='true')) return null;
-              let x=0, y=0;
-              const hit=()=>{
-                const r=e.getBoundingClientRect();
-                x=r.x+r.width/2; y=r.y+r.height/2;
-                return r.width && r.height && x>=0 && y>=0 && x<innerWidth && y<innerHeight &&
-                  e.contains(document.elementFromPoint(x,y));
-              };
-              if (!hit()) {
-                e.scrollIntoView({block:'center',inline:'nearest',behavior:'instant'});
-                if (!hit()) return null;
-              }
-              if (action.kind==='select') {
-                if (e.tagName!=='SELECT' || ![...e.options].some(o=>o.value===action.value &&
-                    !o.disabled && !o.closest('optgroup[disabled]'))) return null;
-                e.value=action.value;
-                e.dispatchEvent(new Event('input',{bubbles:true}));
-                e.dispatchEvent(new Event('change',{bubbles:true}));
-              }
-              return {x,y};
-            })(""" + json.dumps(action) + ")")
-            if target is None:
-                if kind == "select":
-                    raise RuntimeError("Dropdown execution was not confirmed; inspect before retrying.")
-                if kind == "fill" and _focus_covered_field(evaluate, action):
-                    _insert_fill(call, request.get("text") or "")
-                    return {"executed": action["id"], "via": "focus"}
-                raise StalePage("Target changed or is covered. Observe again.")
-            if kind != "select":
-                x, y = target["x"], target["y"]
-                for event in ("mousePressed", "mouseReleased"):
-                    call("Input.dispatchMouseEvent", type=event, x=x, y=y, button="left", clickCount=1)
-                if kind == "fill":
-                    _insert_fill(call, request.get("text") or "")
-            via = "pointer"
-        else:
-            via = "wait"
-        if kind == "scroll":
-            via = "wheel"
-        return {"executed": action["id"], "via": via}
-
-    info = evaluate(READ_STATE)
-    if info is None:
-        raise StalePage("Document is navigating")
-    info["fingerprint"] = fingerprint(info)
-    if request.get("screenshot", True):
-        info["screenshot"] = call("Page.captureScreenshot", format="jpeg", quality=72)["data"]
-    return info

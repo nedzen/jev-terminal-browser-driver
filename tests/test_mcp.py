@@ -3,6 +3,7 @@ short-circuit paths as test_plugin_handler (missing goal), or monkeypatched
 run_drive/run_read."""
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -149,9 +150,13 @@ def test_call_blocked_is_not_mcp_error(mcp, monkeypatch):
     assert res["result"]["isError"] is False
 
 
-def test_stdio_end_to_end():
+def test_stdio_end_to_end(tmp_path):
     """Full loop over stdio: initialize, list, call. No browser needed —
     the drive call fails fast on the missing goal before spawning."""
+    # Subprocess cannot see our monkeypatched LOG_DIR; give it a private HOME.
+    home = tmp_path / "home"
+    home.mkdir()
+    env = {**os.environ, "HOME": str(home)}
     proc = subprocess.Popen(
         [sys.executable, "scripts/mcp.py"],
         cwd=str(ROOT),
@@ -159,6 +164,7 @@ def test_stdio_end_to_end():
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        env=env,
     )
     try:
         lines = [
@@ -169,10 +175,12 @@ def test_stdio_end_to_end():
              "params": {"name": "drive", "arguments": {}}},
             {"jsonrpc": "2.0", "id": 4, "method": "ping"},
         ]
-        assert proc.stdin is not None
-        proc.stdin.write("\n".join(json.dumps(m) for m in lines) + "\n")
-        proc.stdin.close()
-        out = proc.communicate(timeout=60)[0]
+        # communicate(input=...) owns stdin close; write+close then communicate
+        # raises ValueError on Python 3.12+ ("I/O operation on closed file").
+        out = proc.communicate(
+            input="\n".join(json.dumps(m) for m in lines) + "\n",
+            timeout=60,
+        )[0]
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -311,8 +319,10 @@ def test_unserializable_response_becomes_an_internal_error(mcp, monkeypatch):
     assert rows[1]["result"]["serverInfo"]["name"] == "wwwdrive"
 
 
-def test_subprocess_survives_garbage_input():
+def test_subprocess_survives_garbage_input(tmp_path):
     """Same guarantee through the real process entrypoint."""
+    home = tmp_path / "home"
+    home.mkdir()
     proc = subprocess.Popen(
         [sys.executable, "scripts/mcp.py"],
         cwd=str(ROOT),
@@ -320,6 +330,7 @@ def test_subprocess_survives_garbage_input():
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        env={**os.environ, "HOME": str(home)},
     )
     try:
         lines = [
@@ -328,10 +339,7 @@ def test_subprocess_survives_garbage_input():
             json.dumps(req("tools/call", {"name": "drive", "arguments": ["not", "an", "object"]}, msg_id=2)),
             json.dumps(req("initialize", {}, msg_id=3)),
         ]
-        assert proc.stdin is not None
-        proc.stdin.write("\n".join(lines) + "\n")
-        proc.stdin.close()
-        out = proc.communicate(timeout=60)[0]
+        out = proc.communicate(input="\n".join(lines) + "\n", timeout=60)[0]
     finally:
         if proc.poll() is None:
             proc.kill()

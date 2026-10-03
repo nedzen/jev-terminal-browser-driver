@@ -36,10 +36,11 @@ shipped bugs only tests caught. But tests must earn their lines:
 
 ## Docs
 
-- Touching behavior? Update the docs that describe it (README section,
-  `docs/` guide, or module docstring — whichever owns the claim).
-- `docs/upstream-ideas-backlog.md` tracks cross-session plans; tick items
-  you complete.
+- Touching behavior? Update the docs that own the claim:
+  [architecture](docs/architecture.md), [decisions](docs/decisions.md),
+  [live-testing](docs/live-testing.md), [known-issues](docs/known-issues.md),
+  or [roadmap](docs/roadmap.md).
+- Tick completed roadmap items; do not leave rationale only in chat.
 
 ## Parallel work
 

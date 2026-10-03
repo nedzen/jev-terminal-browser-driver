@@ -1,17 +1,15 @@
-"""Instance provenance, root-terminal placement, and the idle reaper.
+"""Root-terminal placement, env scrub, and auto_launched provenance on disk.
 
-Score level only: frozen env dicts, frozen instance records, a frozen clock. No
-browser is opened, no instance is touched, no subprocess runs. The reaper in
-particular only ever *decides* — nothing here can close anything, which is what
-makes a test of its safety rules cheap enough to write honestly.
-
-Every guard is one-sided. A browser left open costs a process; a user tab closed by
-mistake costs data. So the majority of these tests are about the reaper NOT acting.
+Score level only for the placement/scrub paths: frozen env dicts, no browser
+opened. Provenance write tests exercise `browser.remember_page` against a temp
+continuity file. The idle-instance reaper (PR #27 decide-only cluster) was never
+wired to production and is gone; these tests cover what discover and continuity
+still use.
 """
 
 import pytest
 
-from jev_driver import lifecycle as lc
+from jev_driver import instances as lc
 from jev_driver.discover import WatchUnavailable
 
 # The live shape of a herdr pane hosted by cmux, captured from the environment these
@@ -142,7 +140,7 @@ def test_discover_refuses_to_provision_from_inside_a_herdr_pane(monkeypatch):
     `pytest.fail` below, so the only thing that can satisfy this test is the refusal.
     """
     from jev_driver import discover as disc
-    from jev_driver import lifecycle as _lc
+    from jev_driver import instances as _lc
 
     monkeypatch.setattr(disc, "_terminal_browser_discovery", lambda: None)
     monkeypatch.setattr(disc, "_daemon_db_discovery", lambda: None)
@@ -203,174 +201,6 @@ def test_discover_still_attaches_to_an_existing_pane_from_inside_a_herdr_pane(mo
 
 
 # --------------------------------------------------------------------------
-# Provenance
-# --------------------------------------------------------------------------
-
-
-def test_first_hand_knowledge_of_a_driver_spawn_beats_the_record():
-    assert lc.instance_origin({"auto_launched": False}, driver_spawned=True) == lc.ORIGIN_DRIVER
-
-
-def test_a_record_claiming_the_human_opened_it_is_owner_opened():
-    assert lc.instance_origin({"auto_launched": False}) == lc.ORIGIN_OWNER
-
-
-def test_a_record_claiming_the_driver_opened_it_is_driver_spawned():
-    assert lc.instance_origin({"auto_launched": True}) == lc.ORIGIN_DRIVER
-
-
-def test_a_record_predating_the_flag_is_unknown_not_owner_opened():
-    """The distinction that matters for safety. Absent provenance must never resolve
-    to owner-opened, or every browser predating the flag becomes permanently
-    unreclaimable; and it must never resolve to driver-spawned either."""
-    assert lc.instance_origin({"targetId": "T", "url": "u"}) == lc.ORIGIN_UNKNOWN
-
-
-def test_a_missing_record_is_unknown():
-    assert lc.instance_origin(None) == lc.ORIGIN_UNKNOWN
-
-
-# --------------------------------------------------------------------------
-# Leases
-# --------------------------------------------------------------------------
-
-
-def test_a_lease_on_the_key_holds_the_instance():
-    assert lc.is_leased({"key": "b1", "cdp_port": 5000}, leased_keys=["b1"]) is True
-
-
-def test_a_lease_on_the_port_holds_the_instance():
-    """The CDP side holds a port, not a key, so port membership has to count too."""
-    assert lc.is_leased({"key": "b1", "cdp_port": 5000}, leased_ports=[5000]) is True
-
-
-def test_an_unset_key_does_not_match_a_blank_lease():
-    """Otherwise `None` against a filtered set would report every instance leased and
-    the reaper would never run at all."""
-    assert lc.is_leased({"key": None, "cdp_port": None}, leased_keys=[None]) is False
-
-
-def test_an_unparseable_port_does_not_raise():
-    assert lc.is_leased({"cdp_port": "not-a-port"}, leased_ports=[5000]) is False
-
-
-# --------------------------------------------------------------------------
-# The reaper decides; it never acts
-# --------------------------------------------------------------------------
-
-
-def _instance(**over):
-    base = {"key": "b1", "cdp_port": 5000, "pid": 4242, "browser_id": "127.0.0.1:5000"}
-    base.update(over)
-    return base
-
-
-NOW = 1_000_000.0
-
-
-def test_a_driver_spawned_idle_past_the_ttl_is_reaped():
-    plan = lc.reap_plan(
-        [_instance(_driver_spawned=True, started_at=NOW - 3600)],
-        now=NOW,
-    )
-    assert plan[0]["verdict"] == lc.REAP
-
-
-def test_a_driver_spawned_instance_inside_the_ttl_is_kept():
-    plan = lc.reap_plan(
-        [_instance(_driver_spawned=True, started_at=NOW - 60)],
-        now=NOW,
-    )
-    assert plan[0]["verdict"] == lc.KEEP
-
-
-def test_an_owner_opened_instance_is_never_reaped_however_old():
-    plan = lc.reap_plan(
-        [_instance(_driver_spawned=False, started_at=NOW - 10**9)],
-        now=NOW,
-    )
-    assert plan[0]["verdict"] == lc.KEEP
-    assert plan[0]["reason"] == "owner-opened; never reaped"
-
-
-def test_an_instance_of_unknown_origin_is_never_reaped_however_old():
-    """The safety rule in one test: doubt leaves it alone."""
-    plan = lc.reap_plan([_instance(started_at=NOW - 10**9)], now=NOW)
-    assert plan[0]["verdict"] == lc.KEEP
-    assert plan[0]["origin"] == lc.ORIGIN_UNKNOWN
-
-
-def test_a_leased_instance_is_kept_however_idle():
-    plan = lc.reap_plan(
-        [_instance(_driver_spawned=True, started_at=NOW - 10**9)],
-        now=NOW,
-        leased_keys=["b1"],
-    )
-    assert plan[0]["verdict"] == lc.KEEP
-    assert "lease" in plan[0]["reason"]
-
-
-def test_an_instance_with_no_start_time_is_kept():
-    """No start time means idleness cannot be established, and idleness is the whole
-    justification for closing it."""
-    plan = lc.reap_plan([_instance(_driver_spawned=True)], now=NOW)
-    assert plan[0]["verdict"] == lc.KEEP
-
-
-def test_the_ttl_is_fifteen_minutes_and_is_not_the_tab_ttl():
-    """Two different objects age on two different clocks: this one reclaims an
-    abandoned browser process, `browser.LAST_PAGE_TTL_S` stops a stale *tab* being
-    re-attached to. Conflating them would either strand browsers or close live tabs."""
-    from jev_driver.browser import LAST_PAGE_TTL_S
-
-    assert lc.INSTANCE_IDLE_TTL_S == 900
-    assert LAST_PAGE_TTL_S == 1800
-
-
-def test_every_verdict_carries_a_reason():
-    """"Why did the sweep leave that one alone" is the question an operator has."""
-    plan = lc.reap_plan(
-        [
-            _instance(key="a", _driver_spawned=True, started_at=NOW - 10**9),
-            _instance(key="b", _driver_spawned=False, started_at=NOW - 10**9),
-            _instance(key="c", started_at=NOW - 10**9),
-        ],
-        now=NOW,
-    )
-    assert all(entry.get("reason") for entry in plan)
-
-
-def test_strays_returns_only_what_would_be_closed():
-    plan = lc.reap_plan(
-        [
-            _instance(key="a", _driver_spawned=True, started_at=NOW - 10**9),
-            _instance(key="b", _driver_spawned=False, started_at=NOW - 10**9),
-        ],
-        now=NOW,
-    )
-    assert [entry["key"] for entry in lc.strays(plan)] == ["a"]
-
-
-def test_provenance_is_read_from_the_record_matched_on_the_browser_id():
-    """The question is who opened the browser, so the match is on browser id. A record
-    naming a different browser says nothing about this one."""
-    plan = lc.reap_plan(
-        [_instance(browser_id="127.0.0.1:5000", started_at=NOW - 10**9)],
-        now=NOW,
-        last_page={"browser_id": "127.0.0.1:9999", "auto_launched": True},
-    )
-    assert plan[0]["verdict"] == lc.KEEP
-
-
-def test_provenance_is_read_from_the_record_that_matches():
-    plan = lc.reap_plan(
-        [_instance(browser_id="127.0.0.1:5000", started_at=NOW - 10**9)],
-        now=NOW,
-        last_page={"browser_id": "127.0.0.1:5000", "auto_launched": True},
-    )
-    assert plan[0]["verdict"] == lc.REAP
-
-# --------------------------------------------------------------------------
 # The provenance field, on disk
 # --------------------------------------------------------------------------
 
@@ -381,9 +211,10 @@ def _remember(monkeypatch, tmp_path, *, spawned):
 
     from jev_driver import browser as br
     from jev_driver import discover as disc
+    from jev_driver import lease
 
     path = tmp_path / "last-page.json"
-    monkeypatch.setattr(br, "LAST_PAGE_PATH", path)
+    monkeypatch.setattr(lease, "LAST_PAGE_PATH", path)
     monkeypatch.setattr(
         disc, "LAST",
         disc.Discovery("ws://127.0.0.1:5000/a", "http://127.0.0.1:5000", "terminal-browser", auto_launched=spawned),
@@ -394,8 +225,8 @@ def _remember(monkeypatch, tmp_path, *, spawned):
 
 
 def test_a_browser_this_run_opened_is_recorded_as_driver_spawned(tmp_path, monkeypatch):
-    """Without this the reaper can never act: after the process exits, a browser the
-    driver opened looks exactly like one the human opened."""
+    """Without this, after the process exits a browser the driver opened looks exactly
+    like one the human opened."""
     assert _remember(monkeypatch, tmp_path, spawned=True)["auto_launched"] is True
 
 
@@ -418,71 +249,41 @@ def test_a_record_written_before_the_flag_still_loads(tmp_path, monkeypatch):
     import json
 
     from jev_driver import browser as br
+    from jev_driver import lease
 
     path = tmp_path / "last-page.json"
     path.write_text(json.dumps({
         "targetId": "T1", "url": "https://example.test/", "source": "terminal-browser",
         "browser_id": "127.0.0.1:5000", "ts": 1.0,
     }))
-    monkeypatch.setattr(br, "LAST_PAGE_PATH", path)
+    monkeypatch.setattr(lease, "LAST_PAGE_PATH", path)
     assert br._load_last_page()["targetId"] == "T1"
 
 
-def test_a_pre_flag_record_reads_back_as_unknown_origin(tmp_path, monkeypatch):
-    """And it reads as unknown rather than owner-opened, so it is kept but not
-    mistaken for something the human deliberately opened."""
+def test_a_pre_flag_record_has_no_provenance_key(tmp_path, monkeypatch):
+    """An absent flag must not be invented as False on load — unknown is not owner-opened."""
     import json
 
     from jev_driver import browser as br
+    from jev_driver import lease
+    from jev_driver.browser import PROVENANCE_KEY
 
     path = tmp_path / "last-page.json"
     path.write_text(json.dumps({
         "targetId": "T1", "url": "https://example.test/", "source": "terminal-browser",
         "browser_id": "127.0.0.1:5000", "ts": 1.0,
     }))
-    monkeypatch.setattr(br, "LAST_PAGE_PATH", path)
-    assert lc.instance_origin(br._load_last_page()) == lc.ORIGIN_UNKNOWN
-
-
-# Epoch-scale, because the unit test in `_age_s` separates seconds from milliseconds
-# by magnitude. A toy clock below 1e11 is neither, and would test nothing.
-EPOCH_NOW = 1_791_020_916.0
-
-
-def test_a_millisecond_timestamp_is_read_as_seconds():
-    """The daemon DB stores `started_at` in milliseconds. Verified against a live row
-    (1791020916093). Compared raw against a seconds clock it yields an age near
-    -1.8e12, which reads as "not idle yet" for every instance forever -- a reaper that
-    silently never reaps anything is worse than no reaper, because it looks healthy."""
-    plan = lc.reap_plan(
-        [_instance(_driver_spawned=True, started_at=(EPOCH_NOW - 3600) * 1000)],
-        now=EPOCH_NOW,
-    )
-    assert plan[0]["verdict"] == lc.REAP
-    assert 3599 < plan[0]["idle_s"] < 3601
-
-
-def test_a_second_timestamp_is_still_read_as_seconds():
-    plan = lc.reap_plan(
-        [_instance(_driver_spawned=True, started_at=EPOCH_NOW - 3600)],
-        now=EPOCH_NOW,
-    )
-    assert plan[0]["verdict"] == lc.REAP
-
-
-def test_a_millisecond_timestamp_inside_the_ttl_is_still_kept():
-    plan = lc.reap_plan(
-        [_instance(_driver_spawned=True, started_at=(EPOCH_NOW - 60) * 1000)],
-        now=EPOCH_NOW,
-    )
-    assert plan[0]["verdict"] == lc.KEEP
+    monkeypatch.setattr(lease, "LAST_PAGE_PATH", path)
+    assert PROVENANCE_KEY not in br._load_last_page()
 
 
 def test_the_open_run_ledger_can_be_consulted_standing_alone(tmp_path, monkeypatch):
-    """The reaper reads this ledger with no log_dir, so it has to resolve the default
-    itself. It used to raise TypeError on None -- invisible in-tree because the one
-    existing caller resolves first and passes the path down, and fatal to the caller
-    that has no such caller."""
+    """open_run_ids must resolve the default log_dir itself when callers pass nothing.
+
+    It used to raise TypeError on None -- invisible in-tree because the one existing
+    caller resolves first and passes the path down, and fatal to a caller that has no
+    such helper.
+    """
     import json
 
     from scripts.live import isolation as iso

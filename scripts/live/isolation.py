@@ -31,6 +31,12 @@ LAST_PAGE = "last-page.json"
 # A drive in flight leaves a `run` start with no matching `run` finish. The quiet
 # window is deliberately short: this is a liveness check, not a timeout.
 IDLE_QUIET_S = 2.0
+# How long to wait for that quiet window between sequential live tests.
+IDLE_WAIT_TIMEOUT_S = 30.0
+# Poll interval while waiting (tests patch ``sleep``; never sleep in tests).
+IDLE_POLL_S = 0.1
+
+sleep = time.sleep
 
 
 class IsolationError(RuntimeError):
@@ -42,7 +48,7 @@ def _events(log_dir: Path):
     # when called with no argument. It read `log_dir / "drive.jsonl"` directly, which
     # raises TypeError on None -- masked everywhere it was used, because the one
     # in-tree caller (`assert_pane_idle`) resolves first and passes the path down.
-    # The reaper consults this ledger directly, so it has to stand on its own.
+    # open_run_ids must stand alone: it is the pane-idle signal, not a side effect.
     path = _dir(log_dir) / "drive.jsonl"
     if not path.is_file():
         return []
@@ -74,7 +80,7 @@ def assert_log_dir_matches(log_dir, driver_state_dir) -> None:
 
     This is the check whose absence voided S4a and S4b. The harness takes
     `log_dir` as a parameter while the driver *hardcodes* its state directory
-    (`browser.LAST_PAGE_PATH`), so pointing `log_dir` anywhere else does not fail
+    (`lease.LAST_PAGE_PATH`), so pointing `log_dir` anywhere else does not fail
     loudly -- `quarantine_last_page` finds no file to rename, `assert_pane_idle`
     reads no events, and both report success while isolating nothing. The driver
     meanwhile keeps re-attaching to whatever tab the previous run left, and a
@@ -155,6 +161,34 @@ def assert_pane_idle(log_dir=None, *, quiet_s: float = IDLE_QUIET_S) -> None:
             raise IsolationError(
                 f"pane log moved {age:.2f}s ago (<{quiet_s}s): another driver is active"
             )
+
+
+def wait_pane_idle(
+    log_dir=None,
+    *,
+    quiet_s: float = IDLE_QUIET_S,
+    timeout_s: float = IDLE_WAIT_TIMEOUT_S,
+    poll_s: float = IDLE_POLL_S,
+) -> None:
+    """Poll until the pane log is quiet (and no run is open), or time out.
+
+    Sequential live tests write the same drive.jsonl; without this wait the next
+    test's assert_pane_idle sees a mtime younger than quiet_s and CRASHes.
+    """
+    deadline = time.monotonic() + timeout_s
+    last: IsolationError | None = None
+    while True:
+        try:
+            assert_pane_idle(log_dir, quiet_s=quiet_s)
+            return
+        except IsolationError as exc:
+            last = exc
+        now = time.monotonic()
+        if now >= deadline:
+            raise IsolationError(
+                f"pane did not go idle within {timeout_s}s: {last}"
+            ) from last
+        sleep(min(poll_s, max(deadline - now, 0.0)))
 
 
 def read_last_page(log_dir=None) -> dict | None:

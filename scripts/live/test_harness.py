@@ -3,8 +3,8 @@
 No browser, no pane, no network: every outcome is scripted by
 `scripts/live/fake_server.py`. What is being tested is the harness's own claims --
 that it classifies all four v3 outcomes correctly, that it refuses a busy pane,
-that a stall is noticed from the log rather than from the socket, that redaction
-removes amounts, and that the regression diff honours v3's tolerances.
+that a stall is noticed from the log rather than from the socket, and that
+redaction removes amounts.
 """
 
 from __future__ import annotations
@@ -48,7 +48,6 @@ from scripts.live.metrics import (
     waste_ticks,
 )
 from scripts.live.redact import assert_no_amounts, presence_only, redact_record
-from scripts.live.regress import diff_run, is_regression
 from scripts.live.spec import ManifestError, validate_manifest, validate_test
 
 IANA = "https://www.iana.org/help/example-domains"
@@ -155,6 +154,15 @@ def test_a_block_on_a_satisfiable_goal_is_not_scored_as_a_miss():
     assert out["failure_cause"] == "unjustified-block"
 
 
+def test_no_page_is_a_harness_error_not_a_model_block():
+    """S4a single-drive after quarantine: driver returns no_page; that must not
+    score as BLOCKED-unjustified (the model never chose)."""
+    out = classify(expected={}, satisfiable=True, stop_reason="no_page",
+                   final_url=None, final_view=None, human_judged=True)
+    assert out["outcome_class"] == taxonomy.CRASH
+    assert out["failure_cause"] == "harness-error"
+
+
 def test_an_unjustified_block_carries_its_cause_for_the_scoreboard():
     """v3.1 wants an unjustified-block rate, so the closed-list cause has to survive."""
     out = classify(expected={"url_host_path": "x"}, satisfiable=True,
@@ -200,7 +208,7 @@ def test_a_timeout_is_terminal_rather_than_a_miss():
 
 
 def test_the_final_url_is_compared_on_host_and_path_only():
-    """v3's regression diff field, and it must ignore query and fragment churn."""
+    """End-state matching ignores query and fragment churn."""
     a = host_and_path("https://WWW.IANA.org/help/example-domains?utm=x#frag")
     b = host_and_path("https://www.iana.org/help/example-domains")
     assert a == b == "www.iana.org/help/example-domains"
@@ -292,71 +300,6 @@ def test_a_flagged_record_with_a_surviving_amount_is_caught():
 
 
 # --------------------------------------------------------------------------
-# Regression diff
-# --------------------------------------------------------------------------
-
-
-def _run(**over):
-    base = {"stop_reason": "model_done", "final_url": IANA, "ticks": 4, "bytes_per_call": 1000.0,
-            "spec_hash": "abc123"}
-    base.update(over)
-    return base
-
-
-def test_a_first_run_has_no_baseline_and_is_not_a_regression():
-    diff = diff_run(_run(), None)
-    assert diff["has_baseline"] is False
-    assert is_regression(diff) is False
-
-
-def test_a_stop_reason_change_is_a_regression():
-    diff = diff_run(_run(stop_reason="model_blocked"), _run())
-    assert is_regression(diff) is True
-
-
-def test_a_url_change_is_a_regression_even_when_only_the_query_moved():
-    """v3 compares host+path, so a cache buster is not a regression."""
-    diff = diff_run(_run(final_url=IANA + "?utm=2"), _run())
-    assert is_regression(diff) is False
-
-
-def test_a_real_url_change_is_a_regression():
-    diff = diff_run(_run(final_url="https://elsewhere.test/page"), _run())
-    assert is_regression(diff) is True
-
-
-def test_bytes_within_ten_percent_are_not_a_breach():
-    assert diff_run(_run(bytes_per_call=1090.0), _run())["bytes_breach"] is False
-
-
-def test_a_single_bytes_breach_is_investigate_only():
-    """v3 sharpening E: one churn excursion does not make a regression."""
-    diff = diff_run(_run(bytes_per_call=1500.0), _run())
-    assert diff["bytes_breach"] is True
-    assert is_regression(diff, consecutive_breaches=1) is False
-
-
-def test_two_consecutive_bytes_breaches_are_a_regression():
-    diff = diff_run(_run(bytes_per_call=1500.0), _run())
-    assert is_regression(diff, consecutive_breaches=2) is True
-
-
-def test_a_spec_hash_change_is_reported_but_never_a_regression():
-    """A prompt revision changes every field at once; reading that as regressions
-    buries the real one."""
-    diff = diff_run(_run(spec_hash="def456"), _run())
-    assert diff["info"]["spec_hash"] == {"baseline": "abc123", "current": "def456"}
-    assert is_regression(diff) is False
-
-
-def test_a_tick_change_is_reported_as_information_not_a_verdict():
-    """v3: count thresholds are ranges."""
-    diff = diff_run(_run(ticks=9), _run())
-    assert diff["info"]["ticks"] == {"baseline": 4, "current": 9}
-    assert is_regression(diff) is False
-
-
-# --------------------------------------------------------------------------
 # Isolation
 # --------------------------------------------------------------------------
 
@@ -378,6 +321,64 @@ def test_a_finished_run_leaves_the_pane_idle(tmp_path):
         encoding="utf-8",
     )
     isolation.assert_pane_idle(tmp_path, quiet_s=0)
+
+
+def test_wait_pane_idle_polls_until_the_log_is_quiet(monkeypatch, tmp_path):
+    """Sequential live tests share drive.jsonl; wait until mtime ages past quiet_s."""
+
+    class Clock:
+        def __init__(self):
+            self.t = 0.0
+
+        def monotonic(self):
+            return self.t
+
+        def sleep(self, seconds):
+            self.t += float(seconds)
+
+    clock = Clock()
+    attempts = {"n": 0}
+
+    def fake_assert(log_dir=None, *, quiet_s=isolation.IDLE_QUIET_S):
+        attempts["n"] += 1
+        if clock.t < quiet_s:
+            raise isolation.IsolationError(
+                f"pane log moved {quiet_s - clock.t:.2f}s ago (<{quiet_s}s): another driver is active"
+            )
+
+    monkeypatch.setattr(isolation, "assert_pane_idle", fake_assert)
+    monkeypatch.setattr(isolation, "sleep", clock.sleep)
+    monkeypatch.setattr(isolation.time, "monotonic", clock.monotonic)
+
+    isolation.wait_pane_idle(tmp_path, quiet_s=2.0, timeout_s=10.0, poll_s=0.5)
+    assert clock.t >= 2.0
+    assert attempts["n"] >= 2
+
+
+def test_wait_pane_idle_times_out_when_the_pane_never_settles(monkeypatch, tmp_path):
+    class Clock:
+        def __init__(self):
+            self.t = 0.0
+
+        def monotonic(self):
+            return self.t
+
+        def sleep(self, seconds):
+            self.t += float(seconds)
+
+    clock = Clock()
+    monkeypatch.setattr(
+        isolation,
+        "assert_pane_idle",
+        lambda *a, **k: (_ for _ in ()).throw(
+            isolation.IsolationError("pane log moved 0.05s ago (<2.0s): another driver is active")
+        ),
+    )
+    monkeypatch.setattr(isolation, "sleep", clock.sleep)
+    monkeypatch.setattr(isolation.time, "monotonic", clock.monotonic)
+
+    with pytest.raises(isolation.IsolationError, match="did not go idle within 1.0s"):
+        isolation.wait_pane_idle(tmp_path, quiet_s=2.0, timeout_s=1.0, poll_s=0.5)
 
 
 def test_quarantine_clears_the_remembered_tab_and_retains_it(tmp_path):
@@ -421,24 +422,28 @@ def _isolated_driver_state(root):
     model an isolated environment -- and it is what `tests/conftest.py` already
     does for the same reason. Using `pytest.MonkeyPatch.context` keeps it scoped to
     the call rather than leaking into other tests.
+
+    Patches `jev_driver.lease`, not `jev_driver.browser`: `LAST_PAGE_PATH` is
+    reassigned, not mutated in place, and `remember_page`/`find_continuable_page`
+    read it from their own module's globals (`lease.py`), so a patch bound to the
+    `browser` re-export would not reach them.
     """
-    from jev_driver import browser as browser_mod
+    from jev_driver import lease as lease_mod
 
     patcher = pytest.MonkeyPatch()
-    patcher.setattr(browser_mod, "LAST_PAGE_PATH", Path(root) / "last-page.json")
+    patcher.setattr(lease_mod, "LAST_PAGE_PATH", Path(root) / "last-page.json")
     return patcher
 
 
 def _run_one(scenarios, test=None, tmp_path=None, **kwargs):
     root = tmp_path or Path(".")
     client = _client(scenarios, log_dir=root)
-    kwargs.setdefault("baseline_dir", root / "baseline")
     # Every write is redirected into tmp_path, explicitly and by name: the ledger,
-    # the baseline, the log dir the isolation/quarantine steps touch, and the slice
-    # dir. The slice dir was the one that leaked -- run_test used to default it to
-    # the production /tmp/wwwdrive-runs and no self-test passed one, so a full
+    # the log dir the isolation/quarantine steps touch, and the slice dir. The
+    # slice dir was the one that leaked -- run_test used to default it to the
+    # production /tmp/wwwdrive-runs and no self-test passed one, so a full
     # self-test run littered 1352 files there.
-    kwargs.setdefault("ledger", root / "ledger.md")
+    kwargs.setdefault("ledger", root / "ledger.jsonl")
     kwargs.setdefault("log_dir", root)
     kwargs.setdefault("slice_dir", root / "slices")
     patcher = _isolated_driver_state(root)
@@ -531,47 +536,15 @@ def test_the_scoreboard_reports_hits_and_sev1_separately(tmp_path):
     assert board["hit_rate"] == 0.5
 
 
-def test_a_second_run_is_diffed_against_the_first(tmp_path):
-    baseline_dir = tmp_path / "baseline"
-    first = _run_one([HIT], tmp_path=tmp_path)
-    saved = runner.save_baseline(first, suite="live", baseline_dir=baseline_dir)
-    assert runner.load_baseline("live", "S1a", baseline_dir=baseline_dir) is not None
-    assert saved.name == "live__S1a.json"
-    second = _run_one([HIT], tmp_path=tmp_path, baseline_dir=baseline_dir)
-    assert second["diff"]["has_baseline"] is True
-    assert second["regression"] is False
-
-
-def test_a_saved_baseline_is_found_by_the_name_the_loader_looks_for(tmp_path):
-    """Regression guard: the two disagreed once, so every run looked like a first run."""
-    baseline_dir = tmp_path / "baseline"
-    record = _run_one([HIT], tmp_path=tmp_path)
-    runner.save_baseline(record, suite="live", baseline_dir=baseline_dir)
-    assert runner.load_baseline("live", record["test_id"], baseline_dir=baseline_dir) is not None
-
-
-def _shipped_ledger() -> str:
-    return (Path(__file__).resolve().parents[2] / "docs" / "live-learnings.md").read_text(
-        encoding="utf-8")
-
-
-def _ledger_header_block(text: str) -> list[str]:
-    """The header and its separator, which is what must match the writer.
-
-    Not the whole file: the ledger is *meant* to accumulate one row per run, so
-    comparing it whole would fail the moment a real run landed -- which is exactly
-    what happened, and it made this test report a false problem.
-
-    The separator is found by its own shape (only pipes and dashes) rather than a
-    spelling, because it is written as `|---|` and a `" | --- "` prefix test missed
-    it.
-    """
-    lines = text.splitlines()
-    separator = next(
-        i for i, line in enumerate(lines)
-        if line.startswith("|-") and set(line) <= set("|-")
-    )
-    return lines[: separator + 1]
+def _shipped_ledger_rows() -> list[dict]:
+    path = Path(__file__).resolve().parents[2] / "docs" / "live-ledger.jsonl"
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        rows.append(json.loads(line))
+    return rows
 
 
 # --------------------------------------------------------------------------
@@ -607,8 +580,8 @@ def test_the_slice_directory_is_resolved_at_call_time(tmp_path, monkeypatch):
     target = tmp_path / "redirected"
     monkeypatch.setattr(runner, "SLICE_DIR", target)
     assert Path(runner.SLICE_DIR) == target
-    # The isolation/baseline resolvers read the module constant now, not a
-    # default captured at import time.
+    # The isolation resolvers read the module constant now, not a default
+    # captured at import time.
     assert isolation._dir(None) == Path(isolation.LOG_DIR)
     assert isolation._dir(tmp_path) == tmp_path
 
@@ -652,46 +625,48 @@ def test_the_isolation_quarantine_never_touches_the_real_log_dir(tmp_path):
     client = _client([HIT])
     try:
         runner.run_test(client, _test(), log_dir=tmp_path, slice_dir=tmp_path / "slices",
-                        baseline_dir=tmp_path / "baseline", ledger=tmp_path / "ledger.md")
+                        ledger=tmp_path / "ledger.jsonl")
     finally:
         client.close()
     after = sorted(p.name for p in real_dir.iterdir()) if real_dir.is_dir() else []
     assert before == after, f"the self-test disturbed {real_dir}: {set(after) ^ set(before)}"
 
 
-def test_the_shipped_ledger_header_is_the_one_the_runner_appends_under():
-    """Header and writer are two literals in two files; they drift silently and a
-    row under the wrong header is unreadable."""
-    assert _ledger_header_block(_shipped_ledger()) == _ledger_header_block(runner.LEDGER_HEADER)
-
-
-def test_every_shipped_ledger_row_has_one_cell_per_column():
-    """The real invariant on a ledger that accumulates: no row may be short or long,
-    or a column silently shifts and every later reading is off by one."""
-    lines = _shipped_ledger().splitlines()
-    columns = len(_ledger_header_block(runner.LEDGER_HEADER)[-2].split("|"))
-    rows = [line for line in lines if line.startswith("| ") and "---" not in line][1:]
+def test_the_shipped_ledger_is_valid_jsonl():
+    """Every historical row must parse; a broken line shifts every later reading."""
+    rows = _shipped_ledger_rows()
+    assert len(rows) >= 24
     for row in rows:
-        assert len(row.split("|")) == columns, f"row has the wrong cell count: {row[:80]}"
+        assert "run_id" in row and "outcome_class" in row
 
 
-def test_a_written_row_has_one_cell_per_ledger_column(tmp_path):
-    """One column per cell in the header; a short row reads as empty."""
+def test_every_shipped_ledger_row_has_the_stable_fields():
+    required = set(runner.LEDGER_FIELDS) - {"void", "owner_flag"}
+    for row in _shipped_ledger_rows():
+        assert required <= set(row), f"missing fields on {row.get('run_id')}"
+
+
+def test_a_written_row_is_one_json_object(tmp_path):
     client = _client([HIT])
     patcher = _isolated_driver_state(tmp_path)
+    ledger = tmp_path / "ledger.jsonl"
     try:
-        record = runner.run_test(client, _test(), log_dir=tmp_path,
-                                 slice_dir=tmp_path / "slices",
-                                 baseline_dir=tmp_path / "baseline",
-                                 ledger=tmp_path / "ledger.md")
+        record = runner.run_test(
+            client,
+            _test(),
+            log_dir=tmp_path,
+            slice_dir=tmp_path / "slices",
+            ledger=ledger,
+        )
     finally:
         client.close()
         patcher.undo()
-    rows = [line for line in (tmp_path / "ledger.md").read_text().splitlines()
-            if line.startswith("| ") and "---" not in line]
-    assert len(rows) == 2  # header + one run
-    assert len(rows[1].split("|")) - 2 == len(rows[0].split("|")) - 2
-    assert record["run_id"] in rows[1]
+    lines = [line for line in ledger.read_text().splitlines() if line.strip()]
+    assert len(lines) == 1
+    row = json.loads(lines[0])
+    assert row["run_id"] == record["run_id"]
+    assert row["outcome_class"]
+    assert row["disposition"]
 
 
 # --------------------------------------------------------------------------
@@ -965,8 +940,8 @@ def test_a_crash_is_voided_and_the_run_is_retried_once(tmp_path):
     record = _run_one([CRASH, HIT], tmp_path=tmp_path)
     assert record["outcome_class"] == taxonomy.HIT
     assert record["attempt"] == 2
-    ledger = (tmp_path / "ledger.md").read_text()
-    assert "CRASH (void)" in ledger
+    rows = [json.loads(line) for line in (tmp_path / "ledger.jsonl").read_text().splitlines() if line.strip()]
+    assert any(r.get("disposition") == "CRASH (void)" or r.get("void") for r in rows)
 
 
 def test_two_consecutive_crashes_escalate_and_are_never_a_product_miss(tmp_path):
@@ -980,7 +955,8 @@ def test_a_consequential_element_aborts_the_run_and_flags_the_owner(tmp_path):
     test = _test(deny_elements=["buy"])
     with pytest.raises(runner.SuiteAbort, match="consequential element"):
         _run_one([CONSEQUENTIAL_HIT], test=test, tmp_path=tmp_path)
-    assert "consequential-element" in (tmp_path / "ledger.md").read_text()
+    body = (tmp_path / "ledger.jsonl").read_text()
+    assert "consequential-element" in body
 
 
 def test_a_recovered_hit_records_its_recovery_cost(tmp_path):
@@ -1158,7 +1134,7 @@ def test_a_chain_quarantines_once_before_the_chain_and_never_between_drives(tmp_
     patcher = _isolated_driver_state(tmp_path)
     try:
         runner_mod.run_test(client, test, log_dir=tmp_path, slice_dir=tmp_path / "slices",
-                            baseline_dir=tmp_path / "baseline", ledger=tmp_path / "ledger.md")
+                            ledger=tmp_path / "ledger.jsonl")
     finally:
         patcher.undo()
         runner_mod.isolation.quarantine_last_page = original
@@ -1280,8 +1256,7 @@ def test_a_run_whose_log_dir_is_misdirected_is_refused_and_never_drives(tmp_path
     try:
         record = runner.run_test(client, _test(), log_dir=tmp_path,
                                  slice_dir=tmp_path / "slices",
-                                 baseline_dir=tmp_path / "baseline",
-                                 ledger=tmp_path / "ledger.md")
+                                 ledger=tmp_path / "ledger.jsonl")
     finally:
         client.close()
     assert record["outcome_class"] == taxonomy.CRASH
@@ -1351,18 +1326,17 @@ def test_the_runner_refuses_on_the_directory_alone_not_only_via_quarantine(tmp_p
     first run), so the only thing that can refuse is the runner's own assertion.
     Removing that call makes this run proceed instead.
     """
-    from jev_driver import browser as browser_mod
+    from jev_driver import lease as lease_mod
 
     elsewhere = tmp_path / "driver-elsewhere"
     elsewhere.mkdir()
     patcher = pytest.MonkeyPatch()
-    patcher.setattr(browser_mod, "LAST_PAGE_PATH", elsewhere / "last-page.json")
+    patcher.setattr(lease_mod, "LAST_PAGE_PATH", elsewhere / "last-page.json")
     client = _client([HIT], log_dir=tmp_path)
     try:
         record = runner.run_test(client, _test(), log_dir=tmp_path,
                                  slice_dir=tmp_path / "slices",
-                                 baseline_dir=tmp_path / "baseline",
-                                 ledger=tmp_path / "ledger.md")
+                                 ledger=tmp_path / "ledger.jsonl")
     finally:
         client.close()
         patcher.undo()
@@ -1486,6 +1460,7 @@ def test_the_fake_server_offers_exactly_the_three_tools():
     finally:
         client.close()
 
+
 def test_a_dict_final_view_is_matched_on_its_text_content():
     """Live drive results carry final_view as an object (url/title/flags),
     not a string. Predicate matching must read its text, never crash on it."""
@@ -1522,8 +1497,7 @@ def test_run_suite_accepts_a_goal_style_manifest(tmp_path):
         out = runner.run_suite(
             {"tests": [_test(goal="Go to example.com and click Learn more.")]},
             client=client, log_dir=root, slice_dir=root / "slices",
-            baseline_dir=root / "baseline",
-            ledger=root / "ledger.md")
+            ledger=root / "ledger.jsonl")
     finally:
         client.close()
         patcher.undo()

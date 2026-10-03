@@ -2,7 +2,7 @@
 
 import pytest
 
-from jev_driver import browser
+from jev_driver import browser, lease
 from jev_driver.browser import Browser, set_lease
 
 
@@ -73,7 +73,8 @@ def test_init_does_not_set_device_metrics(monkeypatch):
             return {"result": {"value": "complete"}}
         return {}
 
-    monkeypatch.setattr(browser, "cdp", fake_cdp)
+    monkeypatch.setattr(browser, "cdp", fake_cdp)  # Browser.call / self.evaluate
+    monkeypatch.setattr(lease, "cdp", fake_cdp)  # _attach, called from lease.py's own namespace
     monkeypatch.setattr(browser, "connect", lambda: None)
     monkeypatch.setattr(browser, "list_browsers", lambda: {"browsers": [{"key": "1-1", "cdpPort": 1}]})
     monkeypatch.setattr(browser, "_open_owned_tab", lambda url: ("T1", True))

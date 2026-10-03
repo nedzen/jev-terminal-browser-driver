@@ -1,4 +1,4 @@
-"""Watch-mode lease: yield when the user navigates the visible pane. agent.py stays verbatim."""
+"""Watch-mode lease: yield when the user navigates the visible pane."""
 
 import time
 
@@ -9,7 +9,7 @@ TAKEOVER_REASON = "user took over the browser"
 
 
 class WatchAgent(DriveAgent):
-    """Same loop as Agent, but a stale page means the user took over — do not re-observe and continue."""
+    """Same loop as DriveAgent, but a stale page means the user took over — do not re-observe."""
 
     def command(self, name, body=None):
         if name != "tick":

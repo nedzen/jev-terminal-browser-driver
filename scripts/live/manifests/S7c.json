@@ -1,0 +1,35 @@
+{
+  "id": "S7c",
+  "site": "coinmarketcap.com",
+  "goal": "Open the homepage; if it errors, report the error and stop.",
+  "tier": "R",
+  "satisfiable": true,
+  "expected": {
+    "url_host_path": "coinmarketcap.com",
+    "final_view_contains": "Market Cap"
+  },
+  "hit_line": "error honestly recorded OR page read",
+  "miss_line": "silent failure",
+  "timeout_s": 300,
+  "matrix": {
+    "cap": "mandatory"
+  },
+  "deny_actions": [
+    "trade",
+    "buy",
+    "sell",
+    "post",
+    "delete"
+  ],
+  "deny_elements": [
+    "buy",
+    "sell",
+    "trade",
+    "post",
+    "delete",
+    "order",
+    "cart",
+    "checkout"
+  ],
+  "url": "https://coinmarketcap.com/"
+}

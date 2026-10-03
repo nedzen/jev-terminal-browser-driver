@@ -24,7 +24,9 @@ dev = ["pytest>=8.4,<9", "ruff>=0.14,<1"]
 line-length = 120
 
 [tool.ruff.lint]
-select = ["E", "F", "I"]
+# E302/E305 are preview blank-line rules; without preview=true, select E skips them.
+preview = true
+select = ["E", "F", "I", "W29"]
 
 [tool.pytest.ini_options]
 # scripts/live carries its self-tests beside the runner, so they are on the path

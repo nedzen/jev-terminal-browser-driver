@@ -8,6 +8,7 @@ import pytest
 
 from jev_driver import browser as br
 from jev_driver import discover as disc
+from jev_driver import lease
 from jev_driver.browser import (
     _is_ephemeral_url,
     _netloc_id,
@@ -152,7 +153,7 @@ def _pointer(path, **fields):
 
 def _identity(monkeypatch, source="agent-browser-daemon", ws="ws://127.0.0.1:9222/devtools/browser/x"):
     monkeypatch.setattr(
-        br._discover,
+        disc,
         "LAST",
         Discovery(ws, "http://127.0.0.1:9222", source),
     )
@@ -161,10 +162,10 @@ def _identity(monkeypatch, source="agent-browser-daemon", ws="ws://127.0.0.1:922
 def test_find_continuable_page_uses_remembered_target(monkeypatch, tmp_path):
     path = tmp_path / "last-page.json"
     _pointer(path)
-    monkeypatch.setattr(br, "LAST_PAGE_PATH", path)
+    monkeypatch.setattr(lease, "LAST_PAGE_PATH", path)
     _identity(monkeypatch)
     monkeypatch.setattr(
-        br,
+        lease,
         "_json_pages",
         lambda: [
             {"id": "T1", "type": "page", "url": "https://www.google.com/travel/flights?tfs=1"},
@@ -180,10 +181,10 @@ def test_find_continuable_page_uses_remembered_target(monkeypatch, tmp_path):
 def test_dead_id_does_not_fall_back_to_other_live_tabs(monkeypatch, tmp_path):
     path = tmp_path / "last-page.json"
     _pointer(path, targetId="T-DEAD")
-    monkeypatch.setattr(br, "LAST_PAGE_PATH", path)
+    monkeypatch.setattr(lease, "LAST_PAGE_PATH", path)
     _identity(monkeypatch)
     monkeypatch.setattr(
-        br,
+        lease,
         "_json_pages",
         lambda: [
             {"id": "T-AA", "type": "page", "url": "https://artificialanalysis.ai/"},
@@ -197,10 +198,10 @@ def test_dead_id_does_not_fall_back_to_other_live_tabs(monkeypatch, tmp_path):
 def test_ttl_expired_is_not_continuable(monkeypatch, tmp_path):
     path = tmp_path / "last-page.json"
     _pointer(path, ts=time.time() - 1801)
-    monkeypatch.setattr(br, "LAST_PAGE_PATH", path)
+    monkeypatch.setattr(lease, "LAST_PAGE_PATH", path)
     _identity(monkeypatch)
     monkeypatch.setattr(
-        br,
+        lease,
         "_json_pages",
         lambda: [{"id": "T1", "type": "page", "url": "https://www.google.com/travel/flights"}],
     )
@@ -211,10 +212,10 @@ def test_ttl_expired_is_not_continuable(monkeypatch, tmp_path):
 def test_source_mismatch_is_not_continuable(monkeypatch, tmp_path):
     path = tmp_path / "last-page.json"
     _pointer(path, source="terminal-browser", browser_id="127.0.0.1:50785")
-    monkeypatch.setattr(br, "LAST_PAGE_PATH", path)
+    monkeypatch.setattr(lease, "LAST_PAGE_PATH", path)
     _identity(monkeypatch, source="agent-browser-daemon", ws="ws://127.0.0.1:9222/devtools/browser/x")
     monkeypatch.setattr(
-        br,
+        lease,
         "_json_pages",
         lambda: [{"id": "OTHER", "type": "page", "url": "https://www.google.com/travel/flights"}],
     )
@@ -225,10 +226,10 @@ def test_source_mismatch_is_not_continuable(monkeypatch, tmp_path):
 def test_label_mismatch_reuses_the_tab_on_this_browser(monkeypatch, tmp_path):
     path = tmp_path / "last-page.json"
     _pointer(path, targetId="T1", source="terminal-browser", browser_id="127.0.0.1:1")
-    monkeypatch.setattr(br, "LAST_PAGE_PATH", path)
+    monkeypatch.setattr(lease, "LAST_PAGE_PATH", path)
     _identity(monkeypatch, source="terminal-browser", ws="ws://127.0.0.1:9222/devtools/browser/x")
     monkeypatch.setattr(
-        br,
+        lease,
         "_json_pages",
         lambda: [{"id": "T1", "type": "page", "url": "https://x.com/explore"}],
     )
@@ -241,10 +242,10 @@ def test_label_mismatch_reuses_the_tab_on_this_browser(monkeypatch, tmp_path):
 def test_stem_match_same_browser(monkeypatch, tmp_path):
     path = tmp_path / "last-page.json"
     _pointer(path, targetId="T1", url="https://www.google.com/travel/flights")
-    monkeypatch.setattr(br, "LAST_PAGE_PATH", path)
+    monkeypatch.setattr(lease, "LAST_PAGE_PATH", path)
     _identity(monkeypatch)
     monkeypatch.setattr(
-        br,
+        lease,
         "_json_pages",
         lambda: [
             {"id": "T2", "type": "page", "url": "https://www.google.com/travel/flights?tfs=abc"},
@@ -258,10 +259,10 @@ def test_stem_match_same_browser(monkeypatch, tmp_path):
 def test_legacy_schema_is_not_continuable(monkeypatch, tmp_path):
     path = tmp_path / "last-page.json"
     path.write_text('{"targetId": "T1", "url": "https://www.google.com/travel/flights"}')
-    monkeypatch.setattr(br, "LAST_PAGE_PATH", path)
+    monkeypatch.setattr(lease, "LAST_PAGE_PATH", path)
     _identity(monkeypatch)
     monkeypatch.setattr(
-        br,
+        lease,
         "_json_pages",
         lambda: [{"id": "T1", "type": "page", "url": "https://www.google.com/travel/flights"}],
     )
@@ -276,10 +277,10 @@ def test_remembered_fixture_tab_is_reused(monkeypatch, tmp_path):
         targetId="FIX",
         url="file:///x/jev-terminal-browser-driver/fixtures/click.html",
     )
-    monkeypatch.setattr(br, "LAST_PAGE_PATH", path)
+    monkeypatch.setattr(lease, "LAST_PAGE_PATH", path)
     _identity(monkeypatch)
     monkeypatch.setattr(
-        br,
+        lease,
         "_json_pages",
         lambda: [
             {"id": "FIX", "type": "page", "url": "file:///x/jev-terminal-browser-driver/fixtures/click.html?jev=1"},
@@ -293,7 +294,7 @@ def test_remembered_fixture_tab_is_reused(monkeypatch, tmp_path):
 
 def test_remember_stores_fixture_tab(monkeypatch, tmp_path):
     path = tmp_path / "last-page.json"
-    monkeypatch.setattr(br, "LAST_PAGE_PATH", path)
+    monkeypatch.setattr(lease, "LAST_PAGE_PATH", path)
     _identity(monkeypatch)
     set_lease(tab="new")
     remember_page("FIX", "file:///x/jev-terminal-browser-driver/fixtures/click.html")
@@ -303,7 +304,7 @@ def test_remember_stores_fixture_tab(monkeypatch, tmp_path):
 
 def test_remember_new_tab_changes_target_id(monkeypatch, tmp_path):
     path = tmp_path / "last-page.json"
-    monkeypatch.setattr(br, "LAST_PAGE_PATH", path)
+    monkeypatch.setattr(lease, "LAST_PAGE_PATH", path)
     _identity(monkeypatch)
     set_lease(tab="new")
     remember_page("T-NEW", "https://artificialanalysis.ai/")
@@ -316,7 +317,7 @@ def test_remember_new_tab_changes_target_id(monkeypatch, tmp_path):
 def test_remember_continuity_same_id_refreshes_url(monkeypatch, tmp_path):
     path = tmp_path / "last-page.json"
     _pointer(path, targetId="T1", url="https://www.google.com/travel/flights")
-    monkeypatch.setattr(br, "LAST_PAGE_PATH", path)
+    monkeypatch.setattr(lease, "LAST_PAGE_PATH", path)
     _identity(monkeypatch)
     set_lease(tab="target", target_id="T1")
     remember_page("T1", "https://www.google.com/travel/flights?tfs=later")
@@ -328,7 +329,7 @@ def test_remember_continuity_same_id_refreshes_url(monkeypatch, tmp_path):
 def test_remember_continuity_different_id_does_not_overwrite(monkeypatch, tmp_path):
     path = tmp_path / "last-page.json"
     _pointer(path, targetId="T1", url="https://www.google.com/travel/flights")
-    monkeypatch.setattr(br, "LAST_PAGE_PATH", path)
+    monkeypatch.setattr(lease, "LAST_PAGE_PATH", path)
     _identity(monkeypatch)
     set_lease(tab="target", target_id="T2")
     remember_page("T2", "https://artificialanalysis.ai/")

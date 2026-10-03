@@ -1,16 +1,6 @@
-"""The stdlib-only core both sides of the subprocess boundary share.
+"""Stdlib-only core shared across the subprocess boundary.
 
-Hermes loads plugin/ without jev_driver; the driver in jev_driver/ imports this
-package to build its tick rows. So the dependency runs one way only, and nothing
-here may import outside the standard library and plugin/ itself — a test walks
-the ASTs to keep it that way.
-
-Three modules, three jobs:
-
-- :mod:`plugin.core.env` — where the driver lives, whether this machine can drive.
-- :mod:`plugin.core.budgets` — what a number may be, rejected rather than clamped.
-- :mod:`plugin.core.result` — the tick row and the agent result, from one field table.
-- :mod:`plugin.core.trace` — the run-log record: what survives after the process exits.
+Hermes loads plugin/ without jev_driver; the driver imports this package too.
 """
 
 from __future__ import annotations

@@ -3,12 +3,13 @@
 v3 fixes the order of operations per test, and this module follows it literally
 because the order is load-bearing: isolation first (a busy pane invalidates
 everything after it), then the drive, then classification against the declared end
-state, then the regression diff, then the row. A row is written whatever happened
--- a run that raised still gets one, because a run that left no trace is how a
-suite ends up looking green over a test that never executed.
+state, then the row. A row is written whatever happened -- a run that raised still
+gets one, because a run that left no trace is how a suite ends up looking green
+over a test that never executed.
 
 Slices land in `/tmp/wwwdrive-runs/<run_id>.jsonl` (v3 retention: pruned at 30
-days or on a release tag) and rows in `docs/live-learnings.md`, one per run.
+days or on a release tag). The learnings ledger is append-only JSONL at
+`docs/live-ledger.jsonl` (one object per run); see `docs/live-testing.md`.
 
 Stdlib only.
 """
@@ -27,7 +28,6 @@ from scripts.live.classify import classify
 from scripts.live.driver import McpStdio
 from scripts.live.metrics import CallMeter, build_run_record, waste_ticks
 from scripts.live.redact import assert_no_amounts, redact_record
-from scripts.live.regress import diff_run, is_regression
 from scripts.live.spec import validate_manifest, validate_test
 from scripts.live.taxonomy import (
     CAP_MANDATORY,
@@ -41,38 +41,34 @@ from scripts.live.taxonomy import (
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SLICE_DIR = Path("/tmp/wwwdrive-runs")
-LEDGER = REPO_ROOT / "docs" / "live-learnings.md"
-BASELINE_DIR = REPO_ROOT / "docs" / "live-baseline"
+LEDGER = REPO_ROOT / "docs" / "live-ledger.jsonl"
 
-LEDGER_HEADER = """# Live-test learnings ledger
-
-One row per run, appended by `scripts/live`. `outcome` is the v3.1 partition
-(HIT / HIT-recovered / MISS / FALSE-DONE / BLOCKED-honest / BLOCKED-unjustified /
-STALL / CRASH); `sev` is sev-1 (FALSE-DONE only, must stay 0) or sev-2. `bytes/call`
-is the caller-ingested gate; driver Jev token totals are diagnosis only. Slices:
-`/tmp/wwwdrive-runs/<run_id>.jsonl`. S6x rows carry presence-only values, never
-amounts.
-
-Columns: `url` is final_url on host+path only, `waste` is measured waste-ticks
-(post-satisfaction + stale retries only -- the remainder has no oracle), `commit`
-is abbreviated to 7. A `void` row is a CRASH retry attempt and does not count
-toward the scoreboard. Free-text notes are in the run record and the JSONL slice,
-not in this table: a wrapping paragraph in a ledger cell is unreadable.
-
-| run_id | test | site | tier | cap | outcome | sev | cause | stop | url | ticks | waste | B/c | hash | commit | wall |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-"""
-
-# Every drift-checked field the diff needs, in the order it is read.
-BASELINE_FIELDS = (
-    "run_id", "test_id", "outcome_class", "severity", "failure_cause", "stop_reason",
-    "final_url", "final_url_host_path", "ticks", "waste_ticks", "bytes_per_call",
-    "spec_hash", "commit",
+# Fields written to each ledger JSONL object (stable for scoreboard tooling).
+LEDGER_FIELDS = (
+    "run_id",
+    "test_id",
+    "site",
+    "tier",
+    "matrix_cap",
+    "outcome_class",
+    "severity",
+    "failure_cause",
+    "stop_reason",
+    "final_url_host_path",
+    "ticks",
+    "waste_ticks",
+    "bytes_per_call",
+    "spec_hash",
+    "commit",
+    "wall_s",
+    "void",
+    "owner_flag",
 )
 
 # v3.1 F5: a CRASH voids its run and gets one retry; two consecutive crashes are a
 # harness-error investigation and never a product MISS.
 CRASH_RETRIES = 1
+
 
 # v3.1 safety: a consequential-element hit aborts the suite and queues an owner
 # flag rather than being scored, because the click may already have landed.
@@ -116,14 +112,7 @@ def _run_id(test_id: str) -> str:
 
 
 def _disposition_cell(row: dict) -> str:
-    """The outcome cell, carrying any marker that changes how the row counts.
-
-    A voided CRASH retry and a safety-abort are both ledger rows, and without a
-    marker in the table a reader cannot tell them from scored runs -- which is
-    exactly the confusion the scoreboard's void exclusion exists to prevent. The
-    marker lives here rather than in a free-text notes column because a wrapping
-    paragraph is unreadable in a scan table.
-    """
+    """Outcome label for humans (void / owner_flag markers included)."""
     outcome = row.get("outcome_class") or ("PENDING" if row.get("needs_human_verdict") else "-")
     if row.get("void"):
         return f"{outcome} (void)"
@@ -132,29 +121,62 @@ def _disposition_cell(row: dict) -> str:
     return str(outcome)
 
 
-def _append_ledger(row: dict, ledger: Path | None = None) -> None:
-    """Append one row, creating the ledger with its header if it is new.
+def _ledger_object(row: dict) -> dict:
+    """Stable JSONL record: known fields only, commit abbreviated to 7."""
+    record = {}
+    for key in LEDGER_FIELDS:
+        if key == "commit":
+            record[key] = (row.get("commit") or "")[:7] or None
+        elif key == "void":
+            if row.get("void"):
+                record[key] = True
+        elif key == "owner_flag":
+            if row.get("owner_flag"):
+                record[key] = row.get("owner_flag")
+        else:
+            value = row.get(key)
+            record[key] = None if value in ("",) else value
+    record["disposition"] = _disposition_cell(row)
+    return record
 
-    `ledger` resolves inside the function on purpose. As a default argument it
-    would be bound at import, which means a caller that redirects the module
-    constant is ignored -- and a self-test then appends its rows to the real
-    `docs/live-learnings.md` instead of a tmp file.
-    """
+
+def _append_ledger(row: dict, ledger: Path | None = None) -> None:
+    """Append one JSONL object. Path resolves at call time (never import-bound)."""
     ledger = Path(ledger) if ledger is not None else LEDGER
     ledger.parent.mkdir(parents=True, exist_ok=True)
-    if not ledger.exists() or ledger.read_text(encoding="utf-8").strip() == "":
-        ledger.write_text(LEDGER_HEADER, encoding="utf-8")
-    cells = [
-        row.get("run_id"), row.get("test_id"), row.get("site"), row.get("tier"),
-        row.get("matrix_cap"), _disposition_cell(row),
-        row.get("severity") or "-", row.get("failure_cause") or "-",
-        row.get("stop_reason") or "-",
-        row.get("final_url_host_path") or "-", row.get("ticks"), row.get("waste_ticks"),
-        row.get("bytes_per_call"),
-        row.get("spec_hash"), (row.get("commit") or "")[:7], row.get("wall_s"),
-    ]
     with ledger.open("a", encoding="utf-8") as handle:
-        handle.write("| " + " | ".join("" if c is None else str(c) for c in cells) + " |\n")
+        handle.write(json.dumps(_ledger_object(row), ensure_ascii=False, default=str) + "\n")
+
+
+def summarize_ledger(path: Path | None = None, *, window: int | None = 2) -> dict:
+    """Scoreboard counts from the JSONL ledger.
+
+    ``window=2`` keeps historical window-2 rows plus any row without a window
+    field (new appends). Void retries never count.
+    """
+    path = Path(path) if path is not None else LEDGER
+    counts: dict[str, int] = {}
+    scored = 0
+    if not path.is_file():
+        return {"scored": 0, "outcomes": counts}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if row.get("void"):
+            continue
+        if window is not None:
+            w = row.get("window")
+            if w is not None and w != window:
+                continue
+        scored += 1
+        key = row.get("outcome_class") or "?"
+        counts[key] = counts.get(key, 0) + 1
+    return {"scored": scored, "outcomes": counts}
 
 
 def write_slice(run_id: str, events, *, slice_dir, redact: str | None = None) -> Path:
@@ -175,33 +197,6 @@ def write_slice(run_id: str, events, *, slice_dir, redact: str | None = None) ->
             if redact:
                 assert_no_amounts(record)
             handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
-    return path
-
-
-def load_baseline(suite: str, test_id: str, *, baseline_dir=None) -> dict | None:
-    """The last green slice for this test, or None.
-
-    Per test rather than per suite so a test added later starts with no baseline
-    instead of being compared against an unrelated run.
-    """
-    path = Path(baseline_dir or BASELINE_DIR) / f"{suite}__{test_id}.json"
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-
-
-def save_baseline(record: dict, *, suite: str = "live", baseline_dir=None) -> Path:
-    """Promote a run to be this test's baseline.
-
-    Named by `load_baseline`'s convention, and that sharing is the point: the two
-    used to disagree, so a saved baseline was silently never found and every run
-    reported "first run" forever.
-    """
-    baseline_dir = Path(baseline_dir or BASELINE_DIR)
-    baseline_dir.mkdir(parents=True, exist_ok=True)
-    path = baseline_dir / f"{suite}__{record['test_id']}.json"
-    path.write_text(json.dumps({k: record.get(k) for k in BASELINE_FIELDS}, indent=2), encoding="utf-8")
     return path
 
 
@@ -230,8 +225,8 @@ def _events_from_payload(payload: dict) -> list[dict]:
     return events
 
 
-def run_test(client: McpStdio, test: dict, *, log_dir, slice_dir, suite: str = "live",
-             baseline_dir=None, ledger: Path | None = None) -> dict:
+def run_test(client: McpStdio, test: dict, *, log_dir, slice_dir,
+             ledger: Path | None = None) -> dict:
     """One test, end to end, with v3.1's CRASH retry rule.
 
     A CRASH voids its attempt and gets exactly one retry; two consecutive crashes
@@ -243,8 +238,8 @@ def run_test(client: McpStdio, test: dict, *, log_dir, slice_dir, suite: str = "
     """
     test = validate_test(test)
     for attempt in range(1, CRASH_RETRIES + 2):
-        record = _attempt(client, test, log_dir=log_dir, slice_dir=slice_dir, suite=suite,
-                          attempt=attempt, baseline_dir=baseline_dir, ledger=ledger)
+        record = _attempt(client, test, log_dir=log_dir, slice_dir=slice_dir,
+                          attempt=attempt, ledger=ledger)
         if record["outcome_class"] != CRASH:
             _append_ledger(record, ledger)
             return record
@@ -260,8 +255,8 @@ def run_test(client: McpStdio, test: dict, *, log_dir, slice_dir, suite: str = "
     raise AssertionError("unreachable: the retry loop always returns")
 
 
-def _attempt(client: McpStdio, test: dict, *, log_dir, slice_dir, suite: str, attempt: int,
-             baseline_dir, ledger: Path | None = None) -> dict:
+def _attempt(client: McpStdio, test: dict, *, log_dir, slice_dir, attempt: int,
+             ledger: Path | None = None) -> dict:
     """One drive attempt.
 
     Returns its record and does not append to the ledger on the normal paths:
@@ -287,7 +282,9 @@ def _attempt(client: McpStdio, test: dict, *, log_dir, slice_dir, suite: str, at
     try:
         state_dir = driver_state_dir()
         isolation.assert_log_dir_matches(log_dir, state_dir)
-        isolation.assert_pane_idle(log_dir)
+        # Wait for the previous test's log writes to age past quiet_s (and for any
+        # open run to finish). Assert alone CRASHes every test after the first.
+        isolation.wait_pane_idle(log_dir)
         # `driver_state_dir=` here is defence in depth, not the load-bearing check:
         # `assert_log_dir_matches` above has already guaranteed log_dir *is* the
         # driver's state directory, so quarantine's loud branch cannot fire from
@@ -386,16 +383,11 @@ def _attempt(client: McpStdio, test: dict, *, log_dir, slice_dir, suite: str, at
     slice_path = write_slice(run_id, events, slice_dir=slice_dir, redact=test.get("redact"))
     record["slice"] = str(slice_path)
 
-    baseline = load_baseline(suite, test["id"], baseline_dir=baseline_dir)
-    diff = diff_run(record, baseline)
-    record["diff"] = diff
-    record["regression"] = is_regression(diff)
-
     return record
 
 
-def run_suite(manifest: dict, *, client=None, log_dir, slice_dir, suite: str = "live",
-              baseline_dir=None, ledger: Path | None = None) -> dict:
+def run_suite(manifest: dict, *, client=None, log_dir, slice_dir,
+              ledger: Path | None = None) -> dict:
     """Every test in the manifest, sequentially, in manifest order.
 
     A manifest that fails validation stops the suite before any browser time,
@@ -407,8 +399,7 @@ def run_suite(manifest: dict, *, client=None, log_dir, slice_dir, suite: str = "
     if owns_client:
         client.start()
     try:
-        records = [run_test(client, test, log_dir=log_dir, slice_dir=slice_dir, suite=suite,
-                            baseline_dir=baseline_dir, ledger=ledger)
+        records = [run_test(client, test, log_dir=log_dir, slice_dir=slice_dir, ledger=ledger)
                    for test in checked["tests"]]
     finally:
         if owns_client:
@@ -456,7 +447,6 @@ def scoreboard(suite: str, records: list[dict]) -> dict:
         "sev2_rate": rate(classified, lambda r: r.get("severity") == SEV_2),
         "terminal": [r["run_id"] for r in classified if is_terminal(r["outcome_class"])],
         "waste_ticks_total": sum(r.get("waste_ticks") or 0 for r in scored),
-        "regressions": [r["run_id"] for r in records if r.get("regression")],
         "escalations": [r["run_id"] for r in records if r.get("escalation")],
         "site_fingerprints": sorted(
             {r["site_fingerprint"] for r in records if r.get("site_fingerprint")}),

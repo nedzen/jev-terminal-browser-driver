@@ -12,8 +12,8 @@ from plugin.core.result import build_tick_row
 from plugin.core.trace import build_trace_record, last_decision, target_labels, top_probs
 
 from . import browser as browser_mod
+from . import instances as proc_mod
 from . import model as model_mod
-from . import processes as proc_mod
 from .browser import _log_continuity, find_continuable_page, set_lease
 from .cdp import connect, list_browsers
 from .discover import WatchUnavailable, discover
@@ -43,11 +43,7 @@ def same_document(left, right) -> bool:
 
 
 def choose_lease(*, url, target_id, continuable, default_url, navigate_explicit=True, dropped=None):
-    """Decide which tab to drive.
-
-    An explicit target id wins. Otherwise reuse the driver's own live tab and
-    navigate it when a url was passed. Open a new tab only when that tab is gone.
-    """
+    """Pick tab: explicit id, else reuse driver's tab (navigate if url), else new."""
     if target_id:
         return {
             "tab": "target",
@@ -83,24 +79,12 @@ def no_page_error(plan, url):
 
 
 def trace_fields(snap: dict, rec: dict, *, goal: str) -> dict:
-    """The run-log record for one tick. No request body, no API key.
-
-    The shape belongs to plugin.core.trace: the log's field set is declared
-    there, so a field is added in one place rather than to a dict literal here
-    that the log reader has to be told about separately.
-    """
+    """Run-log record for one tick (shape from plugin.core.trace)."""
     return build_trace_record(rec, last_decision(snap), goal=goal)
 
 
 def tick_record(snap: dict, *, debug: bool = False, **overrides) -> dict:
-    """One tick row, assembled by plugin.core.result.build_tick_row.
-
-    The driver reads a tick here and an agent reads the folded result there, so
-    the row is built by the same builder that folds it. `overrides` are the
-    caller's fields (a max_steps budget, a time_budget stop, a final re-read);
-    they win over the snapshot's and go through the same builder, which is what
-    keeps the two sides from drifting.
-    """
+    """One tick row via plugin.core.result.build_tick_row (overrides win)."""
     history = snap.get("history") or []
     decisions = snap.get("decisions") or []
     last = history[-1] if history else None
@@ -174,12 +158,7 @@ def tick_record(snap: dict, *, debug: bool = False, **overrides) -> dict:
 
 
 def _final_view(snap: dict, browser) -> dict:
-    """Re-read the page once after DONE and compare it with the decision-time read.
-
-    A DONE choice is the model's claim, not evidence. This attaches the evidence
-    and nothing else: the status never changes on account of it, and a failed
-    re-read is reported rather than raised.
-    """
+    """Re-read after DONE for evidence; never changes status. Never raises."""
     page = snap.get("page") or {}
     decisions = snap.get("decisions") or []
     decision = (decisions[-1] if decisions else None) or {}
@@ -203,14 +182,7 @@ def _final_view(snap: dict, browser) -> dict:
 
 
 def _record_processes(goal) -> None:
-    """Write the close-time process evidence: what this run spawned, and whether
-    anything it started is still running after the detach-only close.
-
-    Never raises and never returns a value. It runs from a `finally` block, where
-    an exception would replace the run's exit code — accounting must be able to
-    lose evidence, not the result. A zombie is not a leak, so the check reads the
-    process state and not just `kill(pid, 0)`.
-    """
+    """Close-time spawn/orphan evidence. Never raises (safe for ``finally``)."""
     try:
         write_event(proc_mod.process_evidence(goal=goal))
     except Exception:
@@ -218,19 +190,7 @@ def _record_processes(goal) -> None:
 
 
 def _instance_pid(ws_url):
-    """The pid of the terminal-browser instance serving ``ws_url``, or None.
-
-    `terminal-browser ls --all --json` reports every instance with its cdpPort
-    and pid, so the port this run is driving identifies the process the
-    auto-launch started. Without that pid the spawn is counted but untracked,
-    and the close-time check can only fall back to a command-pattern scan —
-    evidence about the box, never a verdict about this run.
-
-    Every failure answers None, which is the state the orphan check already
-    handled: a port we cannot read, no binary installed, an unreadable answer, or
-    an instance `ls` cannot see from a no-TTY caller all leave the spawn
-    counted and untracked rather than guessing at a pid.
-    """
+    """Pid of the terminal-browser serving ``ws_url``, or None. Never raises."""
     try:
         port = urlsplit(ws_url or "").port
     except ValueError:
@@ -263,11 +223,7 @@ def _metrics_of(agent):
 
 
 def _bind_run(agent, goal) -> None:
-    """Give the run's counters the goal digest, so metrics.json is attributable.
-
-    Before this, a snapshot knows its own ``run_id`` but not which run that is.
-    Never raises: telemetry identity is not worth a run.
-    """
+    """Bind goal digest onto metrics. Never raises."""
     metrics = _metrics_of(agent)
     if metrics is None:
         return
@@ -278,13 +234,7 @@ def _bind_run(agent, goal) -> None:
 
 
 def _note_stop(agent) -> None:
-    """Record why the run stopped, as a token, before close freezes the snapshot.
-
-    The reason lives in the agent's state and the snapshot is written by
-    ``close()``, so a deadline stop recorded after that would read as a blocked
-    run with no error kind at all — indistinguishable from a blocked run that
-    stopped for any other reason. Never raises.
-    """
+    """Record stop reason before close freezes the snapshot. Never raises."""
     metrics = _metrics_of(agent)
     if metrics is None:
         return
@@ -297,15 +247,7 @@ def _note_stop(agent) -> None:
 
 
 def _run_event(identity, *, stage: str, agent=None) -> dict:
-    """The per-run record: which code, which tab, and this run's counters.
-
-    Written twice, once when the run is identified and once when it finishes,
-    both carrying the same ``run_id`` inside the embedded snapshot. The first
-    copy is what survives a run that is killed before it can close; the second
-    is the run's numbers in the append-only log, where an overwritten
-    metrics.json cannot reach them. ``metrics`` is absent for an agent that has
-    no counters, which is every test double and no real run.
-    """
+    """Per-run log record (start + finish share ``run_id``)."""
     record = {"event": "run", "stage": stage, **(identity or {})}
     metrics = _metrics_of(agent)
     if metrics is None:
@@ -372,34 +314,30 @@ def parse_args(argv=None):
     return args
 
 
-def main(argv=None) -> int:
-    args = parse_args(argv)
-    if args.check:
-        # Statuses only: no browser, no model call, no key material. Exit 0 either
-        # way so a shell script can read the JSON without treating a missing
-        # dependency as a crash.
-        print(json.dumps(preflight()))
-        return 0
+def _print_blocked(error: str, *, stream=None, flush: bool = False) -> int:
+    """Print blocked status and return 1 (resolve stream at call time)."""
+    print(json.dumps({"status": "blocked", "error": error}), file=stream or sys.stderr, flush=flush)
+    return 1
+
+
+def _prepare_drive(args):
+    """Validate drive args and install the denylist. Returns an exit code on reject."""
     if args.max_steps < 1 or args.max_steps > MAX_STEPS:
-        print(json.dumps({"status": "blocked", "error": f"--max-steps must be 1..{MAX_STEPS}"}), file=sys.stderr)
-        return 1
+        return _print_blocked(f"--max-steps must be 1..{MAX_STEPS}")
     if args.time_budget_s is not None and not (1 <= args.time_budget_s <= TIME_BUDGET_CAP):
-        err = f"--time-budget-s must be 1..{TIME_BUDGET_CAP}"
-        print(json.dumps({"status": "blocked", "error": err}), file=sys.stderr)
-        return 1
+        return _print_blocked(f"--time-budget-s must be 1..{TIME_BUDGET_CAP}")
     # Installed before the agent is built: the denylist is read by every decision
     # this run makes, and a pattern that cannot compile is rejected here rather
     # than after a browser and a paid call.
     try:
         model_mod.set_deny_names(args.deny_names)
     except ValueError as exc:
-        print(json.dumps({"status": "blocked", "error": str(exc)}), file=sys.stderr)
-        return 1
-    url = args.url
-    launch = url or DEFAULT_FIXTURE.as_uri()
-    # Spawn accounting starts here, so the count is about THIS run and not about
-    # the process lifetime — one MCP server serves many runs per process.
-    proc_mod.reset_spawns()
+        return _print_blocked(str(exc))
+    return None
+
+
+def _discover_browser(args, launch: str):
+    """Discover (and optionally note a spawn). Returns found, or an exit code."""
     try:
         found = discover(
             explicit=args.cdp_url,
@@ -408,144 +346,157 @@ def main(argv=None) -> int:
             background=args.background,
         )
     except WatchUnavailable as exc:
-        print(json.dumps({"status": "blocked", "error": str(exc)}), flush=True)
-        return 1
+        return _print_blocked(str(exc), stream=sys.stdout, flush=True)
     if found.auto_launched:
-        # This run provisioned the pane, so it started one browser process.
-        # terminal-browser forks that pane itself, so the pid comes from
-        # `ls --all --json` matched by the port this run is driving. Without it
-        # the spawn is counted but untracked, and the close-time check can only
-        # answer with a command-pattern scan — evidence, not a verdict.
+        # Pid from ls --all --json matched by this run's CDP port.
         proc_mod.note_spawn("terminal-browser", _instance_pid(found.ws_url))
+    return found
+
+
+def _plan_lease(args, *, url, launch: str) -> tuple[dict | None, int | None]:
+    """Choose and install the tab lease. Returns (plan, None) or (None, exit)."""
+    continuable = (None, None)
+    dropped = None
+    if not args.target_id:
+        _log_continuity("lookup")
+        continuable = find_continuable_page()
+        dropped = None if continuable[0] else browser_mod.LAST_CONTINUITY
+    plan = choose_lease(
+        url=url,
+        target_id=args.target_id,
+        continuable=continuable,
+        default_url=launch,
+        navigate_explicit=args.navigate,
+        dropped=dropped,
+    )
+    missing = no_page_error(plan, url)
+    if missing:
+        write_event({"event": "blocked", "goal": args.goal, "error": missing, "continuity": plan.get("continuity")})
+        print(json.dumps({"status": "blocked", "error": missing, "reason": "no_page"}), flush=True)
+        return None, 1
+    set_lease(
+        tab=plan["tab"],
+        target_id=plan["target_id"],
+        browser_key=args.browser_key,
+        navigate=plan["navigate"],
+    )
+    return plan, None
+
+
+def _open_agent(args, *, plan: dict, found, visibility: str):
+    """Build the agent and run identity; optionally print the JSON browser meta line."""
+    continuity = plan["continuity"]
+    if args.json:
+        meta = {
+            "event": "browser",
+            "source": found.source,
+            "cdp_url": found.ws_url,
+            "auto_launched": found.auto_launched,
+            "visibility": visibility,
+            "log": str(JSONL_PATH),
+        }
+        if continuity:
+            meta["continuity"] = continuity
+        print(json.dumps(meta), flush=True)
+    identity = {
+        "goal": args.goal,
+        "url": args.url,
+        "continuity": continuity or ("new-tab" if plan["tab"] == "new" else "target"),
+        "target_id": plan["target_id"],
+        "source": found.source,
+        "visibility": visibility,
+        "version": proc_mod.write_version_manifest(),
+    }
+    agent_cls = WatchAgent if args.watch else DriveAgent
+    extra = {} if args.time_budget_s is None else {"time_budget_s": args.time_budget_s}
+    agent = agent_cls(plan["agent_url"], args.goal, screenshots=False, debug=args.debug, **extra)
+    _bind_run(agent, args.goal)
+    return agent, identity
+
+
+def _emit_tick(args, snap, rec):
+    print(json.dumps(rec), flush=True)
+    write_event(trace_fields(snap, rec, goal=args.goal))
+
+
+def _refuse_unsupported(args, agent) -> int | None:
+    refused = unsupported_goal(args.goal)
+    if not refused:
+        return None
+    snap = agent.snapshot()
+    snap["status"] = "blocked"
+    snap["stop_reason"] = refused
+    agent.state["status"] = "blocked"
+    agent.state["stop_reason"] = refused
+    rec = tick_record(snap, debug=args.debug, page_text=((snap.get("page") or {}).get("text") or ""))
+    _emit_tick(args, snap, rec)
+    return 1
+
+
+def _tick_loop(args, agent) -> int:
+    """Run ticks until done/blocked/max-steps. Returns the process exit code."""
+    steps = 0
+    snap = agent.snapshot()
+    while agent.state["status"] not in {"done", "blocked"}:
+        if steps >= args.max_steps:
+            kinds = {item.get("kind") for item in snap.get("history") or []}
+            why = REASON_WHY["max_steps"]
+            if kinds and kinds <= {"scroll", "wait"}:
+                why = REASON_WHY["scroll_only"]
+            rec = tick_record(
+                snap,
+                debug=args.debug,
+                status="blocked",
+                error="max-steps",
+                reason="max_steps",
+                why=why,
+                page_text=(snap.get("page") or {}).get("text") or "",
+            )
+            if args.debug and isinstance(rec.get("insight"), dict):
+                rec["insight"]["why"] = why
+            _emit_tick(args, snap, rec)
+            return 1
+        snap = agent.command("tick")
+        steps += 1
+        budget_stop = snap.get("stop_reason") == "time_budget"
+        rec = tick_record(
+            snap,
+            debug=args.debug,
+            # error=="timeout" maps to stopped_reason time_budget in the taxonomy.
+            error="timeout" if budget_stop else None,
+            why=TIME_BUDGET_WHY if budget_stop else None,
+            final_view=_final_view(snap, (agent.state or {}).get("browser"))
+            if snap.get("status") == "done"
+            else None,
+        )
+        _emit_tick(args, snap, rec)
+    return 0 if agent.state["status"] == "done" else 1
+
+
+def _drive(args) -> int:
+    """Discover a browser, lease a tab, run ticks."""
+    url = args.url
+    launch = url or DEFAULT_FIXTURE.as_uri()
+    proc_mod.reset_spawns()
+    found = _discover_browser(args, launch)
+    if isinstance(found, int):
+        return found
     agent = None
     identity: dict | None = None
-    # One try for everything from here to the end of the run: the close-time
-    # evidence and the counters are written from the finally below, so a path
-    # that returns early — no page to reuse, an unsupported goal, an agent that
-    # would not open — has to be inside it or the run would leave no evidence at
-    # all. Exit codes and printed rows are unchanged by where the try begins.
+    # try wraps every early return so finally still writes close-time evidence.
     try:
         connect(found.ws_url)
         visibility = "background" if args.background else "terminal-browser-pane"
-        continuable = (None, None)
-        dropped = None
-        if not args.target_id:
-            _log_continuity("lookup")
-            continuable = find_continuable_page()
-            dropped = None if continuable[0] else browser_mod.LAST_CONTINUITY
-        plan = choose_lease(
-            url=url,
-            target_id=args.target_id,
-            continuable=continuable,
-            default_url=launch,
-            navigate_explicit=args.navigate,
-            dropped=dropped,
-        )
-        missing = no_page_error(plan, url)
-        if missing:
-            write_event({"event": "blocked", "goal": args.goal, "error": missing, "continuity": plan.get("continuity")})
-            print(json.dumps({"status": "blocked", "error": missing, "reason": "no_page"}), flush=True)
-            return 1
-        set_lease(
-            tab=plan["tab"],
-            target_id=plan["target_id"],
-            browser_key=args.browser_key,
-            navigate=plan["navigate"],
-        )
-        agent_url = plan["agent_url"]
-        continuity = plan["continuity"]
-        if args.json:
-            meta = {
-                "event": "browser",
-                "source": found.source,
-                "cdp_url": found.ws_url,
-                "auto_launched": found.auto_launched,
-                "visibility": visibility,
-                "log": str(JSONL_PATH),
-            }
-            if continuity:
-                meta["continuity"] = continuity
-            print(json.dumps(meta), flush=True)
-        # Name the code that produced this run, in the run log's own directory and
-        # in the run's evidence line. Additive: a tree that cannot be hashed or a log
-        # directory that cannot be written is reported inside the manifest, never
-        # raised, and the run goes on unchanged.
-        manifest = proc_mod.write_version_manifest()
-        identity = {
-            "goal": args.goal,
-            "url": url,
-            "continuity": continuity or ("new-tab" if plan["tab"] == "new" else "target"),
-            "target_id": plan["target_id"],
-            "source": found.source,
-            "visibility": visibility,
-            "version": manifest,
-        }
-        agent_cls = WatchAgent if args.watch else DriveAgent
-        # Only pass the kwarg when asked, so an agent built without the flag is unchanged.
-        extra = {} if args.time_budget_s is None else {"time_budget_s": args.time_budget_s}
-        agent = agent_cls(agent_url, args.goal, screenshots=False, debug=args.debug, **extra)
-        _bind_run(agent, args.goal)
-
-        def emit(snap, rec):
-            print(json.dumps(rec), flush=True)
-            write_event(trace_fields(snap, rec, goal=args.goal))
-
-        # Written before the first decision, so a run killed mid-drive still says
-        # what it was aiming at and which code was answering.
+        plan, err = _plan_lease(args, url=url, launch=launch)
+        if err is not None:
+            return err
+        agent, identity = _open_agent(args, plan=plan, found=found, visibility=visibility)
         write_event(_run_event(identity, stage="start", agent=agent))
-
-        refused = unsupported_goal(args.goal)
-        if refused:
-            snap = agent.snapshot()
-            snap["status"] = "blocked"
-            snap["stop_reason"] = refused
-            agent.state["status"] = "blocked"
-            agent.state["stop_reason"] = refused
-            rec = tick_record(snap, debug=args.debug, page_text=((snap.get("page") or {}).get("text") or ""))
-            emit(snap, rec)
-            return 1
-
-        code = 1
+        refused = _refuse_unsupported(args, agent)
+        if refused is not None:
+            return refused
         try:
-            steps = 0
-            snap = agent.snapshot()
-            while agent.state["status"] not in {"done", "blocked"}:
-                if steps >= args.max_steps:
-                    kinds = {item.get("kind") for item in snap.get("history") or []}
-                    why = REASON_WHY["max_steps"]
-                    if kinds and kinds <= {"scroll", "wait"}:
-                        why = REASON_WHY["scroll_only"]
-                    rec = tick_record(
-                        snap,
-                        debug=args.debug,
-                        status="blocked",
-                        error="max-steps",
-                        reason="max_steps",
-                        why=why,
-                        page_text=(snap.get("page") or {}).get("text") or "",
-                    )
-                    if args.debug and isinstance(rec.get("insight"), dict):
-                        rec["insight"]["why"] = why
-                    emit(snap, rec)
-                    return 1
-                snap = agent.command("tick")
-                steps += 1
-                budget_stop = snap.get("stop_reason") == "time_budget"
-                rec = tick_record(
-                    snap,
-                    debug=args.debug,
-                    # The stop taxonomy reads error=="timeout" as stopped_reason
-                    # time_budget, so an in-loop deadline reports like the outer
-                    # timeout_s kill — without killing anything.
-                    error="timeout" if budget_stop else None,
-                    why=TIME_BUDGET_WHY if budget_stop else None,
-                    final_view=_final_view(snap, (agent.state or {}).get("browser"))
-                    if snap.get("status") == "done"
-                    else None,
-                )
-                emit(snap, rec)
-            code = 0 if agent.state["status"] == "done" else 1
-            return code
+            return _tick_loop(args, agent)
         except (ValueError, RuntimeError, TimeoutError) as exc:
             print(json.dumps({"status": "blocked", "error": str(exc)}), file=sys.stderr)
             write_event(
@@ -565,15 +516,25 @@ def main(argv=None) -> int:
             if agent is not None:
                 agent.close()
         finally:
-            # Nested so that neither record can be lost to the other failing: a
-            # close that raises still leaves the run's numbers and its process
-            # evidence in the log, and the close's own exception still propagates
-            # exactly as it did when this was a single finally.
             try:
                 if agent is not None:
                     write_event(_run_event(identity, stage="finish", agent=agent))
             finally:
                 _record_processes(args.goal)
+
+
+def main(argv=None) -> int:
+    args = parse_args(argv)
+    if args.check:
+        # Statuses only: no browser, no model call, no key material. Exit 0 either
+        # way so a shell script can read the JSON without treating a missing
+        # dependency as a crash.
+        print(json.dumps(preflight()))
+        return 0
+    rejected = _prepare_drive(args)
+    if rejected is not None:
+        return rejected
+    return _drive(args)
 
 
 if __name__ == "__main__":

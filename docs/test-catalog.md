@@ -1,9 +1,9 @@
 # Test catalog (generated)
 
 ## tests/test_adapter_parity.py (3)
-- test_mcp_serves_canonical_schemas
+- test_each_mcp_tool_description_matches_the_plugin
 - test_time_budget_offered_with_the_same_bounds
-- test_status_tool_parity
+- test_status_tool_takes_no_args_and_every_check_names_a_fix
 
 ## tests/test_agent.py (29)
 - test_invalid_choice_is_rejected
@@ -301,7 +301,7 @@
 - test_init_does_not_set_device_metrics
 - test_set_lease_target_requires_id
 
-## tests/test_lifecycle.py (52)
+## tests/test_lifecycle.py (29)
 - test_provisioning_inside_a_herdr_pane_is_refused
 - test_the_refusal_names_the_outer_terminal_and_its_tab_command
 - test_the_refusal_says_splitting_the_surface_is_the_cause
@@ -317,34 +317,11 @@
 - test_discover_refuses_to_provision_from_inside_a_herdr_pane
 - test_the_refusal_cannot_be_mistaken_for_a_terminal_note_failure
 - test_discover_still_attaches_to_an_existing_pane_from_inside_a_herdr_pane
-- test_first_hand_knowledge_of_a_driver_spawn_beats_the_record
-- test_a_record_claiming_the_human_opened_it_is_owner_opened
-- test_a_record_claiming_the_driver_opened_it_is_driver_spawned
-- test_a_record_predating_the_flag_is_unknown_not_owner_opened
-- test_a_missing_record_is_unknown
-- test_a_lease_on_the_key_holds_the_instance
-- test_a_lease_on_the_port_holds_the_instance
-- test_an_unset_key_does_not_match_a_blank_lease
-- test_an_unparseable_port_does_not_raise
-- test_a_driver_spawned_idle_past_the_ttl_is_reaped
-- test_a_driver_spawned_instance_inside_the_ttl_is_kept
-- test_an_owner_opened_instance_is_never_reaped_however_old
-- test_an_instance_of_unknown_origin_is_never_reaped_however_old
-- test_a_leased_instance_is_kept_however_idle
-- test_an_instance_with_no_start_time_is_kept
-- test_the_ttl_is_fifteen_minutes_and_is_not_the_tab_ttl
-- test_every_verdict_carries_a_reason
-- test_strays_returns_only_what_would_be_closed
-- test_provenance_is_read_from_the_record_matched_on_the_browser_id
-- test_provenance_is_read_from_the_record_that_matches
 - test_a_browser_this_run_opened_is_recorded_as_driver_spawned
 - test_a_browser_this_run_attached_to_is_recorded_as_owner_opened
 - test_the_provenance_flag_is_not_made_a_required_key
 - test_a_record_written_before_the_flag_still_loads
-- test_a_pre_flag_record_reads_back_as_unknown_origin
-- test_a_millisecond_timestamp_is_read_as_seconds
-- test_a_second_timestamp_is_still_read_as_seconds
-- test_a_millisecond_timestamp_inside_the_ttl_is_still_kept
+- test_a_pre_flag_record_has_no_provenance_key
 - test_the_open_run_ledger_can_be_consulted_standing_alone
 - test_a_cmux_context_is_recognised_by_socket_and_workspace
 - test_a_cmux_socket_without_a_workspace_is_not_a_cmux_context
@@ -461,8 +438,7 @@
 - test_a_stale_scroll_after_a_rejected_done_is_counted
 - test_a_hostile_page_cannot_reach_the_snapshot
 
-## tests/test_model_provenance.py (35)
-- test_hash_is_sixteen_hex_chars_over_the_shipped_prompts
+## tests/test_model_provenance.py (34)
 - test_hash_pins_the_named_prompt_encoding
 - test_hash_is_stable_and_tracks_each_prompt
 - test_hash_rejects_a_wrong_number_of_prompts
@@ -586,7 +562,7 @@
 - test_mcp_module_does_not_import_the_browser_loop
 - test_preflight_env_is_read_at_call_time
 
-## tests/test_processes.py (109)
+## tests/test_processes.py (90)
 - test_a_spawn_is_counted_with_its_pid_and_kind
 - test_a_spawn_without_a_pid_is_counted_but_not_tracked
 - test_unusable_pids_are_counted_but_never_tracked
@@ -594,9 +570,6 @@
 - test_a_tracked_pid_may_be_adopted_after_the_fact
 - test_reset_spawns_starts_the_next_run
 - test_the_context_manager_counts_a_spawn_without_a_pid
-- test_a_noted_pid_carries_the_start_time_read_at_spawn
-- test_a_pid_with_no_start_time_is_recorded_as_unknown
-- test_an_unreadable_pid_never_costs_a_ps_call
 - test_the_process_table_is_read_with_one_portable_ps_invocation
 - test_unparsable_table_lines_are_skipped
 - test_an_unavailable_ps_reads_as_an_empty_table
@@ -610,31 +583,15 @@
 - test_a_scrubbed_command_still_matches_the_browser_pattern
 - test_the_process_evidence_event_carries_no_bare_credential
 - test_a_scrub_that_explodes_still_yields_the_row
-- test_a_stat_letter_says_zombie
-- test_a_stat_letter_says_running
 - test_hostile_patterns_fall_back_to_the_default
-- test_a_reaped_pid_is_dead_and_never_asks_for_a_state
-- test_an_unreaped_zombie_is_not_alive
-- test_a_linux_style_dead_state_is_also_a_zombie
+- test_a_reaped_pid_is_dead
 - test_a_running_process_is_alive
 - test_a_process_we_may_not_signal_is_unknown_not_alive
-- test_a_readable_state_outranks_a_permission_error
 - test_an_unexpected_errno_is_unknown
-- test_a_missing_state_source_falls_back_to_signal_zero
 - test_unusable_pid_arguments_signal_nothing
 - test_a_liveness_report_buckets_every_pid
 - test_a_liveness_report_of_nothing_is_still_well_shaped
-- test_a_recycled_pid_is_never_reported_as_our_orphan
-- test_a_pid_whose_start_time_is_unchanged_is_still_classified
-- test_an_unreadable_start_time_falls_back_to_the_older_checks
-- test_a_gone_pid_is_dead_without_asking_when_it_started
-- test_a_pid_with_no_noted_start_time_never_asks_for_one
-- test_a_recycled_pid_is_reported_as_unknown_not_clean
-- test_the_reuse_check_survives_a_hostile_starts_mapping
-- test_an_unreadable_start_time_source_never_raises
-- test_a_hostile_pid_never_reads_a_start_time
 - test_a_live_tracked_pid_is_an_orphan
-- test_a_zombie_tracked_pid_is_not_an_orphan
 - test_a_dead_tracked_pid_is_clean
 - test_an_unclassifiable_pid_is_never_reported_clean
 - test_a_run_that_spawned_nothing_checks_nothing
@@ -751,10 +708,9 @@
 - test_a_retry_inside_the_budget_still_clicks
 - test_the_stop_is_logged_once_across_ticks_not_reset_by_a_later_one
 
-## tests/test_trace_record.py (17)
+## tests/test_trace_record.py (16)
 - test_the_record_keys_are_the_declared_table_plus_the_conditional_one
 - test_an_errored_tick_is_logged_as_blocked_whatever_its_status_claimed
-- test_the_empty_record_is_the_one_the_log_has_always_written
 - test_provenance_names_the_model_that_answered_under_which_prompt
 - test_a_provider_that_reports_no_version_leaves_an_explicit_null
 - test_the_requested_model_id_is_read_from_the_request_not_the_response_echo
@@ -791,7 +747,7 @@
 - test_remember_continuity_same_id_refreshes_url
 - test_remember_continuity_different_id_does_not_overwrite
 
-## scripts/live/test_harness.py (155)
+## scripts/live/test_harness.py (157)
 - test_a_manifest_defaults_the_timeout_to_300_seconds
 - test_a_per_test_timeout_overrides_the_default
 - test_an_unknown_tier_is_refused
@@ -825,17 +781,10 @@
 - test_a_missing_balance_is_the_only_absent_case
 - test_an_unflagged_test_is_left_alone
 - test_a_flagged_record_with_a_surviving_amount_is_caught
-- test_a_first_run_has_no_baseline_and_is_not_a_regression
-- test_a_stop_reason_change_is_a_regression
-- test_a_url_change_is_a_regression_even_when_only_the_query_moved
-- test_a_real_url_change_is_a_regression
-- test_bytes_within_ten_percent_are_not_a_breach
-- test_a_single_bytes_breach_is_investigate_only
-- test_two_consecutive_bytes_breaches_are_a_regression
-- test_a_spec_hash_change_is_reported_but_never_a_regression
-- test_a_tick_change_is_reported_as_information_not_a_verdict
 - test_a_pane_with_an_unfinished_run_is_refused
 - test_a_finished_run_leaves_the_pane_idle
+- test_wait_pane_idle_polls_until_the_log_is_quiet
+- test_wait_pane_idle_times_out_when_the_pane_never_settles
 - test_quarantine_clears_the_remembered_tab_and_retains_it
 - test_quarantining_an_absent_page_is_a_no_op
 - test_the_runner_scores_a_scripted_hit
@@ -847,8 +796,6 @@
 - test_a_refused_pane_produces_a_record_and_no_drive
 - test_every_run_writes_a_slice
 - test_the_scoreboard_reports_hits_and_sev1_separately
-- test_a_second_run_is_diffed_against_the_first
-- test_a_saved_baseline_is_found_by_the_name_the_loader_looks_for
 - test_run_test_refuses_to_guess_where_slices_go
 - test_run_test_refuses_to_guess_which_log_dir_to_quarantine
 - test_write_slice_writes_only_where_it_is_told

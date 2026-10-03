@@ -1,14 +1,4 @@
-"""The result builder: one tick row, one agent result, one field table.
-
-A tick row is what the driver prints per step; the result is what an agent reads
-once those rows are folded together. They are two views of a single declaration,
-``PASSTHROUGH`` below, because the alternative is two hand-written assemblies
-that drift: a field added to the row and forgotten in the result is silently
-dropped, which is how ``final_view`` and ``omitted_actions`` nearly died.
-
-Stdlib only. Hermes loads plugin/ without jev_driver and jev_driver imports this
-module, so nothing outside the standard library may be imported here.
-"""
+"""Tick rows and folded agent results from one field table. Stdlib only."""
 
 from __future__ import annotations
 
@@ -20,15 +10,7 @@ PAGE_TEXT_LIMIT = 2000
 
 @dataclass(frozen=True)
 class Field:
-    """One declared field, and when it counts as present.
-
-    ``truthy`` fields are absent when empty, so a blank ``why`` or a zero
-    ``omitted_actions`` never reaches the wire as ``""``/``0``. Fields that can
-    legitimately be falsey (an empty probe, a zero count) leave it off.
-    ``limit`` caps the value on the way out; page text is the only one, and it is
-    capped on the row as well as on the result so the driver never prints more
-    than the agent is willing to pay for.
-    """
+    """Declared field: optional truthy omit, optional length cap."""
 
     name: str
     truthy: bool = False
@@ -65,11 +47,7 @@ TICK_OPTIONAL = PASSTHROUGH + (
 
 
 def build_tick_row(base: dict, **fields) -> dict:
-    """One tick row: ``base`` always, ``fields`` only for declared names.
-
-    A field that is not in TICK_OPTIONAL is ignored rather than smuggled in, so
-    the row cannot grow a key that compact_result has no rule for.
-    """
+    """One tick row: base keys always; optional fields only if declared."""
     row = dict(base)
     for field in TICK_OPTIONAL:
         value = fields.get(field.name)
@@ -104,12 +82,7 @@ def sum_usage(rows: list[dict]) -> dict:
 
 
 def stopped_reason(status: str, reason, error) -> str:
-    """Uniform stop taxonomy (upstream browser-use/jev-ultrafast#3).
-
-    done -> model_done; budget exhaustion -> action_budget/time_budget;
-    anything else blocked -> model_blocked; hard failures -> error.
-    The legacy `reason` field keeps the granular detail.
-    """
+    """Uniform stop taxonomy (model_done / budgets / no_page / model_blocked / error)."""
     if error == "timeout":
         return "time_budget"
     if error == "cancelled":
@@ -118,20 +91,15 @@ def stopped_reason(status: str, reason, error) -> str:
         return "model_done"
     if reason == "max_steps":
         return "action_budget"
+    if reason == "no_page":
+        return "no_page"
     if status == "error":
         return "error"
     return "model_blocked"
 
 
 def compact_result(rows: list[dict], exit_code: int, error: str | None = None, *, insights: bool = True) -> dict:
-    """Fold the tick rows into the one result an agent reads.
-
-    ``insights`` is the ranked operations/targets trace, not the overlay: a
-    human watching the pane wants the overlay by default, but this trace is
-    payload the agent pays for, so adapters pass ``insights=False`` unless
-    debug was explicitly asked for. Dropping it changes nothing else in the
-    result, and debug-on still gets the trace byte-identical.
-    """
+    """Fold tick rows into one agent result (insights off unless debug)."""
     meta = next((r for r in rows if r.get("event") == "browser"), {})
     ticks = [r for r in rows if r.get("status")]
     last = ticks[-1] if ticks else {}

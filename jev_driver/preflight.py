@@ -1,23 +1,7 @@
-"""Startup gate: can this machine drive a browser at all?
+"""Startup gate: statuses + fix hints, no side effects, never key material.
 
-Answers before the first tick, so a missing key or a missing terminal-browser
-surfaces as a named status instead of a failure halfway through a paid run.
-
-Stdlib only and side-effect free: no browser launch, no CDP probe, no model
-call, nothing written to disk. The result is statuses and a fix hint, never key
-material — a key is reported as present or missing, and its value is never read
-into the result.
-
-Mirrors the checks behind the Hermes gate (has_decision_key,
-terminal_browser_installed, check_drive) so `status` and the gate agree. Those
-three now live in plugin/core/env.py, which is stdlib-only and importable from
-here; the checks are kept spelled out locally rather than imported, because the
-MCP status tool must answer with no browser and no paid call, and a status that
-could not answer would be the worst possible failure for a gate.
-
-The duplication is deliberate and pinned by tests/test_preflight.py: the two
-answers must agree, and they are read from different places (a PATH probe for
-the binary vs. a file check) so a shared helper would hide which one answered.
+Spelled out here (not shared with the Hermes env probes) so PATH vs file-check
+answers stay distinct; tests/test_preflight.py pins agreement.
 """
 
 from __future__ import annotations
@@ -29,7 +13,6 @@ from pathlib import Path
 KEY_VARS = ("DECISION_GATE_API_KEY", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY")
 _KEY_PREFIXES = tuple(f"{var}=" for var in KEY_VARS)
 
-# Report order. Every field is a status the caller can act on.
 CHECKS = ("decision_key", "terminal_browser", "driver_home", "python_env")
 
 FIXES = {
@@ -45,11 +28,7 @@ def _status(found: bool) -> str:
 
 
 def terminal_browser_binary() -> Path | None:
-    """Where the driver would spawn terminal-browser from, or None.
-
-    Same order as discover.resolve_terminal_browser: PATH first, then
-    TERMINAL_BROWSER, then ~/.local/bin. Nothing is executed.
-    """
+    """terminal-browser path (PATH, TERMINAL_BROWSER, ~/.local/bin), or None."""
     found = shutil.which("terminal-browser")
     if found:
         return Path(found)
@@ -93,11 +72,7 @@ def has_decision_key() -> bool:
 
 
 def driver_home() -> Path:
-    """Directory holding scripts/drive.py.
-
-    Walks up from this file so an installed copy still finds the checkout.
-    WWWDRIVE_HOME overrides it; JEV_DRIVER_HOME is the pre-1.0 fallback.
-    """
+    """Directory holding scripts/drive.py (WWWDRIVE_HOME / JEV_DRIVER_HOME override)."""
     env = os.environ.get("WWWDRIVE_HOME", "").strip() or os.environ.get("JEV_DRIVER_HOME", "").strip()
     if env:
         return Path(env).expanduser()
@@ -113,11 +88,7 @@ def python_env_ready() -> bool:
 
 
 def preflight() -> dict:
-    """Every startup check as {"ok" | "missing"}, plus what is missing and how to fix it.
-
-    `ready` is True only when all four pass. Cheap enough to call per tool
-    invocation: filesystem and PATH only.
-    """
+    """Startup checks as ok/missing, plus missing names and fix hints."""
     found = {
         "decision_key": has_decision_key(),
         "terminal_browser": terminal_browser_installed(),

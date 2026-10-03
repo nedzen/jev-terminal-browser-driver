@@ -3,7 +3,7 @@
 v3 of the design (`live-tests-design.md`) is the spec. This module owns only what
 the manifest declares: a test id, where it runs, the goal text handed to the
 driver, its safety tier, its timeout, and the end state it is scored against.
-Everything downstream -- classification, byte accounting, the regression diff --
+Everything downstream -- classification, byte accounting, the ledger scoreboard --
 reads the shapes declared here rather than re-deriving them, so a manifest that
 validates is a manifest every later stage can rely on.
 
@@ -29,26 +29,9 @@ DEFAULT_TIMEOUT_S = 300
 STALL_S = 120
 
 # v3 "Safety tiers". X is never automated, so the runner refuses to carry it.
+# Outcome classes live in taxonomy.py (v3.1 partition); this module only
+# validates the manifest vocabulary.
 TIERS = ("R", "W", "X")
-AUTOMATABLE_TIERS = ("R", "W")
-
-# The four classifications, spelled as v3 spells them. `blocked_unjustified` is
-# not a bucket a run lands in: v3 folds it into MISS, and the name exists so a
-# reader can see the fold happened rather than wondering where it went.
-HIT = "HIT"
-MISS = "MISS"
-BLOCKED_HONEST = "BLOCKED_HONEST"
-
-# v3 also names a fourth outcome, BLOCKED-unjustified, and then says it equals
-# MISS. So it is deliberately *not* a classification here: a blocked stop on a
-# satisfiable goal is recorded as MISS and carries `unjustified_block: True`, so
-# the scoreboard can still report the unjustified-block rate v3 asks for without
-# inventing a bucket the protocol does not have.
-CLASSIFICATIONS = (HIT, MISS, BLOCKED_HONEST)
-
-# Stop reasons that count as a genuine finish. v3 accepts model_done and a P2
-# rescue that reached the right end state; anything else is not a HIT.
-DONE_STOP_REASONS = ("model_done", "end_state_reached")
 
 # The fields every manifest test must declare. `expected` may be present but
 # empty only for a test whose goal is genuinely unsatisfiable, which is checked
@@ -66,7 +49,13 @@ REDACT_PRESENCE_ONLY = "presence_only"
 # v3.1 machine predicates. `url_contains` and `text_present` are what make a
 # verdict auto-judgeable; `final_view_contains` is the older spelling of
 # `text_present` and is accepted so a v3 manifest still validates.
-MACHINE_PREDICATES = ("url_host_path", "url_contains", "text_present", "final_view_contains")
+MACHINE_PREDICATES = (
+    "url_host_path",
+    "url_contains",
+    "text_present",
+    "final_view_contains",
+    "any_of",
+)
 
 
 class ManifestError(ValueError):
@@ -208,6 +197,16 @@ def validate_test(test: dict, *, index: int | None = None) -> dict:
         raise ManifestError(
             f"{where}: unknown expected key(s) {sorted(unknown)}; known: {sorted(MACHINE_PREDICATES)}"
         )
+    if "any_of" in expected:
+        options = expected["any_of"]
+        if not isinstance(options, list) or not options:
+            raise ManifestError(f"{where}: any_of must be a non-empty list")
+        for i, option in enumerate(options):
+            if not isinstance(option, dict) or not option:
+                raise ManifestError(f"{where}: any_of[{i}] must be a non-empty object")
+            bad = set(option) - (set(MACHINE_PREDICATES) - {"any_of"})
+            if bad:
+                raise ManifestError(f"{where}: any_of[{i}] unknown key(s) {sorted(bad)}")
     # v3.1: auto-judged where a machine predicate exists, human-judged otherwise.
     # Checked before the "needs an end state" rule, because with human_judged set
     # an empty `expected` is legitimate -- the run simply waits for a person.
@@ -288,9 +287,9 @@ def validate_test(test: dict, *, index: int | None = None) -> dict:
 def validate_manifest(manifest: dict) -> dict:
     """A whole manifest, checked end to end. Test ids must be unique.
 
-    Duplicated ids would collide in the ledger (one row per run, keyed by run_id,
-    derived from the id) and in the per-test baseline, so they are refused here
-    rather than producing two rows that silently overwrite each other.
+    Duplicated ids would collide in the ledger (one row per run, keyed by run_id
+    derived from the id), so they are refused here rather than producing two rows
+    that silently overwrite each other.
     """
     if not isinstance(manifest, dict):
         raise ManifestError("manifest must be an object")

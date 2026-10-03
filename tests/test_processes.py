@@ -16,13 +16,13 @@ from unittest.mock import Mock
 import pytest
 
 from jev_driver import cli, runlog
-from jev_driver import processes as proc
+from jev_driver import instances as proc
 from jev_driver.discover import Discovery
 from jev_driver.metrics import Metrics, metrics_path
 
 STAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
-# A fake table: one zombie browser, one live browser, one driver of our own.
+# A fake table: two terminal-browser rows (one Z+, one live) and our driver.
 PS_TABLE = """
   501 Ss   /sbin/launchd
  4242 Z+   /Users/u/.local/bin/terminal-browser --split right
@@ -37,10 +37,8 @@ ZOMBIE_ROW = {"pid": 4242, "stat": "Z+", "command": "/Users/u/.local/bin/termina
 class FakePs:
     """Stands in for the process table and for git. Records every argv."""
 
-    def __init__(self, table="", states=None, starts=None, git=None, dead=False):
+    def __init__(self, table="", git=None, dead=False):
         self.table = table
-        self.states = dict(states or {})
-        self.starts = dict(starts or {})  # pid -> the lstart token ps would render
         self.git = git
         self.dead = dead  # ps/git unavailable: every call answers None
         self.calls = []
@@ -54,12 +52,6 @@ class FakePs:
             return self.git
         if "-A" in argv:
             return self.table
-        if "-p" in argv:
-            pid = int(argv[argv.index("-p") + 1])
-            field = argv[argv.index("-o") + 1] if "-o" in argv else ""
-            if field.startswith("lstart"):
-                return self.starts.get(pid, "")
-            return self.states.get(pid, "")
         return ""
 
     @property
@@ -103,8 +95,8 @@ def clean_counters():
 def ps(monkeypatch):
     """Install a fake ps/git backend and hand it back."""
 
-    def install(table="", states=None, starts=None, git=None, dead=False):
-        backend = FakePs(table=table, states=states, starts=starts, git=git, dead=dead)
+    def install(table="", git=None, dead=False):
+        backend = FakePs(table=table, git=git, dead=dead)
         monkeypatch.setattr(proc, "run_cmd", backend)
         return backend
 
@@ -129,8 +121,8 @@ def sleeps(monkeypatch):
     return calls
 
 
-def install_ps_backend(ps, states=None, starts=None, git=None, table=PS_TABLE, dead=False):
-    return ps(table=table, states=states, starts=starts, git=git, dead=dead)
+def install_ps_backend(ps, git=None, table=PS_TABLE, dead=False):
+    return ps(table=table, git=git, dead=dead)
 
 
 # ------------------------------------------------------------------- spawning
@@ -145,7 +137,6 @@ def test_a_spawn_is_counted_with_its_pid_and_kind(ps):
     assert proc.spawn_summary() == {
         "spawn_count": 2,
         "tracked_pids": [4242],
-        "tracked_starts": {4242: None},
         "spawn_kinds": {"helper": 1, "terminal-browser": 1},
     }
 
@@ -174,7 +165,6 @@ def test_the_same_pid_is_tracked_once(ps):
     assert proc.spawn_summary() == {
         "spawn_count": 2,
         "tracked_pids": [4242],
-        "tracked_starts": {4242: None},
         "spawn_kinds": {"helper": 2},
     }
 
@@ -193,8 +183,6 @@ def test_reset_spawns_starts_the_next_run(ps):
     assert proc.runtime_spawn_count() == 0
     assert proc.tracked_pids() == []
     assert proc.spawn_summary()["spawn_kinds"] == {}
-    # Start times belong to the run that read them, never to the next one.
-    assert proc.spawn_summary()["tracked_starts"] == {}
 
 
 def test_the_context_manager_counts_a_spawn_without_a_pid():
@@ -203,33 +191,8 @@ def test_the_context_manager_counts_a_spawn_without_a_pid():
     assert proc.spawn_summary() == {
         "spawn_count": 1,
         "tracked_pids": [],
-        "tracked_starts": {},
         "spawn_kinds": {"probe": 1},
     }
-
-
-def test_a_noted_pid_carries_the_start_time_read_at_spawn(ps):
-    """A pid is a slot, not a process: the only way to tell the two apart later
-    is what was read while the slot was still ours."""
-    backend = install_ps_backend(ps, starts={4243: "Fri Oct  2 19:11:03 2026"})
-    proc.note_spawn("terminal-browser", pid=4243)
-    assert proc.spawn_summary()["tracked_starts"] == {4243: "Fri Oct  2 19:11:03 2026"}
-    assert backend.ps_calls == [["ps", "-p", "4243", "-o", "lstart="]]
-
-
-def test_a_pid_with_no_start_time_is_recorded_as_unknown(ps):
-    """Unreadable at spawn time is "we could not tell", which costs the reuse
-    check and nothing else."""
-    install_ps_backend(ps, dead=True)
-    proc.note_spawn("terminal-browser", pid=4243)
-    assert proc.spawn_summary()["tracked_starts"] == {4243: None}
-
-
-def test_an_unreadable_pid_never_costs_a_ps_call(ps):
-    backend = install_ps_backend(ps)
-    proc.note_spawn("terminal-browser")  # no pid to ask about
-    proc.note_spawn("helper", pid=0)
-    assert backend.ps_calls == []
 
 
 # --------------------------------------------------------- process table / ps
@@ -262,8 +225,6 @@ def test_a_present_process_matches_the_command_pattern(ps, monkeypatch):
     monkeypatch.setattr(proc.os, "getpid", lambda: 7777)  # our own row is in the table
     hits = proc.matching_processes()
     assert [row["pid"] for row in hits] == [4242, 4243]
-    assert proc.state_is_zombie(hits[0]["stat"]) is True
-    assert proc.state_is_zombie(hits[1]["stat"]) is False
 
 
 def test_an_absent_process_is_not_reported(ps):
@@ -317,13 +278,13 @@ def test_an_argv_flag_credential_is_caught_though_the_run_log_rules_never_see_a_
     # `--token VALUE` is not `token: VALUE`, so the argv shape has to be rewritten
     # before the run log's assignment rules can match it.
     install_ps_backend(ps, table=" 4243 Ss  node drive.js --token ghp_ABCDEFGHIJKLMNOP --url https://x.test\n")
-    assert proc.matching_processes(("node",))[0]["command"] == (
-        "node drive.js --token [redacted] --url https://x.test"
-    )
+    assert proc.matching_processes(("node",))[0]["command"] == ("node drive.js --token [redacted] --url https://x.test")
 
 
 def test_a_scrubbed_command_still_matches_the_browser_pattern(ps):
-    install_ps_backend(ps, table=" 4243 Ss  /Users/u/.local/bin/terminal-browser --url 'https://x.test/?api_key=sk-live-X'\n")
+    install_ps_backend(
+        ps, table=" 4243 Ss  /Users/u/.local/bin/terminal-browser --url 'https://x.test/?api_key=sk-live-X'\n"
+    )
     row = proc.matching_processes()[0]
     assert row["pid"] == 4243
     assert "terminal-browser" in row["command"]
@@ -331,7 +292,9 @@ def test_a_scrubbed_command_still_matches_the_browser_pattern(ps):
 
 
 def test_the_process_evidence_event_carries_no_bare_credential(ps, sleeps):
-    install_ps_backend(ps, table=" 4243 Ss  /usr/bin/terminal-browser open 'https://x.test/?token=ghp_AAAABBBBCCCCCCCC'\n")
+    install_ps_backend(
+        ps, table=" 4243 Ss  /usr/bin/terminal-browser open 'https://x.test/?token=ghp_AAAABBBBCCCCCCCC'\n"
+    )
     proc.note_spawn("terminal-browser")
     evidence = proc.process_evidence(goal="Check the page", sleep=lambda seconds: sleeps.append(seconds))
     blob = json.dumps(evidence)
@@ -350,17 +313,6 @@ def test_a_scrub_that_explodes_still_yields_the_row(ps, monkeypatch):
     assert row == {"pid": 4243, "stat": "Ss", "command": "/usr/bin/terminal-browser --split right"}
 
 
-@pytest.mark.parametrize("stat", ["Z", "Z+", "Zs", "Z+", "X", "x"])
-def test_a_stat_letter_says_zombie(stat):
-    """macOS marks an exited process Z+, Linux spells a dead one X or x."""
-    assert proc.state_is_zombie(stat) is True
-
-
-@pytest.mark.parametrize("stat", ["Ss", "S", "R", "T", "W", "", "   "])
-def test_a_stat_letter_says_running(stat):
-    assert proc.state_is_zombie(stat) is False
-
-
 def test_hostile_patterns_fall_back_to_the_default(ps):
     """An empty pattern list must not silently mean "match nothing" and quietly
     retire the orphan check."""
@@ -371,66 +323,35 @@ def test_hostile_patterns_fall_back_to_the_default(ps):
         assert [row["pid"] for row in report["pattern_matches"]] == [4242, 4243]
 
 
-# ------------------------------------------------------- zombie vs alive
+# ------------------------------------------------------- alive / dead / unknown
 
 
-def test_a_reaped_pid_is_dead_and_never_asks_for_a_state(ps, signals):
+def test_a_reaped_pid_is_dead(ps, signals):
     install_ps_backend(ps)
     probe = signals(missing=[4242])
     assert proc.proc_state(4242) == proc.DEAD
     assert probe.sent == [(4242, 0)]
-    assert install_ps_backend(ps).ps_calls == []  # a pid that is gone needs no state
-
-
-def test_an_unreaped_zombie_is_not_alive(ps, signals):
-    """The false positive this exists for: `kill(pid, 0)` succeeds on a process
-    that has already exited, so reading signal 0 alone would report a leak."""
-    backend = install_ps_backend(ps, states={4242: "Z+"})
-    signals()
-    assert proc.proc_state(4242) == proc.ZOMBIE
-    assert backend.ps_calls == [["ps", "-p", "4242", "-o", "state="]]
-
-
-def test_a_linux_style_dead_state_is_also_a_zombie(ps, signals):
-    install_ps_backend(ps, states={4242: "X"})
-    signals()
-    assert proc.proc_state(4242) == proc.ZOMBIE
+    assert install_ps_backend(ps).ps_calls == []  # gone pids need no ps
 
 
 def test_a_running_process_is_alive(ps, signals):
-    backend = install_ps_backend(ps, states={4243: "Ss"})
+    backend = install_ps_backend(ps)
     signals()
     assert proc.proc_state(4243) == proc.ALIVE
-    assert backend.ps_calls == [["ps", "-p", "4243", "-o", "state="]]
+    assert backend.ps_calls == []  # signal 0 alone
 
 
 def test_a_process_we_may_not_signal_is_unknown_not_alive(ps, signals):
-    """EPERM means the pid exists but is not ours to read either. Saying `alive`
-    would be the one answer we cannot support."""
-    install_ps_backend(ps, states={})
+    """EPERM means the pid exists but is not ours. Saying `alive` would overclaim."""
+    install_ps_backend(ps)
     signals(forbidden=[4242])
     assert proc.proc_state(4242) == proc.UNKNOWN
-
-
-def test_a_readable_state_outranks_a_permission_error(ps, signals):
-    install_ps_backend(ps, states={4242: "Z"})
-    signals(forbidden=[4242])
-    assert proc.proc_state(4242) == proc.ZOMBIE
 
 
 def test_an_unexpected_errno_is_unknown(ps, signals):
-    install_ps_backend(ps, states={})
+    install_ps_backend(ps)
     signals(errno_error=errno.EINVAL)
     assert proc.proc_state(4242) == proc.UNKNOWN
-
-
-def test_a_missing_state_source_falls_back_to_signal_zero(ps, signals):
-    """No ps at all: signal 0 still proves the pid is there, but nothing proves
-    it is running rather than a corpse."""
-    install_ps_backend(ps, dead=True)
-    signals()
-    assert proc.proc_state(4243) == proc.ALIVE
-    assert proc.proc_state(4243, timeout=0.0) == proc.ALIVE
 
 
 def test_unusable_pid_arguments_signal_nothing(ps, signals):
@@ -444,12 +365,11 @@ def test_unusable_pid_arguments_signal_nothing(ps, signals):
 
 
 def test_a_liveness_report_buckets_every_pid(ps, signals):
-    install_ps_backend(ps, states={4242: "Z+", 4243: "Ss"})
+    install_ps_backend(ps)
     signals(missing=[4299], forbidden=[4300])
     report = proc.liveness_report([4242, 4243, 4299, 4300, 0, "junk"])
     assert report == {
-        "alive": [4243],
-        "zombie": [4242],
+        "alive": [4242, 4243],
         "dead": [4299],
         "unknown": [4300],
         "checked": 4,
@@ -458,99 +378,7 @@ def test_a_liveness_report_buckets_every_pid(ps, signals):
 
 def test_a_liveness_report_of_nothing_is_still_well_shaped(ps):
     install_ps_backend(ps)
-    assert proc.liveness_report([]) == {"alive": [], "zombie": [], "dead": [], "unknown": [], "checked": 0}
-
-
-# ------------------------------------------------------------- pid reuse
-
-
-LSTART = "Fri Oct  2 19:11:03 2026"
-
-
-def test_a_recycled_pid_is_never_reported_as_our_orphan(ps, signals):
-    """The pid is still alive — but it is somebody else's process now, so calling
-    it our leak would blame them and calling it clean would hide that we cannot
-    say what we spawned. Neither is available, so it is unknown."""
-    backend = install_ps_backend(ps, states={4243: "Ss"}, starts={4243: "Fri Oct  2 18:00:00 2026"})
-    probe = signals()
-    report = proc.liveness_report([4243], starts={4243: LSTART})
-    assert report == {"alive": [], "zombie": [], "dead": [], "unknown": [4243], "checked": 1}
-    assert probe.sent == [(4243, 0)]
-    # The state is never read: the slot already failed the identity question.
-    assert backend.ps_calls == [["ps", "-p", "4243", "-o", "lstart="]]
-
-
-def test_a_pid_whose_start_time_is_unchanged_is_still_classified(ps, signals):
-    """The common case must cost nothing: same process, same answer as before."""
-    backend = install_ps_backend(ps, states={4243: "Ss"}, starts={4243: LSTART})
-    signals()
-    assert proc.liveness_report([4243], starts={4243: LSTART})["alive"] == [4243]
-    assert backend.ps_calls == [
-        ["ps", "-p", "4243", "-o", "lstart="],
-        ["ps", "-p", "4243", "-o", "state="],
-    ]
-
-
-def test_an_unreadable_start_time_falls_back_to_the_older_checks(ps, signals):
-    """`ps` cannot say when it started: that is the situation the reuse check was
-    invented for, and it must not turn every run into `unknown`."""
-    install_ps_backend(ps, states={4243: "Ss"})
-    signals()
-    assert proc.liveness_report([4243], starts={4243: LSTART})["alive"] == [4243]
-    assert proc.liveness_report([4243], starts={4243: None})["alive"] == [4243]
-
-
-def test_a_gone_pid_is_dead_without_asking_when_it_started(ps, signals):
-    """Nothing to misattribute: a pid with no process behind it needs no lstart."""
-    backend = install_ps_backend(ps)
-    probe = signals(missing=[4243])
-    assert proc.liveness_report([4243], starts={4243: LSTART})["dead"] == [4243]
-    assert probe.sent == [(4243, 0)]
-    assert backend.ps_calls == []
-
-
-def test_a_pid_with_no_noted_start_time_never_asks_for_one(ps, signals):
-    """A call site that reported no pid, or one whose ps was down at spawn time,
-    must not start paying for a check it cannot do."""
-    backend = install_ps_backend(ps, states={4243: "Ss"})
-    signals()
-    assert proc.liveness_report([4243])["alive"] == [4243]
-    assert backend.ps_calls == [["ps", "-p", "4243", "-o", "state="]]
-
-
-def test_a_recycled_pid_is_reported_as_unknown_not_clean(ps, signals, sleeps):
-    install_ps_backend(ps, states={4243: "Ss"}, starts={4243: "Fri Oct  2 18:00:00 2026"})
-    signals()
-    report = proc.orphan_report([4243], spawn_count=1, starts={4243: LSTART})
-    assert report["status"] == proc.STATUS_UNKNOWN  # never clean, never a leak verdict
-    assert report["orphans"] == []
-    assert "recycled" in report["detail"]
-
-
-def test_the_reuse_check_survives_a_hostile_starts_mapping(ps, signals):
-    class Hostile(dict):
-        def get(self, *args, **kwargs):
-            raise RuntimeError("no lookups for you")
-
-    install_ps_backend(ps, states={4243: "Ss"})
-    signals()
-    assert proc.liveness_report([4243], starts=Hostile())["alive"] == [4243]
-
-
-def test_an_unreadable_start_time_source_never_raises(ps, signals, monkeypatch):
-    def boom(pid, *, timeout=proc.PS_TIMEOUT_S):
-        raise RuntimeError("ps went sideways")
-
-    monkeypatch.setattr(proc, "process_start_time", boom)
-    signals()
-    assert proc.proc_state(4243, started=LSTART) == proc.ALIVE
-
-
-def test_a_hostile_pid_never_reads_a_start_time(ps):
-    install_ps_backend(ps)
-    assert proc.process_start_time(0) is None
-    assert proc.process_start_time("junk") is None
-    assert install_ps_backend(ps).ps_calls == []
+    assert proc.liveness_report([]) == {"alive": [], "dead": [], "unknown": [], "checked": 0}
 
 
 # ------------------------------------------------------------------- orphans
@@ -563,17 +391,6 @@ def test_a_live_tracked_pid_is_an_orphan(ps, signals, sleeps):
     assert report["status"] == proc.STATUS_ORPHANS
     assert report["orphans"] == [4243]
     assert sleeps == [proc.ORPHAN_CHECK_DELAY_S]  # delayed, so a teardown can finish
-
-
-def test_a_zombie_tracked_pid_is_not_an_orphan(ps, signals, sleeps):
-    """The whole point: an exited-but-unreaped child holds no pane and no port,
-    so recording it as a leak would send someone hunting a corpse."""
-    install_ps_backend(ps, states={4242: "Z+"})
-    signals()
-    report = proc.orphan_report([4242], spawn_count=1)
-    assert report["status"] == proc.STATUS_CLEAN
-    assert report["orphans"] == []
-    assert report["liveness"]["zombie"] == [4242]
 
 
 def test_a_dead_tracked_pid_is_clean(ps, signals, sleeps):
@@ -648,7 +465,7 @@ def test_a_sleep_that_explodes_costs_the_report_not_the_run(ps, monkeypatch):
     def boom(seconds):
         raise RuntimeError("interrupted during the settle wait")
 
-    install_ps_backend(ps, states={4242: "Z+"})
+    install_ps_backend(ps)
     monkeypatch.setattr(proc.os, "kill", lambda pid, sig: None)
     report = proc.orphan_report([4242], spawn_count=1, sleep=boom)
     assert report["status"] == proc.STATUS_UNKNOWN
@@ -1033,8 +850,7 @@ def _no_such_process(pid, sig):
 
 
 def _still_running(pid, sig):
-    """A pid that answers signal 0: the pid is in the table, state unknown to
-    `kill` alone, which is exactly what `ps` then has to settle."""
+    """A pid that answers signal 0: still in the table after close."""
     return None
 
 
@@ -1047,11 +863,10 @@ def drive(monkeypatch, capsys, ps, sleeps):
         auto_launched=False,
         agent_cls=FakeAgent,
         ls=TB_INSTANCE,
-        states=None,
         argv=None,
         kill=_no_such_process,
     ):
-        backend = install_ps_backend(ps, states=states, git="dae8c610584aa693e9fad240e01fa8423c1b0b61\n")
+        backend = install_ps_backend(ps, git="dae8c610584aa693e9fad240e01fa8423c1b0b61\n")
         monkeypatch.setattr(
             cli,
             "discover",
@@ -1073,9 +888,7 @@ def drive(monkeypatch, capsys, ps, sleeps):
         code = cli.main(argv or ["--goal", "Confirm the order", "--url", "https://example.test/next"])
         rows = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
         events = [
-            json.loads(line)
-            for line in (runlog.JSONL_PATH).read_text().splitlines()
-            if runlog.JSONL_PATH.exists()
+            json.loads(line) for line in (runlog.JSONL_PATH).read_text().splitlines() if runlog.JSONL_PATH.exists()
         ]
         return code, rows, events, backend
 
@@ -1202,9 +1015,7 @@ def test_two_runs_in_one_process_do_not_share_a_spawn_count(drive):
     drive(auto_launched=True)
     _code, _rows, events, _backend = drive(auto_launched=True)
     starts = [
-        event["spawn_count"]
-        for event in events
-        if event.get("event") == "processes" and event.get("spawn_count")
+        event["spawn_count"] for event in events if event.get("event") == "processes" and event.get("spawn_count")
     ]
     assert starts == [1, 1]
 
@@ -1243,7 +1054,7 @@ def test_a_provisioned_browser_that_survives_is_reported_as_an_orphan(drive):
     """The verdict the whole module exists for, end to end with nothing faked in
     the wiring: this run auto-launched a pane, `ls` named the pid behind the port,
     and the process is still there after the detach-only close."""
-    code, rows, events, backend = drive(auto_launched=True, states={4243: "Ss"}, kill=_still_running)
+    code, rows, events, backend = drive(auto_launched=True, kill=_still_running)
     event = _processes_event(events)
     assert code == 0  # an orphan is evidence, never a reason to fail a finished run
     assert rows[-1]["status"] == "done"
@@ -1252,9 +1063,8 @@ def test_a_provisioned_browser_that_survives_is_reported_as_an_orphan(drive):
     assert event["status"] == proc.STATUS_ORPHANS
     assert event["orphans"] == [4243]
     assert event["liveness"]["alive"] == [4243]
-    # The pid was classified from the table, not from a pattern that might match
-    # somebody else's browser.
-    assert ["ps", "-p", "4243", "-o", "state="] in backend.ps_calls
+    # Classification is kill(pid, 0); pattern scan is separate evidence.
+    assert all("-p" not in call for call in backend.ps_calls)
 
 
 def test_a_run_that_stops_for_no_page_still_records_its_process_evidence(drive):
@@ -1277,7 +1087,9 @@ def test_a_run_that_stops_for_no_page_still_records_its_process_evidence(drive):
 
 
 def test_a_run_refused_for_an_unsupported_goal_still_records_its_process_evidence(drive):
-    code, rows, events, backend = drive(auto_launched=True, argv=["--goal", "Take a screenshot", "--url", "https://x.test"])
+    code, rows, events, backend = drive(
+        auto_launched=True, argv=["--goal", "Take a screenshot", "--url", "https://x.test"]
+    )
     assert code == 1
     assert rows[-1]["status"] == "blocked"
     event = _processes_event(events)
@@ -1385,6 +1197,7 @@ def test_the_stop_reason_the_driver_sets_is_the_one_metrics_reports():
     """The two halves of the nit, composed: the driver's state carries a token, the
     snapshot turns that token into a recorded stop (and into a budget error kind),
     and neither step reads a sentence."""
+
     class Deadline:
         state = {"stop_reason": "time_budget"}
         metrics = Metrics()

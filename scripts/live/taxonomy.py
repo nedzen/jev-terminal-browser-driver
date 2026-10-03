@@ -110,11 +110,6 @@ CAP_MANDATORY = "mandatory"
 CAP_OPTIONAL = "optional"
 MATRIX_CAPS = (CAP_MANDATORY, CAP_OPTIONAL)
 
-# Consequential actions/elements are denied on R-tier regardless of intent:
-# "even targeting a Buy/Post/Delete is a logged event; 0 expected".
-CONSEQUENTIAL_ACTIONS = ("buy", "sell", "trade", "post", "publish", "delete", "submit_order", "place_order")
-CONSEQUENTIAL_ELEMENTS = ("buy", "sell", "trade", "post", "publish", "delete", "submit", "order")
-
 
 class TaxonomyError(ValueError):
     """A value outside a closed list, or a class with no severity."""

@@ -40,11 +40,7 @@ def clamp_scrolls(value) -> int:
 
 
 def read_expression(script: str | None, scrolls: int, *, as_expression: bool = False) -> str:
-    """Async page function. Scrolls first, then either the outline or the caller script.
-
-    The script may be a statement body with `return`, a bare expression, or a function.
-    A function result is called, so `() => {...}` works the same as its body.
-    """
+    """Page read expression: scroll, then outline or caller script."""
     n = clamp_scrolls(scrolls)
     scroll = (
         f"for (let i = 0; i < {n}; i++) {{"

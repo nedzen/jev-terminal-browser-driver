@@ -73,12 +73,6 @@ def decide(monkeypatch, state, answers, usage=None):
     return decision, calls
 
 
-def test_hash_is_sixteen_hex_chars_over_the_shipped_prompts():
-    assert model.QUESTION_SPEC_HASH == model.question_spec_hash()
-    assert len(model.QUESTION_SPEC_HASH) == 16
-    assert all(c in "0123456789abcdef" for c in model.QUESTION_SPEC_HASH)
-
-
 def test_hash_pins_the_named_prompt_encoding():
     # A golden digest: the hash is a contract between records and this spec
     # revision, so the encoding (names included, order fixed) is pinned here and
@@ -343,9 +337,6 @@ def test_usage_is_recorded_for_a_pure_model_decision(monkeypatch):
     )
     assert decision["decision_source"] == "model"
     assert decision["usage"] == {"input_tokens": 5, "output_tokens": 1, "cost": 0.0002}
-
-
-
 
 
 @pytest.mark.parametrize(

@@ -60,7 +60,7 @@ def test_scroll_delta_scales_to_inner_height(monkeypatch):
             return {"result": {"value": {"h": 1000, "w": 1200}}}
         return {}
 
-    monkeypatch.setattr("jev_driver.browser.cdp", fake_cdp)
+    monkeypatch.setattr("jev_driver.ops.cdp", fake_cdp)
     action = {"kind": "scroll", "delta": 560, "id": "scroll_down"}
     browser_operation({"operation": "act", "session": "s", "action": action})
     wheel = [p for m, p in sent if m == "Input.dispatchMouseEvent"][0]
@@ -299,7 +299,7 @@ def test_covered_fill_focuses_and_types(monkeypatch):
             return {"result": {"value": answers.pop(0)}}
         return {}
 
-    monkeypatch.setattr("jev_driver.browser.cdp", fake_cdp)
+    monkeypatch.setattr("jev_driver.ops.cdp", fake_cdp)
     action = {"kind": "fill", "node": 4, "id": "e1", "label": "Search query"}
     result = browser_operation({"operation": "act", "session": "s", "action": action, "text": "jev"})
     assert result["executed"] == "e1"
@@ -512,7 +512,7 @@ def test_enter_key_is_dispatched(monkeypatch):
         sent.append((method, params))
         return {}
 
-    monkeypatch.setattr("jev_driver.browser.cdp", fake_cdp)
+    monkeypatch.setattr("jev_driver.ops.cdp", fake_cdp)
     action = {"kind": "enter", "id": "press_enter", "label": "Press Enter"}
     result = browser_operation({"operation": "act", "session": "s", "action": action})
     assert result["via"] == "enter"

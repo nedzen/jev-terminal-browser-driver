@@ -45,12 +45,7 @@ _SPEC_PROMPTS = (NEXT_ACTION, TARGET, TEXT_VALUE)
 
 
 def question_spec_hash(prompts=None):
-    """sha256 over the shipped decision prompts, truncated to 16 hex chars.
-
-    Identifies which instruction text produced a decision, so a calibration
-    sample can be attributed to a prompt revision. Callers pass ``prompts`` to
-    prove sensitivity; the default is the spec questions.py ships now.
-    """
+    """Truncated sha256 of the shipped decision prompts (prompt provenance)."""
     if prompts is None:
         pairs = tuple(zip(_SPEC_NAMES, _SPEC_PROMPTS))
     else:
@@ -76,16 +71,7 @@ def decisions_url() -> str:
 
 
 def explicit_endpoint(name: str) -> str | None:
-    """An explicitly configured endpoint for ``name``, or None.
-
-    Setting the variable is the operator naming a server and accepting its
-    contract, which is the only thing that makes operating without a
-    credential sensible: with nothing set the URL is a derived hosted default
-    (api.typesafe.ai, openrouter.ai), and a keyless call there is an
-    unauthenticated request to a third party rather than a local convenience.
-    Point the variable at a hosted service and you get the same rejection any
-    missing credential earns — loudly, and before a decision is acted on.
-    """
+    """Operator-configured endpoint for ``name``, or None (hosted defaults need a key)."""
     try:
         return os.environ.get(name, "").strip() or None
     except Exception:
@@ -199,18 +185,7 @@ def validate_choice(answer, ids):
 
 
 def validate_response_model(answer):
-    """The model id the backend reported, or a refusal to act on its answer.
-
-    A well-formed id is part of the response contract, not decoration: the value
-    is provider-controlled and is recorded as provenance and rendered by the CLI,
-    so free text in that slot is a provider writing into the run log. Anything
-    outside the pattern (or a missing id, which used to escape as a bare
-    KeyError) means the answer is not the response this contract describes, and
-    no decision is acted on.
-
-    The offending value is not echoed: it is untrusted, and a refusal message
-    reaches the same log.
-    """
+    """Validated response model id, or refuse (never echo the offending value)."""
     name = answer.get("model") if isinstance(answer, dict) else None
     if not isinstance(name, str) or len(name) > _MODEL_ID_MAX or not _MODEL_ID_RE.fullmatch(name):
         raise RuntimeError("Model provider returned an unexpected model id; no action executed.")
@@ -218,12 +193,7 @@ def validate_response_model(answer):
 
 
 def sole_candidate_answer(candidates):
-    """The only legal answer for a head with one candidate, and its tag.
-
-    Held to validate_choice's contract by the caller, so tightening validation
-    breaks the bypass loudly instead of letting it emit a shape nothing else
-    would have produced.
-    """
+    """Sole legal answer for a one-candidate head (same shape as validate_choice)."""
     (index,) = candidates
     return {"choice": index, "confidence": 1.0, "probabilities": {index: 1.0}}
 
@@ -267,32 +237,14 @@ def _dedup_from_env() -> bool:
 REQUEST_DEDUP: bool = _dedup_from_env()
 
 
-def set_request_dedup(enabled: bool | None = None) -> bool:
-    """Install the de-duplication gate. None re-reads WWWDRIVE_REQUEST_DEDUP."""
-    global REQUEST_DEDUP
-    REQUEST_DEDUP = _dedup_from_env() if enabled is None else bool(enabled)
-    return REQUEST_DEDUP
-
-
 def denied(action, patterns) -> bool:
-    """True when this element's name is denied. Accepts compiled patterns or raw strings.
-
-    Empty labels are never denied: snapshot.js always offers a non-empty name
-    (label or role fallback), so an empty label means a malformed action, not a
-    safe one. If snapshot ever offers truly unlabeled controls, revisit this.
-    """
+    """True when the element name matches the denylist. Empty labels never deny."""
     label = str(action.get("label") or "")
     return bool(label) and any(re.search(pattern, label) for pattern in patterns)
 
 
 def action_space(actions, deny_names=None):
-    """One index per observed element; each operation has its own valid target choices.
-
-    An element whose name matches the denylist is dropped before anything is
-    indexed: no element, no target, no control. The model therefore cannot choose
-    it, and the executor never looks up an id it was never offered. ``deny_names``
-    defaults to this run's DENY_NAMES, installed by set_deny_names.
-    """
+    """Indexed actions after denylist drop — denied names are never offered."""
     patterns = DENY_NAMES if deny_names is None else deny_names
     if patterns:
         actions = [action for action in actions if not denied(action, patterns)]
@@ -488,19 +440,11 @@ def field_context(goal, action, page, history):
 
 
 class _PermanentError(ValueError):
-    """Deterministic field_text failure (bad shape, empty/too-long value).
-
-    Retrying cannot help: the helper answered, and the answer is unusable.
-    A ValueError subclass so existing callers handle it identically.
-    """
+    """Deterministic field_text failure — do not retry."""
 
 
 def _request_retryable(exc: RuntimeError) -> bool:
-    """Retry transient provider failures, never deterministic ones.
-
-    429/5xx may clear; other 4xx (auth, bad request) and an exhausted
-    post_json ("Model unavailable" already spans its own retries) will not.
-    """
+    """True for retryable provider failures (429/5xx), not deterministic ones."""
     msg = str(exc)
     if "HTTP 429" in msg:
         return True
@@ -522,14 +466,7 @@ def _strip_code_fences(text):
 
 
 def field_text(context):
-    """The value to type, from the text helper, or a refusal that types nothing.
-
-    A keyless call is allowed only for an explicitly configured endpoint (see
-    ``explicit_endpoint``): naming the server is how an operator says it takes no
-    bearer token. Without one, the endpoint is the hosted default and the missing
-    credential is the operator's to fix, so the helper refuses instead of sending
-    an unauthenticated request.
-    """
+    """Value to type from the text helper, or refuse (keyless only if endpoint is explicit)."""
     key = load_text_key()
     endpoint = explicit_endpoint("TEXT_MODEL_BASE_URL")
     base = (endpoint or "https://openrouter.ai/api/v1").rstrip("/")
