@@ -64,6 +64,7 @@ _STOP_REASONS = (
     "already_followed",
     "click_not_sent",
     "covered_target",
+    "end_state_reached",
     "extract",
     "field_changed",
     "max_steps",

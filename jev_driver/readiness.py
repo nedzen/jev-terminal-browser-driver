@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 DONE_MIN = 0.6
 
 REASON_WHY = {
@@ -29,6 +31,11 @@ REASON_WHY = {
     "extract": "drive only clicks the current view. Call read to collect structured data.",
     "model_blocked": (
         "Model chose BLOCKED. Here is the visible text; do not open another browser tool for the same look."
+    ),
+    "end_state_reached": (
+        "Model chose BLOCKED, but this run had already navigated to the end state the goal named: "
+        "the visible page carries it and an action in this run's own history got there. Reported done. "
+        "Check the visible text; if the goal is not actually met, drive again with a narrower goal."
     ),
     "max_steps": "Stopped: tick budget exhausted before the goal was visibly done.",
     "time_budget": (
@@ -103,6 +110,190 @@ def degenerate(decision: dict | None) -> bool:
     top = ranked[0]
     gap = top - (ranked[1] if len(ranked) > 1 else 0)
     return top < 0.6 and gap < 0.1
+
+
+# ---------------------------------------------------------------------------
+# End-state rescue on the BLOCKED path.
+#
+# A model that answers BLOCKED is usually right: the target is below the fold,
+# the page is a shell, the form will not submit. But it is sometimes wrong in a
+# way the model cannot see — the run already arrived where the goal pointed, and
+# the model is looking at a page whose visible text no longer repeats the goal's
+# words (the 21:30 release-gate run: DONE 0.19, blocked on an end state it had
+# reached). That reads as `model_blocked` and the caller re-asks forever.
+#
+# The guard below is the code-side half of the P1 prompt fix (questions.py):
+# DONE already accepts "arriving at the page the goal named, by an action in
+# your own history". BLOCKED does not, so a correct end state reached by
+# BLOCKED has nowhere to go. This gives it one.
+#
+# It is deliberately one-sided. Every condition must hold; there is no partial
+# credit and no retry. A false `done` is worse than an honest `blocked`: the
+# caller stops asking, the goal was not met, and nothing in the result says so.
+# ---------------------------------------------------------------------------
+
+# Words in a goal that are never the thing being looked for: grammar, politeness,
+# and the driver's own vocabulary. "Click the Search button" names Search; every
+# other token is scaffolding.
+_STOPWORDS = frozenset(
+    """
+    a an the this that these those there here it its it's is are was were be been being am
+    to of in on at for from by with without within into onto as and or but nor so then
+    please kindly just only also very really quite rather some any each every all both
+    i me my we our you your he she they them their his her
+    do does did done doing have has had having make makes made get gets got
+    page pages site website tab screen view open opens opening
+    """.split()
+)
+
+# Verbs the driver itself performs. A goal is about the thing acted on, not the
+# acting, so "click", "scroll" and "go" carry no end-state signal.
+_VERBS = frozenset(
+    """
+    click clicks clicked clicking tap taps tapped go goes going goto navigate navigates
+    navigated navigation scroll scrolls scrolled scrolling type types typed typing fill
+    fills filled filling select selects selected choosing choose chose press presses pressed
+    enter enters search searches searched find finds found open opens opened wait waits
+    take takes bring brings use uses used
+    """.split()
+)
+
+# Scaffolding that names the driver's mechanics or a URL fragment rather than the
+# goal's subject. "click the Learn more link" is about Learn more; "link" and
+# ".com" are only how the goal was phrased.
+_SCAFFOLDING = frozenset(
+    """
+    link links button buttons clickable nav navbar menu homepage index default
+    stop stops stopping done finishing finish finished complete completed
+    show shows shown showing see seen visible appears appear appeared
+    com org net edu gov io co www http https html htm aspx php
+    """.split()
+)
+
+# A token this short is noise: stray punctuation, and "a"/"x", even if a word
+# list above misses one.
+_MIN_TOKEN = 3
+
+# Splits a goal into the steps it names. Only the connectives goals actually use
+# to chain actions, plus sentence punctuation *surrounded by whitespace* — a dot
+# inside "More information..." or inside "example.com" is part of a label or a
+# host name, not the end of a sentence.
+_STEP_SPLIT = re.compile(r"\s+\b(?:then|after that|and then|once that|finally)\b\s+|\s*[.;:]\s+")
+
+# A clause that describes the *end state* rather than naming another action:
+# "click Learn more; done when the IANA page shows" is one step plus a
+# description of success, not two steps. Its words must still be evidenced, so
+# they are held separately and checked, but they never inflate the step count.
+_END_STATE_CLAUSE = re.compile(
+    r"\s*\b(?:done\s+when|until|so\s+that|successfully|and\s+stop|and\s+then\s+stop)\b.*",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def goal_end_state_tokens(goal: str | None) -> set[str]:
+    """The words in a goal that name the thing the goal is about.
+
+    Split on everything that is not a letter or digit, lowercased. Stopwords,
+    driver verbs and scaffolding are dropped because they are true of nearly every
+    goal and so discriminate nothing; what survives is what the run would have to
+    produce for this particular goal to count as met.
+    """
+    raw = "".join(ch if ch.isalnum() else " " for ch in (goal or "").lower())
+    return {
+        token
+        for token in raw.split()
+        if len(token) >= _MIN_TOKEN
+        and token not in _STOPWORDS
+        and token not in _VERBS
+        and token not in _SCAFFOLDING
+    }
+
+
+def goal_steps(goal: str | None) -> tuple[list[set[str]], set[str]]:
+    """The goal's steps, plus the words of any end-state clause that trails them.
+
+    Split on the connectives goals use to chain steps, then set aside any clause
+    that says what "done" should look like. That clause is evidence the run must
+    produce (the destination page has to carry those words) but not an action the
+    run still has to perform, so it is returned separately instead of being
+    counted as a step. Counting it as one is what would make a single
+    action-completed goal look like an unfinished two-step goal.
+    """
+    text = (goal or "").lower()
+    qualifier = goal_end_state_tokens(_END_STATE_CLAUSE.search(text).group(0) if _END_STATE_CLAUSE.search(text) else "")
+    body = _END_STATE_CLAUSE.sub("", text)
+    steps = []
+    for chunk in _STEP_SPLIT.split(body):
+        tokens = goal_end_state_tokens(chunk)
+        if tokens:
+            steps.append(tokens)
+    return steps, qualifier
+
+
+def _visible_text(page: dict | None) -> str:
+    """Everything the page itself shows: its title, its text, and its URL."""
+    return " ".join(str((page or {}).get(key) or "") for key in ("title", "text", "url")).lower()
+
+
+def _history_text(history: list | None) -> str:
+    """Everything this run itself acted on: the labels and values it touched.
+
+    Half the evidence lives here rather than on the page. "Click the Learn more
+    link" is satisfied by the run having clicked Learn more; the destination page
+    never repeats the words "learn" or "more", so a page-only match would reject
+    every run that actually succeeded.
+    """
+    bits = []
+    for entry in history or []:
+        if not isinstance(entry, dict):
+            continue
+        bits.extend(str(entry.get(key) or "") for key in ("action", "label", "text", "operation", "kind"))
+    return " ".join(bits).lower()
+
+
+def end_state_reached(page: dict | None, *, goal: str | None, history: list | None, moved_on: bool) -> bool:
+    """True when this run performed every step of the goal and reached its end state.
+
+    Every clause must hold; there is no partial credit. A false ``done`` is worse
+    than an honest ``blocked``, because the caller stops asking and the result
+    never says the goal was missed.
+
+    1. ``moved_on`` — the run navigated away from where it started. A run that
+       never left its start page has not arrived anywhere.
+    2. the page is not a shell. Chrome-only text carries no evidence, and a shell
+       is precisely the condition BLOCKED is usually right about.
+    3. **every step** the goal names is accounted for, in the page's own visible
+       text or in this run's own action history. All-of rather than any-of is the
+       multi-step hedge: "open the article, then share it" cannot be satisfied by
+       a page that only shows the article.
+    4. every step is *performed*: the run's own non-scroll actions number at
+       least as many as the goal's steps. This is the reviewer #14 hedge — a
+       single-action-completed goal has one step and one click behind it, while a
+       multi-step goal still has steps outstanding and stays blocked.
+
+    Returns False whenever any clause fails. No exceptions and no thresholds to tune.
+    """
+    steps, qualifier = goal_steps(goal)
+    if not steps:
+        # A goal with no content words cannot be shown satisfied by any page.
+        return False
+    if not moved_on:
+        return False
+    if page_is_shell((page or {}).get("text")):
+        return False
+    acted = [
+        entry
+        for entry in (history or [])
+        if isinstance(entry, dict) and str(entry.get("kind") or "") not in {"scroll", "wait"}
+    ]
+    evidence = _visible_text(page) + " " + _history_text(history)
+    required = [*steps, qualifier] if qualifier else steps
+    if not all(any(token in evidence for token in step) for step in required):
+        return False
+    # Scrolling and waiting do not count as having acted. This also covers the
+    # run that only looked: with no performed step it cannot clear `len(steps)`,
+    # which is at least one, so it never reaches a done.
+    return len(acted) >= len(steps)
 
 
 def unsupported_goal(goal: str | None) -> str | None:
