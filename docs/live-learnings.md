@@ -114,3 +114,6 @@ History stays above; scoreboard counts only rows below this line.
 | S6c-5435e787ef | S6c | kalshi.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | kalshi.com/calendar | 4 | 0 | 1938.0 | f8b13c650cc5ddf6 | 4d89894 | 5.82 |
 | S7a-6fdb6088ae | S7a | github.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | github.com/nedzen/nonexistent-xyz | 3 | 0 | 1045.0 | f8b13c650cc5ddf6 | aa52d23 | 6.58 |
 | S7b-2b0e588bbf | S7b | coinmarketcap.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | coinmarketcap.com/ | 2 | 0 | 2240.0 | f8b13c650cc5ddf6 | aa52d23 | 2.93 |
+| S7c-34d10ace9f | S7c | coinmarketcap.com | R | mandatory | FALSE-DONE | sev-1 | false-done | model_done | coinmarketcap.com/ | 2 | 0 | 2418.0 | f8b13c650cc5ddf6 | df1ea84 | 2.51 |
+| S8a-739e89f76a | S8a | x.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | x.com/home | 3 | 0 | 1122.0 | f8b13c650cc5ddf6 | df1ea84 | 4.61 |
+| S8b-90c0a98c34 | S8b | github.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | github.com/nedzen/jev-terminal-browser-driver/commit/3a8121b7dbedd86e335beec6767ab3737922394a | 8 | 0 | 2980.0 | f8b13c650cc5ddf6 | df1ea84 | 6.37 |
