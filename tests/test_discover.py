@@ -12,6 +12,12 @@ def reset_last(monkeypatch):
     disc.LAST = None
     monkeypatch.delenv("JEV_CDP_URL", raising=False)
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    # Pin the terminal context. Provisioning reads the environment to decide
+    # whether cmux's control socket is available, so a suite run inside cmux would
+    # otherwise take the cmux route in tests that are about the adapter route.
+    # The cmux route has its own tests; see tests/test_cmux_provision.py.
+    monkeypatch.delenv("CMUX_SOCKET_PATH", raising=False)
+    monkeypatch.delenv("CMUX_WORKSPACE_ID", raising=False)
     yield
     disc.LAST = None
 

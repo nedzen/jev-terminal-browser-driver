@@ -1,17 +1,29 @@
 """CDP discovery, TUI-only: explicit → terminal-browser → visible provision.
 
 No headless, no agent-browser, no loopback scanning. If no terminal-browser
-pane exists we PROVISION one: `terminal-browser open <url> --split right` with
-all HERDR_* env vars scrubbed so terminal-browser's terminal detection skips
-the herdr adapter (it matches on HERDR_PANE_ID alone and would otherwise nest
-the browser inside the calling herdr pane) and opens a visible split in the
-real terminal window (ghostty/kitty/cmux/...).
+pane exists we PROVISION one, by one of two routes:
+
+- Inside cmux, via the cmux control socket: `cmux new-split right --command
+  "terminal-browser open <url>"`. The pane is a sibling of the agent's own pane
+  at the level the user is looking at.
+- Everywhere else, via terminal-browser's own adapter detection:
+  `terminal-browser open <url> --split right`, with all HERDR_* env vars
+  scrubbed so that detection skips the herdr adapter (it matches on
+  HERDR_PANE_ID alone and would otherwise nest the browser inside the calling
+  herdr pane).
+
+The split matters because of the nesting: when the agent runs as Hermes-TUI in
+cmux, itself inside herdr panes, the adapter chain resolves to herdr and the
+browser lands in the agent's own pane tree — visible to nobody. cmux's socket
+is consulted first precisely so that case never reaches the adapter guess.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import time
@@ -38,6 +50,10 @@ WATCH_TERMINAL_NOTE = (
     "terminal-browser needs an existing kitty-graphics terminal "
     "(kitty, ghostty, wezterm, tmux, vscode, cmux, supacode, herdr — not iTerm2/Terminal.app)."
 )
+CMUX_UNAVAILABLE = (
+    "A cmux control socket was found but the cmux CLI is not on PATH. "
+    "Install cmux or run where terminal-browser's own terminal detection works."
+)
 
 
 class WatchUnavailable(RuntimeError):
@@ -54,6 +70,101 @@ class Discovery:
 
 
 LAST: Discovery | None = None
+
+# The instance a cmux-provisioned pane is running, so the next drive opens a TAB in
+# it instead of provisioning a second pane. Keyed by the cmux socket, because a
+# pane belongs to the cmux session that made it: the same box with two cmux
+# sessions has two sets of panes, and a ledger from one must not satisfy a drive
+# that was launched from the other.
+LEDGER_PATH = Path.home() / ".cache" / "wwwdrive" / "cmux-instance.json"
+
+
+def _ledger_key() -> str:
+    """Identity of the cmux session a record belongs to.
+
+    The socket path, hashed rather than stored: the ledger lives in a cache
+    directory and the socket path is a filesystem location belonging to the user's
+    account, so a digest of it is what the record needs to carry.
+    """
+    path = (os.environ.get("CMUX_SOCKET_PATH") or "").strip()
+    return hashlib.sha256(path.encode("utf-8")).hexdigest()[:16] if path else ""
+
+
+def _read_ledger() -> dict | None:
+    """The recorded instance for this cmux session, or None.
+
+    Every failure reads as "no record": a missing file, unreadable JSON, a record
+    written by a different cmux session, or a record missing any field this
+    module needs. Re-provisioning is always a safe answer to an unreadable
+    ledger, so nothing here is allowed to raise.
+    """
+    if not LEDGER_PATH.is_file():
+        return None
+    try:
+        data = json.loads(LEDGER_PATH.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    required = ("ledger", "key", "port", "pid", "workspace")
+    if any(field not in data for field in required):
+        return None
+    if not isinstance(data["port"], int) or not isinstance(data["pid"], int):
+        return None
+    if data["ledger"] != _ledger_key():
+        return None
+    return data
+
+
+def _write_ledger(record: dict) -> None:
+    """Record the provisioned instance. Never raises: a lost record costs one pane."""
+    try:
+        LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
+        LEDGER_PATH.write_text(json.dumps({**_ledger_stamp(), **record}))
+    except OSError:
+        return
+
+
+def _ledger_stamp() -> dict:
+    context = cmux_context() or {}
+    return {
+        "ledger": _ledger_key(),
+        "workspace": context.get("workspace") or "",
+        "socket_path": context.get("socket_path") or "",
+    }
+
+
+def _instance_in_record(record: dict) -> Discovery | None:
+    """A Discovery for the recorded instance, if that exact instance is still alive.
+
+    Identity is the triple terminal-browser itself reports — key, cdpPort and pid.
+    The pid is what makes this an instance check rather than a port check: a port
+    can be reused by a different process after the original exits, and attaching
+    to whatever now holds it would drive a browser nobody asked for. All three must
+    match, and the port must still answer /json/version, so a dead record
+    provisions a fresh pane instead of attaching to a corpse.
+    """
+    try:
+        data = list_browsers()
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
+        return None
+    for browser in data.get("browsers") or []:
+        if browser.get("key") != record["key"]:
+            continue
+        if browser.get("cdpPort") != record["port"] or browser.get("pid") != record["pid"]:
+            continue
+        try:
+            ws = browser_websocket_url(record["port"])
+        except (RuntimeError, urllib.error.URLError, TimeoutError, OSError):
+            return None
+        return Discovery(
+            ws_url=ws,
+            http_origin=f"http://127.0.0.1:{record['port']}",
+            source="terminal-browser",
+            auto_launched=False,
+            visibility="terminal-browser-pane",
+        )
+    return None
 
 
 def ws_to_http_origin(ws_url: str) -> str:
@@ -123,8 +234,42 @@ def _provision_env() -> dict:
     browser in a herdr pane of the agent's tab instead of a visible split in
     the real terminal window. Scrubbing lets detection fall through to the
     actual terminal (ghostty/kitty/cmux/...).
+
+    CMUX_* is deliberately KEPT. On the cmux path the caller is a cmux process
+    that has to be told which workspace and surface to split; scrub that and the
+    split lands wherever cmux's own default points, which is not necessarily the
+    workspace the user is looking at.
     """
     return {k: v for k, v in os.environ.items() if not k.startswith("HERDR_")}
+
+
+def cmux_context() -> dict | None:
+    """The cmux control-socket context, or None when this is not a cmux session.
+
+    Presence of the socket path is the whole test. The path is a filesystem
+    location cmux exports to every process it spawns, so a child can talk to the
+    control socket directly without going through terminal-browser's adapter
+    detection at all — which is the point: that detection is what nests the
+    browser inside a herdr pane when the agent runs Hermes-TUI-in-cmux.
+
+    Returns only what the provisioner needs to address a target. The socket
+    capability token and the password are deliberately not returned: they are
+    credentials and nothing here needs them, because the `cmux` CLI reads them
+    from the environment itself.
+    """
+    path = (os.environ.get("CMUX_SOCKET_PATH") or "").strip()
+    if not path:
+        return None
+    if not Path(path).exists():
+        # A stale export from a cmux that has since exited. Treating this as "no
+        # cmux" falls through to the adapter path, which is the correct answer:
+        # there is no control socket to provision through.
+        return None
+    context = {"socket_path": path}
+    workspace = (os.environ.get("CMUX_WORKSPACE_ID") or "").strip()
+    if workspace:
+        context["workspace"] = workspace
+    return context
 
 
 def _terminal_browser_discovery() -> Discovery | None:
@@ -192,6 +337,140 @@ def _instance_record_port(text: str) -> int | None:
     return None
 
 
+def _resolve_cmux() -> str | None:
+    """The `cmux` CLI, or None. Same lookup contract as resolve_terminal_browser."""
+    found = shutil.which("cmux")
+    if found:
+        return found
+    bundled = os.environ.get("CMUX_BUNDLED_CLI_PATH", "").strip()
+    if bundled and Path(bundled).is_file() and os.access(bundled, os.X_OK):
+        return bundled
+    return None
+
+
+def _provisioned_instance_discovery() -> Discovery | None:
+    """The still-running instance a previous drive provisioned, or None.
+
+    Only consulted inside cmux, and only after the ordinary discovery readers have
+    come back empty — the readers stay first because they answer for an instance
+    nobody ledgered (one the user opened by hand, say), and the ledger is the
+    fallback for the one this module opened itself.
+
+    Outside cmux this returns None without reading anything: the ledger is keyed by
+    cmux socket, so it cannot describe an instance in another terminal, and the
+    adapter path keeps its current behaviour of provisioning when nothing is found.
+    """
+    if cmux_context() is None:
+        return None
+    record = _read_ledger()
+    if record is None:
+        return None
+    return _instance_in_record(record)
+
+
+def _provision_via_cmux(
+    url: str, context: dict, *, tries: int = POST_LAUNCH_TRIES, delay: float = POST_LAUNCH_DELAY_S
+) -> Discovery:
+    """Open the browser by asking cmux to make the pane, never terminal-browser.
+
+    The failure this fixes: terminal-browser's adapter chain is walked to decide
+    which terminal to split, and when the agent runs Hermes-TUI-in-cmux nested in
+    herdr panes, that chain resolves to herdr and the browser lands inside the
+    agent's own pane tree instead of at the cmux root. Asking cmux directly makes
+    the pane a sibling of the agent's pane at the level the user is actually
+    looking at, so there is no adapter to guess wrong.
+
+    `--command` runs terminal-browser INSIDE the new pane, so its own adapter
+    detection is irrelevant: it is already the pane's command and needs no split
+    of its own. That is why this path passes no `--split`.
+
+    The new pane's terminal-browser is not our child, so its instance record is
+    not in our stdout. Discovery is by poll instead.
+    """
+    binary = resolve_terminal_browser()
+    if not binary:
+        raise WatchUnavailable(WATCH_INSTALL)
+    cmux = _resolve_cmux()
+    if not cmux:
+        raise WatchUnavailable(CMUX_UNAVAILABLE)
+
+    argv = [cmux, "new-split", "right"]
+    if context.get("workspace"):
+        argv += ["--workspace", context["workspace"]]
+    # Quoted as one argument: cmux passes this string to a shell in the new pane,
+    # so the URL must not be able to break out of it into a second command.
+    argv += ["--command", f"{shlex.quote(binary)} open {shlex.quote(url)}"]
+    try:
+        completed = subprocess.run(
+            argv,
+            env=_provision_env(),
+            capture_output=True,
+            text=True,
+            timeout=PROVISION_TIMEOUT_S,
+        )
+    except FileNotFoundError as exc:
+        raise WatchUnavailable(f"cmux binary vanished: {exc}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise WatchUnavailable(
+            f"cmux new-split timed out after {PROVISION_TIMEOUT_S}s. {WATCH_TERMINAL_NOTE}"
+        ) from exc
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()[-800:]
+        raise WatchUnavailable(
+            "cmux could not open a pane for terminal-browser"
+            + (f" — it said: {detail}" if detail else "")
+            + f" {WATCH_TERMINAL_NOTE}"
+        )
+
+    # The pane's terminal-browser is not our child, so there is no instance record
+    # to parse. Both readers are tried because neither sees the other terminal's
+    # instances: `ls` is env/TTY-scoped to this cmux surface, and the daemon DB
+    # records the new instance regardless of who launched it.
+    for attempt in range(1, tries + 1):
+        found = _terminal_browser_discovery() or _daemon_db_discovery()
+        if found:
+            found.auto_launched = True
+            found.visibility = "terminal-browser-pane"
+            _remember_instance(found)
+            return found
+        if attempt < tries:
+            time.sleep(delay)
+    raise WatchUnavailable(
+        f"terminal-browser in the cmux pane did not become ready within {int(tries * delay)}s. "
+        f"{WATCH_TERMINAL_NOTE}"
+    )
+
+
+def _remember_instance(found: Discovery) -> None:
+    """Ledger the instance a provisioned pane is running, so the next drive reuses it.
+
+    The port alone would be enough to find it again; key and pid are stored beside
+    it so the next drive can prove it is the same instance and not a different
+    process that inherited the port. Nothing is written when no instance matches
+    the port, so a ledger never claims an instance it could not identify.
+    """
+    try:
+        port = int(found.http_origin.rsplit(":", 1)[-1])
+    except (ValueError, AttributeError):
+        return
+    try:
+        data = list_browsers()
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
+        return
+    for browser in data.get("browsers") or []:
+        if browser.get("cdpPort") != port:
+            continue
+        _write_ledger(
+            {
+                "key": str(browser.get("key") or ""),
+                "port": port,
+                "pid": int(browser.get("pid") or 0),
+                "socket": str(browser.get("socket") or ""),
+            }
+        )
+        return
+
+
 def _provision_terminal_browser(
     url: str, *, tries: int = POST_LAUNCH_TRIES, delay: float = POST_LAUNCH_DELAY_S
 ) -> Discovery:
@@ -199,7 +478,14 @@ def _provision_terminal_browser(
 
     Never headless. Raises (WatchUnavailable for the watch path) when a
     visible pane cannot be created — there is no silent background fallback.
+
+    Inside cmux this delegates to `_provision_via_cmux`, which asks the control
+    socket for a pane instead of letting terminal-browser guess a terminal. The
+    adapter path below remains the fallback everywhere else.
     """
+    context = cmux_context()
+    if context is not None:
+        return _provision_via_cmux(url, context, tries=tries, delay=delay)
     binary = resolve_terminal_browser()
     if not binary:
         raise WatchUnavailable(WATCH_INSTALL)
@@ -296,6 +582,15 @@ def discover(
         LAST = found
         return LAST
     if auto_provision:
+        # Before provisioning a second pane: is the instance a previous drive
+        # provisioned still running? If so, reuse it and let the caller open a tab
+        # in it. One pane per cmux session, one tab per drive — the tab is what
+        # gives a drive its isolation, and reusing the pane is what stops the
+        # window filling with one browser per run.
+        reused = _provisioned_instance_discovery()
+        if reused is not None:
+            LAST = reused
+            return LAST
         LAST = _provision_terminal_browser(launch_url)
         return LAST
     raise WatchUnavailable(
