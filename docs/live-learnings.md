@@ -75,3 +75,6 @@ flagged for evidence re-read (landed on prior-run pages).
 | M2-e64bbe4683 | M2 | github.com | R | mandatory | HIT | - | - | model_done | github.com/nedzen/jev-terminal-browser-driver/issues | 9 | 0 | 1471.0 | feca83330992f854 | a29bcec | 6.32 |
 | M3-c11686d469 | M3 | coinmarketcap.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | coinmarketcap.com/ | 5 | 0 | 2286.0 | feca83330992f854 | a29bcec | 5.51 |
 | M4-bcfbebd851 | M4 | github.com | R | mandatory | FALSE-DONE | sev-1 | false-done | model_done | github.com/nedzen/jev-terminal-browser-driver | 4 | 0 | 1415.0 | feca83330992f854 | a29bcec | 3.9 |
+| M5-e3375bffa4 | M5 | x.com | R | mandatory | MISS | sev-2 | wrong-end-state | action_budget | x.com/home | 13 | 0 | 1325.0 | feca83330992f854 | 9cf85ac | 9.29 |
+| M6-9f33e9e37f | M6 | kalshi.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | chromewebdata/ | 4 | 0 | 631.0 | feca83330992f854 | 9cf85ac | 15.26 |
+| M6-67bb4a667a | M6 | kalshi.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | kalshi.com/ | 2 | 0 | 1809.0 | feca83330992f854 | 9cf85ac | 3.68 |
