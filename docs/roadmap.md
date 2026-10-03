@@ -131,11 +131,13 @@ plugin, Tier 1–4, hardening A–C, debloat, rename. Reinstall sweep done.
   Path-B, rows 6/8/9 leave the threshold untested for non-navigating goals.
 - ACCEPTED post-1.1.0 fix backlog (CEO final ruling 2026-10-03), priority
   order, PENDING→ACCEPTED (each: own cycle + reviewer sign-off): P1 DONE
-  stop-framing (`questions.py:14` observable end-state criterion) — IN FLIGHT
-  (main-ops, branch `feat/stop-framing-p1`, score-level regression tests via
-  V2 frozen-probe pattern, no browser; P3 `architecture.md:180` doc fix
-  bundled in the same PR); P2 H2 BLOCKED-side guard (correct-URL rescue) —
-  QUEUED next cycle after P1 merges; P3 bundled with P1 (see above);
+  stop-framing (`questions.py:14` observable end-state criterion) — MERGED
+  (PR #14, 76adb6a; reviewer approved after marker post; 665 green + ruff
+  clean re-verified on merged main; merger probe: A DONE 0.19→0.50, B
+  0.65→0.95 — partial mitigation, P2 still needed). Reviewer suggestions
+  carried as follow-up: test file trailing newline; DONE-clause hedge for
+  multi-step goals (P2 input). P2 H2 BLOCKED-side guard (correct-URL
+  rescue) — IN FLIGHT (arch, branch `feat/blocked-guard-p2`); P3 bundled with P1 (see above);
   P4 H3 geometry (quantify `not_actionable`, then fix) — FILED;
   P5 `model_version` + confidence instrumentation — FILED. No tags/releases
   for these (accumulate toward future 1.1.1/1.2.0, CEO's call).
