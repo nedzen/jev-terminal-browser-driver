@@ -145,9 +145,13 @@ plugin, Tier 1–4, hardening A–C, debloat, rename. Reinstall sweep done.
   P5 `model_version` + confidence instrumentation — MERGED (PR #16, d21b4bb;
   reviewer approved with marker; 700 green + ruff clean re-verified on merged
   main; request-id provenance + BLOCKED-legibility logging, logging-only).
-  P4 code (items 1–4) IN FLIGHT (arch, branch `feat/geometry-p4`); items 5–6
+  P4 code (items 1–4) MERGED — see close-out below; items 5–6
   deferred follow-ups. No tags/releases for these (accumulate toward future
   1.1.1/1.2.0, CEO's call).
+- P4 code (items 1–4) MERGED (PR #17, bb78ab1; reviewer approved with marker;
+  729 green + ruff clean re-verified on merged main via scratch worktree;
+  merger caught + closed a mutation gap pre-PR: _probe_reason ordering now
+  pinned by integration test). Items 5–6 deferred follow-ups.
   (b) `#jev=` marker observe/act staleness (run 1 evidence, intermittent —
   did NOT reproduce on run 3) — filed, NOT started.
 - Owner-only pending, untouched: GitHub repo rename click; `founder` /
