@@ -129,12 +129,16 @@ plugin, Tier 1–4, hardening A–C, debloat, rename. Reinstall sweep done.
   written (true only for never-navigated runs); release-test-plan §2 never
   records DONE p so Path-B greens pass unnoticed; battery rows 1–2 likely
   Path-B, rows 6/8/9 leave the threshold untested for non-navigating goals.
-- PROPOSED post-1.1.0 fix backlog, priority order, PENDING ceo final ruling
-  (each: own cycle + reviewer sign-off): P1 DONE stop-framing
-  (`questions.py:14` observable end-state criterion); P2 H2 BLOCKED-side
-  guard (correct-URL rescue); P3 `architecture.md:180` doc correction;
-  P4 H3 geometry (quantify `not_actionable`, then fix); P5 `model_version`
-  + confidence instrumentation (drift detection, calibration).
+- ACCEPTED post-1.1.0 fix backlog (CEO final ruling 2026-10-03), priority
+  order, PENDING→ACCEPTED (each: own cycle + reviewer sign-off): P1 DONE
+  stop-framing (`questions.py:14` observable end-state criterion) — IN FLIGHT
+  (main-ops, branch `feat/stop-framing-p1`, score-level regression tests via
+  V2 frozen-probe pattern, no browser; P3 `architecture.md:180` doc fix
+  bundled in the same PR); P2 H2 BLOCKED-side guard (correct-URL rescue) —
+  QUEUED next cycle after P1 merges; P3 bundled with P1 (see above);
+  P4 H3 geometry (quantify `not_actionable`, then fix) — FILED;
+  P5 `model_version` + confidence instrumentation — FILED. No tags/releases
+  for these (accumulate toward future 1.1.1/1.2.0, CEO's call).
   (b) `#jev=` marker observe/act staleness (run 1 evidence, intermittent —
   did NOT reproduce on run 3) — filed, NOT started.
 - Owner-only pending, untouched: GitHub repo rename click; `founder` /
