@@ -315,3 +315,73 @@ def test_look_further_scrolls_before_the_guard_is_consulted():
     assert browser.scrolled == 1
     assert agent.state["status"] == "ready"
     assert agent.state.get("stop_reason") != "end_state_reached"
+
+
+# --------------------------------------------------------------------------
+# V4: the BLOCKED is legible in the log without reconstructing it
+# --------------------------------------------------------------------------
+
+
+def _capture_blocked_log(monkeypatch, agent):
+    """Run `_note_model_blocked` and return the `model_blocked` record it wrote."""
+    written = []
+    monkeypatch.setattr("jev_driver.drive_agent.write_event", written.append)
+    agent._note_model_blocked()
+    return [event for event in written if event.get("event") == "model_blocked"]
+
+
+def test_a_blocked_records_what_done_was_worth_on_the_same_page(monkeypatch):
+    """`done_p` is the number that was compared against DONE_MIN, so a BLOCKED can
+    be read as a near-miss rather than guessed at."""
+    agent = _blocked_agent()
+    agent.state["decisions"] = [
+        {"choice": "BLOCKED", "operation": "BLOCKED", "operation_probabilities": {"DONE": 0.26, "BLOCKED": 0.62}}
+    ]
+    record = _capture_blocked_log(monkeypatch, agent)[0]
+    assert record["done_p"] == 0.26
+
+
+def test_a_blocked_records_how_many_targets_were_on_offer(monkeypatch):
+    """An empty target head is the difference between "nothing to click" and "the
+    model would not click", and the log has to distinguish them."""
+    agent = _blocked_agent()
+    agent.state["decisions"] = [{"choice": "BLOCKED", "operation": "BLOCKED", "target_probabilities": {}}]
+    assert _capture_blocked_log(monkeypatch, agent)[0]["ranked_targets_count"] == 0
+
+    agent = _blocked_agent()
+    agent.state["decisions"] = [
+        {"choice": "BLOCKED", "operation": "BLOCKED", "target_probabilities": {"1": 0.9, "2": 0.1}}
+    ]
+    assert _capture_blocked_log(monkeypatch, agent)[0]["ranked_targets_count"] == 2
+
+
+def test_a_blocked_records_where_the_run_ended_up_and_whether_it_navigated(monkeypatch):
+    """`moved_on` is the precondition of the `_reject_weak_done` bypass, so it is
+    what says whether DONE could have been accepted at all on this page."""
+    agent = _blocked_agent()
+    record = _capture_blocked_log(monkeypatch, agent)[0]
+    assert record["final_url"] == IANA_URL
+    assert record["moved_on"] is True
+
+
+def test_a_blocked_on_the_start_page_records_that_the_run_never_moved(monkeypatch):
+    """The other half of the bypass precondition, so `moved_on: false` is a real
+    recorded answer and not an absent one."""
+    agent = _blocked_agent(page={**IANA_PAGE, "url": "https://example.com/"})
+    assert _capture_blocked_log(monkeypatch, agent)[0]["moved_on"] is False
+
+
+def test_a_blocked_is_logged_even_when_the_rescue_later_converts_the_run(monkeypatch):
+    """A BLOCKED the rescue overrode is precisely the case worth auditing, so the
+    record has to be written before the run's stop_reason is decided."""
+    agent = _blocked_agent()
+    agent.state["stop_reason"] = "end_state_reached"
+    agent.state["status"] = "done"
+    assert len(_capture_blocked_log(monkeypatch, agent)) == 1
+
+
+def test_a_decision_that_was_not_blocked_logs_no_blocked_record(monkeypatch):
+    """The record is about BLOCKED specifically; a DONE tick must stay quiet."""
+    agent = _blocked_agent()
+    agent.state["decisions"] = [{"choice": "DONE", "operation": "DONE"}]
+    assert _capture_blocked_log(monkeypatch, agent) == []
