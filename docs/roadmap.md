@@ -181,6 +181,12 @@ plugin, Tier 1–4, hardening A–C, debloat, rename. Reinstall sweep done.
   wwwdrive-rename, fix/tui-only (all ancestors, remote refs deleted);
   plan/wwwdrive-release (42-line release-plan doc, superseded by executed
   v1.0.0/v1.1.0 — left on origin, delete on owner call).
+- Instance lifecycle MERGED (PR #27, 61dbeac; 988 green + ruff clean +
+  merger mutation verified on merged main): visible-default refusal, cmux-first
+  ordering, TTL reap, origin marking. OVERRIDE (owner-ordered): merged without
+  reviewer verdict (pending mid-turn); verdict landed request-changes after
+  (M1 test-validity blocker, production sound) → fix-forward cycle
+  (feat/lifecycle-m1-fix) open, no revert debate.
 - Owner-only pending, untouched: GitHub repo rename click (owner, very end);
   `founder` / `intern` profile re-link + settings re-entry.
 - Follow-up queue (non-blocking polish, worked only when the suite waits):
