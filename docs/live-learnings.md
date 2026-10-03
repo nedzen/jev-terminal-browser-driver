@@ -38,3 +38,6 @@ both real drives, both HIT; the duplication is operator re-invocation, noted.
 | S1c-67d8c4cf52 | S1c | github.com | R | mandatory | BLOCKED-honest | sev-2 | - | model_blocked | github.com/nedzen/jev-terminal-browser-driver | 2 | 0 | 2229.0 | feca83330992f854 | f7999eb | 1.0 |
 | S1d-da4f36ceb0 | S1d | coinmarketcap.com/currencies/tether/ | R | mandatory | HIT | - | - | model_done | coinmarketcap.com/currencies/tether | 1 | 0 | 1597.0 | feca83330992f854 | 3109602 | 2.2 |
 | S2a-d5e84c1a1e | S2a | coinmarketcap.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | coinmarketcap.com/currencies/chainlink | 6 | 0 | 2030.0 | feca83330992f854 | 3109602 | 5.85 |
+| S2b-145353b8b5 | S2b | github.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | github.com/ | 2 | 0 | 1847.0 | feca83330992f854 | 2da12a5 | 3.76 |
+| S2b-88cde9906e | S2b | github.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | github.com/nedzen/jev-terminal-browser-driver | 1 | 0 | 2215.0 | feca83330992f854 | 2da12a5 | 1.88 |
+| S2b-c30ada0579 | S2b | github.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | github.com/nedzen/jev-terminal-browser-driver | 1 | 0 | 2215.0 | feca83330992f854 | 2da12a5 | 0.73 |
