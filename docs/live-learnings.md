@@ -82,3 +82,5 @@ flagged for evidence re-read (landed on prior-run pages).
 | M8-ad106edd4e | M8 | github.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | github.com/search | 4 | 0 | 872.0 | feca83330992f854 | 3a9beae | 19.55 |
 | M9-3072a8ca2d | M9 | github.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | github.com/nedzen/jev-terminal-browser-driver | 5 | 0 | 2831.5 | feca83330992f854 | fa1e157 | 7.47 |
 | M11-0d81fab727 | M11 | wolframalpha.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | www.wolframalpha.com/ | 5 | 0 | 1859.0 | feca83330992f854 | fa1e157 | 10.27 |
+| M12-4ddd1476f6 | M12 | flights.google.com | R | mandatory | MISS | sev-2 | wrong-end-state | action_budget | www.google.com/travel/flights | 13 | 0 | 1827.0 | feca83330992f854 | 3762a4e | 18.64 |
+| M13-508657a185 | M13 | amazon.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | www.amazon.com/s | 5 | 0 | 2236.0 | feca83330992f854 | 3762a4e | 10.25 |
