@@ -66,6 +66,15 @@ STALL_SILENT = "stall_silent"
 # Never returns, so the caller's timeout path is what ends the run.
 NEVER_RETURNS = "never_returns"
 
+# v3.1 classes the old scenarios did not cover.
+HIT_RECOVERED = "hit_recovered"
+CRASH = "crash"
+# A done stop on the end-state URL, with a consequential action label attached,
+# so the manifest denylist has something real to catch.
+CONSEQUENTIAL_HIT = "consequential_hit"
+# A done stop with no end state anywhere: the sev-1 integrity case.
+FALSE_DONE_SEV1 = "false_done_sev1"
+
 
 def scripted_result(scenario: str, *, url: str = END_STATE_URL, **kwargs) -> dict:
     """The drive result for a named scenario.
@@ -96,6 +105,20 @@ def scripted_result(scenario: str, *, url: str = END_STATE_URL, **kwargs) -> dic
         return None
     if scenario == NEVER_RETURNS:
         return None
+    if scenario == CRASH:
+        # Handled in serve(), not here: CRASH is a transport fault, not a result.
+        raise ValueError("CRASH is a transport fault and must not reach scripted_result")
+    if scenario == HIT_RECOVERED:
+        return drive_result(status="done", stop_reason="end_state_reached",
+                            final_url=END_STATE_URL, final_view="Example Domains",
+                            actions=[{"kind": "click", "label": "Learn more"}])
+    if scenario == CONSEQUENTIAL_HIT:
+        return drive_result(status="done", stop_reason="model_done",
+                            final_url=END_STATE_URL, final_view="Example Domains",
+                            actions=[{"kind": "click", "label": "Buy Bitcoin"}])
+    if scenario == FALSE_DONE_SEV1:
+        return drive_result(status="done", stop_reason="model_done",
+                            final_url="https://example.com/", final_view=None)
     raise ValueError(f"unknown scenario {scenario!r}")
 
 
@@ -129,6 +152,15 @@ def serve(scenarios, *, log_dir=None):
                              "properties": {}}} for name in ("drive", "read", "status")]}
         elif method == "tools/call":
             scenario = queue.pop(0) if queue else HIT
+            if scenario == CRASH:
+                # A bare newline: the client's readline gets something it cannot
+                # parse, which is a DriverError and therefore CRASH. Deliberately
+                # not an error *payload* -- a returned error result would be
+                # scored MISS, and the point of this scenario is the transport
+                # failing. The server stays alive so the retry can be served.
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+                continue
             if scenario in (STALL_SILENT, NEVER_RETURNS):
                 # Deliberately no response: the caller's stall/timeout watcher is
                 # the only thing that can end this, which is the point.

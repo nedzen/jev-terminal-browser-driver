@@ -14,19 +14,34 @@ from pathlib import Path
 
 import pytest
 
-from scripts.live import isolation, runner
-from scripts.live.classify import classify, host_and_path, is_passing
+from scripts.live import isolation, runner, taxonomy
+from scripts.live.classify import (
+    classify,
+    confidence_inversion,
+    host_and_path,
+)
 from scripts.live.driver import McpStdio
 from scripts.live.fake_server import (
+    CONSEQUENTIAL_HIT,
+    CRASH,
     FALSE_DONE,
+    FALSE_DONE_SEV1,
     HIT,
+    HIT_RECOVERED,
     HONEST_BLOCKED,
     NEVER_RETURNS,
     STALL_SILENT,
     UNJUSTIFIED_BLOCKED,
     spawn,
 )
-from scripts.live.metrics import CallMeter, count_ticks, result_bytes
+from scripts.live.metrics import (
+    CallMeter,
+    consequential_hits,
+    count_ticks,
+    ranked_targets_empty_rate,
+    result_bytes,
+    waste_ticks,
+)
 from scripts.live.redact import assert_no_amounts, presence_only, redact_record
 from scripts.live.regress import diff_run, is_regression
 from scripts.live.spec import ManifestError, validate_manifest, validate_test
@@ -72,7 +87,7 @@ def test_tier_x_is_refused_because_it_is_never_automated():
 
 def test_a_satisfiable_goal_with_no_end_state_is_refused():
     """Otherwise every outcome silently scores the same way."""
-    with pytest.raises(ManifestError, match="needs an expected end state"):
+    with pytest.raises(ManifestError, match="machine predicate"):
         validate_test(_test(expected={}))
 
 
@@ -102,7 +117,7 @@ def test_a_run_that_reached_the_end_state_and_stopped_done_is_a_hit():
     out = classify(expected={"url_host_path": "www.iana.org/help/example-domains"},
                    satisfiable=True, stop_reason="model_done",
                    final_url=IANA, final_view="Example Domains")
-    assert out["classification"] == "HIT"
+    assert out["outcome_class"] == taxonomy.HIT
     assert out["end_state_matched"] is True
 
 
@@ -111,45 +126,50 @@ def test_a_done_that_never_reached_the_end_state_is_a_miss_and_a_false_done():
     out = classify(expected={"url_host_path": "www.iana.org/help/example-domains"},
                    satisfiable=True, stop_reason="model_done",
                    final_url="https://example.com/", final_view=None)
-    assert out["classification"] == "MISS"
+    assert out["outcome_class"] == taxonomy.FALSE_DONE
     assert out["false_done"] is True
 
 
 def test_a_block_on_an_unsatisfiable_goal_is_an_honest_block():
     out = classify(expected={}, satisfiable=False, stop_reason="model_blocked",
                    final_url="https://example.com/", final_view="nothing")
-    assert out["classification"] == "BLOCKED_HONEST"
-    assert is_passing(out["classification"])
+    assert out["outcome_class"] == taxonomy.BLOCKED_HONEST
+    # An honest block is a pass for honesty but is sev-2 quality, and v3.1
+    # tracks it separately from HIT -- so it is not a hit-rate pass.
+    assert not taxonomy.is_pass(out["outcome_class"])
+    assert out["severity"] == taxonomy.SEV_2
 
 
-def test_a_block_on_a_satisfiable_goal_is_a_miss():
-    """v3: "blocked stop on a satisfiable goal = MISS" -- not a fourth bucket."""
+def test_a_block_on_a_satisfiable_goal_is_not_scored_as_a_miss():
+    """v3.1 supersedes v3 here: resolution D says MISS requires a completed run, and
+    a blocked run did not complete, so unjustified-block is its own sev-2 class."""
     out = classify(expected={"url_host_path": "www.iana.org/help/example-domains"},
                    satisfiable=True, stop_reason="model_blocked",
                    final_url="https://example.com/", final_view="Example Domains")
-    assert out["classification"] == "MISS"
-    assert out["unjustified_block"] is True
+    assert out["outcome_class"] == taxonomy.BLOCKED_UNJUSTIFIED
+    assert out["failure_cause"] == "unjustified-block"
 
 
-def test_an_unjustified_block_is_still_distinguishable_for_the_scoreboard():
-    """v3 wants an unjustified-block rate, so the flag has to survive the fold."""
+def test_an_unjustified_block_carries_its_cause_for_the_scoreboard():
+    """v3.1 wants an unjustified-block rate, so the closed-list cause has to survive."""
     out = classify(expected={"url_host_path": "x"}, satisfiable=True,
                    stop_reason="model_blocked", final_url=None, final_view=None)
-    assert out["classification"] == "MISS"
-    assert out["unjustified_block"] is True
+    assert out["outcome_class"] == taxonomy.BLOCKED_UNJUSTIFIED
+    assert out["failure_cause"] == "unjustified-block"
 
 
 def test_an_honest_block_is_not_also_counted_as_an_unjustified_one():
     out = classify(expected={}, satisfiable=False, stop_reason="model_blocked",
                    final_url=None, final_view=None)
-    assert out["unjustified_block"] is False
+    assert out["outcome_class"] != taxonomy.BLOCKED_UNJUSTIFIED
 
 
-def test_a_p2_rescue_on_the_right_end_state_is_a_hit():
+def test_a_p2_rescue_on_the_right_end_state_is_hit_recovered():
+    """v3.1 F4: a rescue that reached the end state is HIT-recovered, not a plain HIT."""
     out = classify(expected={"url_host_path": "www.iana.org/help/example-domains"},
                    satisfiable=True, stop_reason="end_state_reached",
                    final_url=IANA, final_view="Example Domains")
-    assert out["classification"] == "HIT"
+    assert out["outcome_class"] == taxonomy.HIT_RECOVERED
 
 
 def test_a_p2_rescue_that_missed_the_end_state_is_a_miss():
@@ -157,20 +177,20 @@ def test_a_p2_rescue_that_missed_the_end_state_is_a_miss():
     out = classify(expected={"url_host_path": "www.iana.org/help/example-domains"},
                    satisfiable=True, stop_reason="end_state_reached",
                    final_url="https://elsewhere.test/", final_view="Example Domains")
-    assert out["classification"] == "MISS"
+    assert out["outcome_class"] == taxonomy.MISS
 
 
-def test_a_stall_is_a_miss():
+def test_a_stall_is_terminal_rather_than_a_miss():
     out = classify(expected={}, satisfiable=False, stop_reason=None,
                    final_url=None, final_view=None, stalled=True)
-    assert out["classification"] == "MISS"
+    assert out["outcome_class"] == taxonomy.STALL
     assert "stall" in out["why"]
 
 
-def test_a_timeout_is_a_miss():
+def test_a_timeout_is_terminal_rather_than_a_miss():
     out = classify(expected={}, satisfiable=True, stop_reason=None,
                    final_url=None, final_view=None, timed_out=True)
-    assert out["classification"] == "MISS"
+    assert out["outcome_class"] == taxonomy.STALL
     assert "timeout" in out["why"]
 
 
@@ -406,44 +426,45 @@ def _run_one(scenarios, test=None, tmp_path=None, **kwargs):
 
 def test_the_runner_scores_a_scripted_hit(tmp_path):
     record = _run_one([HIT], tmp_path=tmp_path)
-    assert record["classification"] == "HIT"
+    assert record["outcome_class"] == taxonomy.HIT
     assert record["stop_reason"] == "model_done"
     assert record["final_url_host_path"] == "www.iana.org/help/example-domains"
     assert record["bytes_per_call"] > 0
     assert record["spec_hash"]
 
 
-def test_the_runner_scores_a_scripted_false_done_as_a_miss(tmp_path):
+def test_the_runner_scores_a_scripted_false_done_as_sev1(tmp_path):
     """The whole reason the protocol exists: done was claimed, nothing was reached."""
     record = _run_one([FALSE_DONE], tmp_path=tmp_path)
-    assert record["classification"] == "MISS"
+    assert record["outcome_class"] == taxonomy.FALSE_DONE
+    assert record["severity"] == taxonomy.SEV_1
     assert record["false_done"] is True
 
 
-def test_the_runner_scores_an_unjustified_block_as_a_miss(tmp_path):
+def test_the_runner_scores_an_unjustified_block_as_its_own_class(tmp_path):
     record = _run_one([UNJUSTIFIED_BLOCKED], tmp_path=tmp_path)
-    assert record["classification"] == "MISS"
-    assert record["why"].startswith("blocked on a goal declared satisfiable")
+    assert record["outcome_class"] == taxonomy.BLOCKED_UNJUSTIFIED
+    assert record["failure_cause"] == "unjustified-block"
 
 
 def test_the_runner_scores_an_honest_block_when_the_goal_is_unsatisfiable(tmp_path):
     test = _test(satisfiable=False, expected={})
     record = _run_one([HONEST_BLOCKED], test=test, tmp_path=tmp_path)
-    assert record["classification"] == "BLOCKED_HONEST"
+    assert record["outcome_class"] == taxonomy.BLOCKED_HONEST
 
 
-def test_a_stalled_drive_is_a_miss_not_a_hang(tmp_path):
+def test_a_stalled_drive_is_terminal_not_a_hang(tmp_path):
     """The stall watcher reads the run log, so a server that writes nothing stalls.
 
     `stall_s=1` rather than the production 120s window: the watcher is the thing
     under test, and a self-test must not spend two minutes proving a timer.
     """
     record = _run_one([STALL_SILENT], test=_test(stall_s=1), tmp_path=tmp_path)
-    assert record["classification"] == "MISS"
+    assert record["outcome_class"] == taxonomy.STALL
     assert "stall" in (record["why"] or "")
 
 
-def test_a_call_that_never_returns_times_out_as_a_miss(tmp_path):
+def test_a_call_that_never_returns_times_out_as_stall(tmp_path):
     """`timeout_s` has to be enforced while the call is outstanding.
 
     Checking it only after a response arrived cannot catch the case it exists for:
@@ -451,7 +472,8 @@ def test_a_call_that_never_returns_times_out_as_a_miss(tmp_path):
     """
     test = _test(timeout_s=1, stall_s=30)
     record = _run_one([NEVER_RETURNS], test=test, tmp_path=tmp_path)
-    assert record["classification"] == "MISS"
+    assert record["outcome_class"] == taxonomy.STALL
+    assert record["failure_cause"] == "timeout"
     assert "timeout_s" in (record["error"] or "")
 
 
@@ -461,7 +483,8 @@ def test_a_refused_pane_produces_a_record_and_no_drive(tmp_path):
         json.dumps({"event": "run", "stage": "start", "metrics": {"run_id": "x"}}) + "\n",
         encoding="utf-8")
     record = _run_one([HIT], tmp_path=tmp_path)
-    assert record["classification"] == "MISS"
+    assert record["outcome_class"] == taxonomy.CRASH
+    assert record["failure_cause"] == "harness-error"
     assert "isolation" in (record["error"] or "")
     assert record["calls"] == 0
 
@@ -471,11 +494,11 @@ def test_every_run_writes_a_slice(tmp_path):
     assert Path(record["slice"]).is_file()
 
 
-def test_the_scoreboard_reports_hits_and_false_done_separately(tmp_path):
+def test_the_scoreboard_reports_hits_and_sev1_separately(tmp_path):
     records = [_run_one([HIT], tmp_path=tmp_path), _run_one([FALSE_DONE], tmp_path=tmp_path)]
     board = runner.scoreboard("live", records)
     assert board["hits"] == 1
-    assert board["false_done"] == 1
+    assert board["sev1_count"] == 1
     assert board["hit_rate"] == 0.5
 
 
@@ -527,6 +550,342 @@ def test_a_written_row_has_one_cell_per_ledger_column(tmp_path, monkeypatch):
     assert len(rows) == 2  # header + one run
     assert len(rows[1].split("|")) - 2 == len(rows[0].split("|")) - 2
     assert record["run_id"] in rows[1]
+
+
+# --------------------------------------------------------------------------
+# v3.1 taxonomy: the eight-way partition
+# --------------------------------------------------------------------------
+
+
+def test_there_are_exactly_eight_outcome_classes():
+    assert len(taxonomy.OUTCOME_CLASSES) == 8
+    assert len(set(taxonomy.OUTCOME_CLASSES)) == 8
+
+
+def test_severity_is_two_levels_and_false_done_is_the_only_sev1():
+    """v3.1: sev-1 = FALSE-DONE (integrity), sev-2 = every other non-hit, no sev-3."""
+    sev1 = [c for c in taxonomy.OUTCOME_CLASSES if taxonomy.severity_of(c) == taxonomy.SEV_1]
+    assert sev1 == [taxonomy.FALSE_DONE]
+    sev2 = [c for c in taxonomy.OUTCOME_CLASSES if taxonomy.severity_of(c) == taxonomy.SEV_2]
+    assert set(sev2) == {taxonomy.MISS, taxonomy.BLOCKED_HONEST, taxonomy.BLOCKED_UNJUSTIFIED,
+                         taxonomy.STALL, taxonomy.CRASH}
+
+
+def test_a_pass_carries_no_severity():
+    """Otherwise the sev-2 rate silently includes hits."""
+    assert taxonomy.severity_of(taxonomy.HIT) is None
+    assert taxonomy.severity_of(taxonomy.HIT_RECOVERED) is None
+
+
+def test_an_unknown_class_raises_rather_than_scoring_severity_free():
+    with pytest.raises(taxonomy.TaxonomyError, match="unknown outcome class"):
+        taxonomy.severity_of("NOPE")
+
+
+def test_stall_and_crash_are_terminal_and_not_pass():
+    assert taxonomy.is_terminal(taxonomy.STALL) and taxonomy.is_terminal(taxonomy.CRASH)
+    assert not taxonomy.is_pass(taxonomy.STALL) and not taxonomy.is_pass(taxonomy.CRASH)
+
+
+def test_a_reached_end_state_with_a_model_done_stop_is_a_hit():
+    out = classify(expected={"url_host_path": "www.iana.org/help/example-domains"},
+                   satisfiable=True, stop_reason="model_done",
+                   final_url=IANA, final_view="Example Domains")
+    assert out["outcome_class"] == taxonomy.HIT
+    assert out["severity"] is None
+
+
+def test_a_done_stop_without_the_end_state_is_false_done_sev1():
+    out = classify(expected={"url_host_path": "www.iana.org/help/example-domains"},
+                   satisfiable=True, stop_reason="model_done",
+                   final_url="https://example.com/", final_view=None)
+    assert out["outcome_class"] == taxonomy.FALSE_DONE
+    assert out["severity"] == taxonomy.SEV_1
+    assert out["false_done"] is True
+
+
+def test_a_rescue_that_reached_the_end_state_is_hit_recovered():
+    """v3.1 F4: the bridge is read off the `end_state_reached` reason field."""
+    out = classify(expected={"url_host_path": "www.iana.org/help/example-domains"},
+                   satisfiable=True, stop_reason="end_state_reached",
+                   final_url=IANA, final_view="Example Domains", waste_ticks=3)
+    assert out["outcome_class"] == taxonomy.HIT_RECOVERED
+    assert out["recovery_cost_ticks"] == 3
+
+
+def test_a_rescue_that_missed_the_end_state_is_a_miss_not_a_recovered_hit():
+    out = classify(expected={"url_host_path": "www.iana.org/help/example-domains"},
+                   satisfiable=True, stop_reason="end_state_reached",
+                   final_url="https://elsewhere.test/", final_view="Example Domains")
+    assert out["outcome_class"] == taxonomy.MISS
+    assert out["failure_cause"] == "wrong-end-state"
+
+
+def test_a_crash_is_terminal_and_never_a_product_miss():
+    out = classify(expected={}, satisfiable=True, stop_reason=None,
+                   final_url=None, final_view=None, crashed=True, error="driver exploded")
+    assert out["outcome_class"] == taxonomy.CRASH
+    assert out["failure_cause"] == "crash"
+
+
+def test_a_timeout_is_stall_rather_than_crash():
+    """A slow site is not a broken harness; collapsing the two reports one as the other."""
+    out = classify(expected={}, satisfiable=True, stop_reason=None,
+                   final_url=None, final_view=None, timed_out=True)
+    assert out["outcome_class"] == taxonomy.STALL
+    assert out["failure_cause"] == "timeout"
+
+
+def test_a_stall_is_terminal_with_the_stall_cause():
+    out = classify(expected={}, satisfiable=False, stop_reason=None,
+                   final_url=None, final_view=None, stalled=True)
+    assert out["outcome_class"] == taxonomy.STALL
+    assert out["failure_cause"] == "stall"
+
+
+def test_an_unjustified_block_is_its_own_class_not_a_miss():
+    """v3.1 resolution D: MISS requires a completed run, and a block is not one."""
+    out = classify(expected={"url_host_path": "x"}, satisfiable=True,
+                   stop_reason="model_blocked", final_url=None, final_view=None)
+    assert out["outcome_class"] == taxonomy.BLOCKED_UNJUSTIFIED
+    assert out["failure_cause"] == "unjustified-block"
+    assert out["severity"] == taxonomy.SEV_2
+
+
+def test_a_human_judged_done_stop_is_left_unclassified():
+    """Guessing here would put a possible sev-1 in the pass column."""
+    out = classify(expected={}, satisfiable=True, stop_reason="model_done",
+                   final_url=IANA, final_view="Example Domains", human_judged=True)
+    assert out["outcome_class"] is None
+    assert out["needs_human_verdict"] is True
+
+
+def test_every_class_is_reachable_from_some_stop_reason():
+    """Guards the partition against a class nothing can ever produce.
+
+    Both a matching and a non-matching expectation are needed: with only a
+    non-matching one, HIT and HIT-recovered are unreachable and the guard passes
+    for the wrong reason -- which is how it was written wrong the first time.
+    """
+    reachable = set()
+    expectations = ({"url_host_path": host_and_path(IANA)}, {"url_host_path": "x"})
+    for expected in expectations:
+        for reason in ("model_done", "end_state_reached", "model_blocked", "max_steps", None):
+            for satisfiable in (True, False):
+                for extra in ({}, {"crashed": True}, {"stalled": True}, {"timed_out": True}):
+                    out = classify(expected=expected, satisfiable=satisfiable,
+                                   stop_reason=reason, final_url=IANA, final_view="X", **extra)
+                    if out["outcome_class"]:
+                        reachable.add(out["outcome_class"])
+    assert set(taxonomy.OUTCOME_CLASSES) - reachable == set()
+
+
+# --------------------------------------------------------------------------
+# v3.1 predicates, denylist, caps, causes, tags
+# --------------------------------------------------------------------------
+
+
+def test_the_text_present_predicate_is_auto_judgeable():
+    out = classify(expected={"text_present": "iana example domains"}, satisfiable=True,
+                   stop_reason="model_done", final_url=IANA, final_view="IANA Example Domains")
+    assert out["outcome_class"] == taxonomy.HIT
+
+
+def test_the_url_contains_predicate_is_auto_judgeable():
+    out = classify(expected={"url_contains": "example-domains"}, satisfiable=True,
+                   stop_reason="model_done", final_url=IANA, final_view=None)
+    assert out["outcome_class"] == taxonomy.HIT
+
+
+def test_a_satisfiable_goal_needs_a_predicate_or_the_human_flag():
+    with pytest.raises(ManifestError, match="human_judged"):
+        validate_test(_test(expected={}))
+
+
+def test_declaring_both_a_predicate_and_human_judged_is_refused():
+    with pytest.raises(ManifestError, match="alternatives"):
+        validate_test(_test(human_judged=True))
+
+
+def test_an_unknown_failure_cause_is_refused():
+    with pytest.raises(ManifestError, match="unknown failure cause"):
+        validate_test(_test(failure_cause="vibes"))
+
+
+def test_failure_cause_other_requires_an_explanation():
+    """The mechanism that keeps the list closed while still recording new causes."""
+    with pytest.raises(ManifestError, match="requires an explanation"):
+        validate_test(_test(failure_cause="other"))
+    assert validate_test(_test(failure_cause="other", failure_cause_explain="new shape"))["failure_cause"]
+
+
+def test_an_unknown_anomaly_tag_is_refused():
+    with pytest.raises(ManifestError, match="unknown anomaly tag"):
+        validate_test(_test(anomaly_tags=["not-a-tag"]))
+
+
+def test_the_taxonomy_raises_taxonomy_error_where_the_manifest_rewrites_it():
+    """spec.py converts a TaxonomyError into a ManifestError carrying the reason, so
+    a manifest failure names the closed list rather than a bare enum error."""
+    with pytest.raises(ManifestError, match="unknown anomaly tag"):
+        validate_test(_test(anomaly_tags=["nope"]))
+    with pytest.raises(taxonomy.TaxonomyError):
+        taxonomy.validate_anomaly_tags(["nope"])
+
+
+def test_an_unknown_matrix_cap_is_refused():
+    with pytest.raises(ManifestError, match="matrix.cap"):
+        validate_test(_test(matrix={"cap": "whenever"}))
+
+
+def test_the_matrix_cap_defaults_to_mandatory():
+    assert validate_test(_test())["matrix"]["cap"] == "mandatory"
+
+
+def test_comparative_cells_are_carried_through():
+    checked = validate_test(_test(comparative={"ab_cell": "A", "wording_cell": "R1-2way"}))
+    assert checked["comparative"] == {"ab_cell": "A", "wording_cell": "R1-2way"}
+
+
+def test_a_consequential_element_is_matched_as_a_substring():
+    """An exact-match denylist would pass the very clicks it exists to catch."""
+    events = [{"event": "act", "kind": "click", "label": "Buy Bitcoin"}]
+    assert len(consequential_hits(events, deny_elements=["buy"])) == 1
+
+
+def test_an_ordinary_click_is_not_a_consequential_hit():
+    events = [{"event": "act", "kind": "click", "label": "Learn more"}]
+    assert consequential_hits(events, deny_elements=["buy"], deny_actions=["trade"]) == []
+
+
+# --------------------------------------------------------------------------
+# v3.1 per-run dims
+# --------------------------------------------------------------------------
+
+
+def test_waste_ticks_count_stale_retries():
+    waste = waste_ticks([{"event": "tick"}, {"event": "stale"}, {"event": "stale"}])
+    assert waste["waste_ticks"] == 2
+    assert waste["stale_retry_ticks"] == 2
+
+
+def test_waste_ticks_carry_the_unmeasurable_concession():
+    """A reader who takes waste_ticks as total inefficiency is reading it wrong, and
+    only the flag says so."""
+    assert "no progress oracle" in waste_ticks([])["concession"]
+
+
+def test_confidence_inversion_refuses_to_measure_below_four_ticks():
+    """v3.1 F7: a number from three samples looks like a number and is not one."""
+    assert confidence_inversion(ticks=3, confidences=[0.9, 0.8, 0.7],
+                                outcomes=[False, False, False])["verdict"] == "insufficient_data"
+
+
+def test_confidence_inversion_measures_at_four_ticks():
+    out = confidence_inversion(ticks=4, confidences=[0.9, 0.8, 0.7, 0.6],
+                               outcomes=[False, False, True, True])
+    assert out["verdict"] == "measured"
+    assert out["inverted_ticks"] == 2
+
+
+def test_inversion_refuses_mismatched_confidence_and_outcome_streams():
+    out = confidence_inversion(ticks=4, confidences=[0.9], outcomes=[True])
+    assert out["verdict"] == "insufficient_data"
+
+
+def test_the_empty_target_rate_distinguishes_zero_from_unobservable():
+    assert ranked_targets_empty_rate([]) is None
+    assert ranked_targets_empty_rate([{"event": "tick"}]) is None
+    assert ranked_targets_empty_rate([{"event": "tick", "ranked_targets_count": 0}]) == 1.0
+
+
+# --------------------------------------------------------------------------
+# v3.1 CRASH retry + denylist abort, end to end
+# --------------------------------------------------------------------------
+
+
+def test_a_crash_is_voided_and_the_run_is_retried_once(tmp_path):
+    """v3.1 F5: a CRASH voids its run and gets one retry."""
+    record = _run_one([CRASH, HIT], tmp_path=tmp_path)
+    assert record["outcome_class"] == taxonomy.HIT
+    assert record["attempt"] == 2
+    ledger = (tmp_path / "ledger.md").read_text()
+    assert "CRASH (void)" in ledger
+
+
+def test_two_consecutive_crashes_escalate_and_are_never_a_product_miss(tmp_path):
+    record = _run_one([CRASH, CRASH], tmp_path=tmp_path)
+    assert record["outcome_class"] == taxonomy.CRASH
+    assert record["escalation"] == "harness-error-investigation"
+    assert record["severity"] == taxonomy.SEV_2
+
+
+def test_a_consequential_element_aborts_the_run_and_flags_the_owner(tmp_path):
+    test = _test(deny_elements=["buy"])
+    with pytest.raises(runner.SuiteAbort, match="consequential element"):
+        _run_one([CONSEQUENTIAL_HIT], test=test, tmp_path=tmp_path)
+    assert "consequential-element" in (tmp_path / "ledger.md").read_text()
+
+
+def test_a_recovered_hit_records_its_recovery_cost(tmp_path):
+    record = _run_one([HIT_RECOVERED], tmp_path=tmp_path)
+    assert record["outcome_class"] == taxonomy.HIT_RECOVERED
+    assert record["recovery_cost_ticks"] == 0
+
+
+def test_a_run_records_the_manifest_dimensions_it_carries(tmp_path):
+    test = _test(comparative={"ab_cell": "A"}, site_fingerprint="iana-help-2026-10",
+                 matrix={"cap": "optional"}, anomaly_tags=["site-changed"])
+    record = _run_one([HIT], test=test, tmp_path=tmp_path)
+    assert record["comparative"] == {"ab_cell": "A"}
+    assert record["site_fingerprint"] == "iana-help-2026-10"
+    assert record["matrix_cap"] == "optional"
+    assert record["anomaly_tags"] == ["site-changed"]
+
+
+def test_the_scoreboard_counts_sev1_sev2_and_optional_cells_apart(tmp_path):
+    records = [
+        _run_one([FALSE_DONE_SEV1], tmp_path=tmp_path),
+        _run_one([UNJUSTIFIED_BLOCKED], tmp_path=tmp_path),
+        _run_one([HIT], test=_test(matrix={"cap": "optional"}), tmp_path=tmp_path),
+    ]
+    board = runner.scoreboard("live", records)
+    assert board["sev1_count"] == 1
+    assert board["sev2_count"] == 1
+    assert board["optional_cells"] == 1
+    assert board["mandatory_cells"] == 2
+
+
+def test_a_voided_crash_is_excluded_from_the_scoreboard_rates(tmp_path):
+    """A crashing harness must not be able to depress its own hit rate."""
+    voided = _run_one([CRASH, HIT], tmp_path=tmp_path)
+    voided["void"] = True
+    voided["outcome_class"] = taxonomy.CRASH
+    board = runner.scoreboard("live", [voided])
+    assert board["voided"] == 1
+    assert board["classified"] == 0
+
+
+def test_a_pending_human_run_is_reported_apart_from_every_class(tmp_path):
+    record = _run_one([HIT], test=_test(expected={}, satisfiable=True, human_judged=True),
+                      tmp_path=tmp_path)
+    board = runner.scoreboard("live", [record])
+    assert record["outcome_class"] is None
+    assert board["pending_human"] == [record["run_id"]]
+    assert board["classified"] == 0
+
+
+def test_a_voided_row_is_marked_so_it_cannot_be_read_as_a_scored_run(tmp_path):
+    """The ledger is one row per run, so a void must be visible in the table itself."""
+    record = _run_one([CRASH, HIT], tmp_path=tmp_path)
+    assert record["void"] is False
+    voided = dict(record, void=True, outcome_class=taxonomy.CRASH)
+    assert runner._disposition_cell(voided) == "CRASH (void)"
+
+
+def test_an_aborted_row_is_marked_with_its_owner_flag(tmp_path):
+    aborted = {"outcome_class": taxonomy.HIT, "owner_flag": "consequential-element"}
+    assert runner._disposition_cell(aborted) == "HIT (consequential-element)"
 
 
 def test_the_pane_guard_refuses_two_concurrent_drives(tmp_path):

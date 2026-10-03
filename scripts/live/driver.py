@@ -39,7 +39,16 @@ class DriverError(RuntimeError):
 
 
 class Stalled(RuntimeError):
-    """No tick progress inside the stall window: v3 scores this a MISS."""
+    """No tick progress inside the stall window: v3.1 scores this STALL."""
+
+
+class CallTimeout(RuntimeError):
+    """The call outlived timeout_s without returning.
+
+    Distinct from DriverError because v3.1 scores the two differently: a timeout
+    is the STALL class, while a transport failure is CRASH. Collapsing them would
+    report a slow site as a broken harness.
+    """
 
 
 def _claim(tool: str) -> None:
@@ -163,7 +172,7 @@ class McpStdio:
                 return self._call_with_stall(name, arguments, log_dir, stall_s, started, timeout_s)
             response = self.rpc("tools/call", {"name": name, "arguments": arguments})
             if timeout_s and (time.perf_counter() - started) > timeout_s:
-                raise DriverError(f"{name} exceeded timeout_s={timeout_s}")
+                raise CallTimeout(f"{name} exceeded timeout_s={timeout_s}")
             return response
         finally:
             if name == "drive":
@@ -212,7 +221,7 @@ class McpStdio:
             if time.monotonic() - last_progress > stall_s:
                 raise Stalled(f"no tick progress within {stall_s}s")
             if timeout_s and (time.perf_counter() - started) > timeout_s:
-                raise DriverError(f"{name} exceeded timeout_s={timeout_s}")
+                raise CallTimeout(f"{name} exceeded timeout_s={timeout_s}")
         if "error" in box:
             raise DriverError(str(box["error"]))
         if "response" not in box:

@@ -14,6 +14,14 @@ is busy.
 
 from __future__ import annotations
 
+from scripts.live.taxonomy import (
+    CAP_MANDATORY,
+    MATRIX_CAPS,
+    TaxonomyError,
+    validate_anomaly_tags,
+    validate_failure_cause,
+)
+
 # v3 "Harness": per-test timeout_s, default 300, per-test overrides.
 DEFAULT_TIMEOUT_S = 300
 
@@ -51,6 +59,11 @@ REQUIRED_FIELDS = ("id", "site", "goal", "tier", "satisfiable", "expected", "hit
 # a per-test flag rather than inferred from the id, so a new S6 test cannot
 # forget the rule by being renamed.
 REDACT_PRESENCE_ONLY = "presence_only"
+
+# v3.1 machine predicates. `url_contains` and `text_present` are what make a
+# verdict auto-judgeable; `final_view_contains` is the older spelling of
+# `text_present` and is accepted so a v3 manifest still validates.
+MACHINE_PREDICATES = ("url_host_path", "url_contains", "text_present", "final_view_contains")
 
 
 class ManifestError(ValueError):
@@ -99,12 +112,61 @@ def validate_test(test: dict, *, index: int | None = None) -> dict:
     expected = test["expected"]
     if not isinstance(expected, dict):
         raise ManifestError(f"{where}: expected must be an object")
-    known = {"url_host_path", "final_view_contains", "url_contains"}
-    unknown = set(expected) - known
+    unknown = set(expected) - set(MACHINE_PREDICATES)
     if unknown:
-        raise ManifestError(f"{where}: unknown expected key(s) {sorted(unknown)}; known: {sorted(known)}")
-    if test["satisfiable"] and not expected:
-        raise ManifestError(f"{where}: a satisfiable goal needs an expected end state to score against")
+        raise ManifestError(
+            f"{where}: unknown expected key(s) {sorted(unknown)}; known: {sorted(MACHINE_PREDICATES)}"
+        )
+    # v3.1: auto-judged where a machine predicate exists, human-judged otherwise.
+    # Checked before the "needs an end state" rule, because with human_judged set
+    # an empty `expected` is legitimate -- the run simply waits for a person.
+    human_judged = bool(test.get("human_judged"))
+    if test["satisfiable"] and not expected and not human_judged:
+        raise ManifestError(
+            f"{where}: a satisfiable goal needs either a machine predicate or human_judged: true"
+        )
+    if human_judged and expected:
+        raise ManifestError(
+            f"{where}: human_judged and a machine predicate are alternatives, not both"
+        )
+
+    deny_actions = test.get("deny_actions") or []
+    deny_elements = test.get("deny_elements") or []
+    for field, values in (("deny_actions", deny_actions), ("deny_elements", deny_elements)):
+        if not isinstance(values, list) or any(not isinstance(v, str) for v in values):
+            raise ManifestError(f"{where}: {field} must be a list of strings")
+
+    matrix = test.get("matrix") or {}
+    if not isinstance(matrix, dict):
+        raise ManifestError(f"{where}: matrix must be an object")
+    cap = matrix.get("cap", CAP_MANDATORY)
+    if cap not in MATRIX_CAPS:
+        raise ManifestError(f"{where}: matrix.cap must be one of {MATRIX_CAPS}, got {cap!r}")
+
+    comparative = test.get("comparative") or {}
+    if not isinstance(comparative, dict):
+        raise ManifestError(f"{where}: comparative must be an object")
+    for field in ("ab_cell", "wording_cell"):
+        if field in comparative and not isinstance(comparative[field], str):
+            raise ManifestError(f"{where}: comparative.{field} must be a string")
+
+    try:
+        tags = validate_anomaly_tags(test.get("anomaly_tags"))
+    except TaxonomyError as exc:
+        raise ManifestError(f"{where}: {exc}") from exc
+    cause = test.get("failure_cause")
+    if cause is not None:
+        # The explanation is handed to the taxonomy rather than re-checked here:
+        # `other` without one is already refused by validate_failure_cause, so a
+        # second check would be a branch nothing could reach.
+        try:
+            validate_failure_cause(cause, test.get("failure_cause_explain"))
+        except TaxonomyError as exc:
+            raise ManifestError(f"{where}: {exc}") from exc
+
+    fingerprint = test.get("site_fingerprint")
+    if fingerprint is not None and not isinstance(fingerprint, str):
+        raise ManifestError(f"{where}: site_fingerprint must be a string")
 
     redact = test.get("redact")
     if redact is not None and redact != REDACT_PRESENCE_ONLY:
@@ -114,6 +176,13 @@ def validate_test(test: dict, *, index: int | None = None) -> dict:
     normalized["timeout_s"] = timeout
     normalized.setdefault("stall_s", STALL_S)
     normalized.setdefault("redact", None)
+    normalized["human_judged"] = human_judged
+    normalized["deny_actions"] = [a.lower() for a in deny_actions]
+    normalized["deny_elements"] = [e.lower() for e in deny_elements]
+    normalized["matrix"] = {"cap": cap, **matrix}
+    normalized["comparative"] = dict(comparative)
+    normalized["anomaly_tags"] = list(tags)
+    normalized["site_fingerprint"] = fingerprint
     return normalized
 
 

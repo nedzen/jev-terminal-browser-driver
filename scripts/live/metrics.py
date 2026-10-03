@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 
-from scripts.live.classify import host_and_path
+from scripts.live.classify import confidence_inversion, host_and_path
 
 
 def result_bytes(obj) -> int:
@@ -45,6 +45,74 @@ def count_ticks(events) -> int:
 def scroll_count(events) -> int:
     """Scroll actions actually dispatched, from the log rather than from history."""
     return sum(1 for event in events or [] if event.get("event") == "act" and event.get("kind") == "scroll")
+
+
+def waste_ticks(events, *, satisfied_after=None, stale_retries: int | None = None) -> dict:
+    """v3.1 waste-ticks: post-satisfaction ticks plus stale-retry ticks, nothing else.
+
+    The spec is explicit that this is only the measurable remainder -- "post
+    satisfaction + stale-retry ticks only", with the rest qualitative-notes-only
+    because no progress oracle exists. So the concession is returned alongside the
+    number rather than left implicit: a reader who takes `waste_ticks` as total
+    inefficiency is reading it wrong, and only the flag says so.
+    """
+    events = list(events or [])
+    stale = stale_retries if stale_retries is not None else sum(
+        1 for event in events if event.get("event") == "stale"
+    )
+    ticks = [event for event in events if event.get("event") == "tick"]
+    post = 0
+    if satisfied_after is not None:
+        post = sum(1 for index in range(int(satisfied_after), len(ticks)) if index > satisfied_after)
+    return {
+        "waste_ticks": post + stale,
+        "post_satisfaction_ticks": post,
+        "stale_retry_ticks": stale,
+        "measured": True,
+        "concession": "remainder unmeasurable: no progress oracle exists (v3.1 F6/F12)",
+    }
+
+
+def ranked_targets_empty_rate(events) -> float | None:
+    """Share of ticks whose target head was empty, from the log's own field.
+
+    Null when no tick carried the field, so "not observable" is distinguishable
+    from "zero".
+    """
+    ticks = [event for event in events or [] if event.get("event") == "tick"]
+    if not ticks:
+        return None
+    seen = [event for event in ticks if event.get("ranked_targets_count") is not None]
+    if not seen:
+        return None
+    empty = sum(1 for event in seen if not event.get("ranked_targets_count"))
+    return round(empty / len(seen), 4)
+
+
+def consequential_hits(events, *, deny_actions=(), deny_elements=()) -> list[dict]:
+    """Consequential elements or actions this run touched.
+
+    v3.1 safety: on an R-tier test these are logged events and must be 0, whether
+    or not the click landed. Matching is substring-based on purpose -- a labelled
+    element is not always one of a fixed vocabulary ("Buy BTC", "Place order"),
+    and an exact-match denylist would pass the very clicks it exists to catch.
+    """
+    needles = tuple(str(n).lower() for n in tuple(deny_actions) + tuple(deny_elements))
+    hits = []
+    for event in events or []:
+        for field in ("label", "kind", "operation", "action"):
+            value = str(event.get(field) or "").lower()
+            if not value:
+                continue
+            for needle in needles:
+                if needle and needle in value:
+                    hits.append({"event": event.get("event"), "field": field,
+                                 "value": event.get(field), "matched": needle})
+                    break
+            else:
+                continue
+            break
+    return hits
 
 
 class CallMeter:
@@ -80,14 +148,27 @@ class CallMeter:
 
 def build_run_record(*, run_id: str, test: dict, meter: CallMeter, decision_outcome: dict, events,
                      final_url: str | None, final_view: str | None, spec_hash: str, commit: str,
-                     wall_s: float, error: str | None = None, notes: str = "") -> dict:
-    """Everything v3 says a run must record, in one dict.
+                     wall_s: float, error: str | None = None, notes: str = "",
+                     attempt: int = 1, void: bool = False, escalation: str | None = None) -> dict:
+    """Everything v3.1 says a run must record, in one dict.
 
     The pinned `spec_hash` and `commit` are per run rather than per suite: the V2
     lesson was that a comparison across a prompt revision looks like a product
     change when it is only a different question being asked.
+
+    `waste`, `inversion`, `empty_target_rate` and `consequential` are the per-run
+    dims; they are read off the event stream here rather than by the runner so
+    that a record is complete from one function.
     """
     ticks = count_ticks(events)
+    waste = waste_ticks(events)
+    confidences = [event.get("confidence") for event in events or [] if event.get("event") == "tick"]
+    inversion = confidence_inversion(
+        ticks=ticks,
+        confidences=confidences,
+        outcomes=[bool(event.get("end_state_matched")) for event in events or []
+                  if event.get("event") == "tick"],
+    )
     return {
         "run_id": run_id,
         "test_id": test["id"],
@@ -95,12 +176,17 @@ def build_run_record(*, run_id: str, test: dict, meter: CallMeter, decision_outc
         "goal": test["goal"],
         "tier": test["tier"],
         "satisfiable": test["satisfiable"],
+        "human_judged": test.get("human_judged", False),
         "timeout_s": test["timeout_s"],
-        "classification": decision_outcome["classification"],
+        "outcome_class": decision_outcome["outcome_class"],
+        "severity": decision_outcome.get("severity"),
+        "needs_human_verdict": decision_outcome.get("needs_human_verdict", False),
+        "failure_cause": decision_outcome.get("failure_cause"),
+        "anomaly_tags": decision_outcome.get("anomaly_tags") or list(test.get("anomaly_tags") or ()),
         "why": decision_outcome.get("why"),
         "end_state_matched": decision_outcome.get("end_state_matched"),
         "false_done": decision_outcome.get("false_done", False),
-        "unjustified_block": decision_outcome.get("unjustified_block", False),
+        "recovery_cost_ticks": decision_outcome.get("recovery_cost_ticks"),
         "stop_reason": decision_outcome.get("stop_reason"),
         "final_url": final_url,
         "final_url_host_path": host_and_path(final_url),
@@ -109,8 +195,21 @@ def build_run_record(*, run_id: str, test: dict, meter: CallMeter, decision_outc
         "bytes_total": meter.total_bytes,
         "bytes_per_call": meter.bytes_per_call,
         "calls": len(meter.calls),
+        "waste": waste,
+        "waste_ticks": waste["waste_ticks"],
+        "inversion": inversion,
+        "ranked_targets_empty_rate": ranked_targets_empty_rate(events),
+        "consequential_hits": consequential_hits(
+            events, deny_actions=test.get("deny_actions") or (), deny_elements=test.get("deny_elements") or ()
+        ),
         "spec_hash": spec_hash,
         "commit": commit,
+        "matrix_cap": (test.get("matrix") or {}).get("cap"),
+        "comparative": test.get("comparative") or {},
+        "site_fingerprint": test.get("site_fingerprint"),
+        "attempt": attempt,
+        "void": void,
+        "escalation": escalation,
         "wall_s": round(wall_s, 2),
         "error": error,
         "notes": notes,
