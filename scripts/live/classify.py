@@ -95,20 +95,52 @@ def done_probability(decision: dict | None) -> float:
         return 0.0
 
 
-def end_state_matched(expected: dict, final_url: str | None, final_view: str | None) -> bool:
+def _as_text(value) -> str:
+    """Coerce anything a payload might carry into searchable text, never raising.
+
+    Live drive results carry `final_view` as an object (url/title/flags), so the
+    old `(final_view or "").lower()` would raise AttributeError on every real run
+    that reached this line. Dicts flatten to their values; None and non-strings
+    become the empty string, which makes a non-empty needle absent rather than a
+    crash.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return " ".join(_as_text(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return " ".join(_as_text(item) for item in value)
+    return ""
+
+
+def _page_text(page_text) -> str:
+    """The text a `text_present` predicate is matched against: the page body,
+    and only the body.
+
+    No fallback to the flattened view: falling back lets URL/title words
+    satisfy body predicates by accident (a "release notes" needle matching a
+    title), which is exactly the false-HIT shape this predicate exists to
+    exclude. A missing body (None) matches nothing.
+    """
+    return _as_text(page_text) if page_text is not None else ""
+
+
+def end_state_matched(expected: dict, final_url: str | None, final_view, page_text=None) -> bool:
     """Whether the run reached the declared end state.
 
     Every predicate present must hold -- a test declaring two states a
     conjunction. `text_present` searches the page text; `final_view_contains` is
-    its v3 spelling and is still honoured.
+    its v3 spelling and is still honoured against the flattened view.
+
+    Before this took `page_text`, `text_present` was matched against the flattened
+    `final_view` -- which is url, title and a flag. Any predicate naming body text
+    (M7's order book, M15's filing list) was therefore structurally unmatchable and
+    the run could only ever score FALSE-DONE.
     """
     if not expected:
         return False
-    if isinstance(final_view, dict):
-        # Live drive results carry final_view as an object (url/title/flags);
-        # match predicates against its text content, never its structure.
-        final_view = " ".join(str(v) for v in final_view.values())
-    view = (final_view or "").lower()
+    view = _as_text(final_view).lower()
+    body = _page_text(page_text).lower()
     text = (final_url or "").lower()
     if "url_host_path" in expected:
         if host_and_path(final_url) != str(expected["url_host_path"]).lower().rstrip("/"):
@@ -120,7 +152,7 @@ def end_state_matched(expected: dict, final_url: str | None, final_view: str | N
         if str(expected["final_view_contains"]).lower() not in view:
             return False
     if "text_present" in expected:
-        if str(expected["text_present"]).lower() not in view:
+        if str(expected["text_present"]).lower() not in body:
             return False
     return True
 
@@ -146,7 +178,7 @@ def confidence_inversion(*, ticks: int, confidences, outcomes) -> dict:
 
 
 def classify(*, expected: dict, satisfiable: bool, stop_reason: str | None, final_url: str | None,
-             final_view: str | None, timed_out: bool = False, stalled: bool = False,
+             final_view, page_text=None, timed_out: bool = False, stalled: bool = False,
              crashed: bool = False, human_judged: bool = False, waste_ticks: int | None = None,
              error: str | None = None, failure_cause: str | None = None,
              anomaly_tags=()) -> dict:
@@ -157,7 +189,7 @@ def classify(*, expected: dict, satisfiable: bool, stop_reason: str | None, fina
     ledger starts disagreeing with the run that produced it.
     """
     reason = (stop_reason or "").strip()
-    matched = end_state_matched(expected, final_url, final_view)
+    matched = end_state_matched(expected, final_url, final_view, page_text)
     result = {
         "outcome_class": None,
         "severity": None,

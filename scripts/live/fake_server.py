@@ -41,12 +41,20 @@ def drive_result(*, status: str, stop_reason: str | None, final_url: str | None 
     reason claims done while the caller sees no end state. The classifier has to
     catch that from the two halves, which is the behaviour under test.
     """
+    # final_view is an object in a real drive result (url/title/flags) and carries
+    # no body text, with the page text alongside it as `page_text`. A fake that
+    # returned a ready-made string would let a text_present predicate pass against
+    # the view and hide the very bug this models.
+    view = final_view if isinstance(final_view, dict) else (
+        {"url": final_url or "", "title": final_view or ""} if final_view else None
+    )
     payload = {
         "success": status == "done",
         "status": status,
         "stopped_reason": stop_reason,
         "final_url": final_url,
-        "final_view": final_view,
+        "final_view": view,
+        "page_text": extra.get("page_text"),
         "verified": None,
         "actions": extra.get("actions", []),
     }
@@ -85,6 +93,11 @@ ISOLATION_VIOLATION = "isolation_violation"
 
 HIT_AT_PREFIX = "hit@"
 
+# `pagetext@<url>|<body text>`: a HIT at <url> whose page text is <body text>, with
+# a dict final_view carrying no body. The only way a text_present predicate can be
+# satisfied is if the harness actually threads page_text through.
+PAGE_TEXT_AT_PREFIX = "pagetext@"
+
 
 def scripted_result(scenario: str, *, url: str = END_STATE_URL, **kwargs) -> dict:
     """The drive result for a named scenario.
@@ -100,6 +113,10 @@ def scripted_result(scenario: str, *, url: str = END_STATE_URL, **kwargs) -> dic
     if scenario == HIT:
         return drive_result(status="done", stop_reason="model_done", final_url=url,
                             final_view=kwargs.get("final_view", "Example Domains"))
+    if scenario.startswith(PAGE_TEXT_AT_PREFIX):
+        url, _, body = scenario[len(PAGE_TEXT_AT_PREFIX):].partition("|")
+        return drive_result(status="done", stop_reason="model_done", final_url=url,
+                            final_view=None, page_text=body)
     if scenario.startswith(HIT_AT_PREFIX):
         # A HIT that lands on a caller-chosen URL, so a chain test can declare its
         # own end state instead of every test having to expect the IANA fixture.

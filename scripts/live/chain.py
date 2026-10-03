@@ -155,6 +155,9 @@ def run_chain(client: McpStdio, test: dict, *, log_dir, chain_budget_s=None) -> 
             "final_url": payload.get("final_url"),
             "final_url_host_path": host_and_path(payload.get("final_url")),
             "final_view": payload.get("final_view"),
+            # Carried per drive so a `text_present` predicate can be scored on the
+            # page body rather than on url+title.
+            "page_text": payload.get("page_text"),
             "ticks": payload.get("ticks"),
             "waste_ticks": 0,
             # This drive's own bytes, not the running total: the chain is the
@@ -195,6 +198,7 @@ def run_chain(client: McpStdio, test: dict, *, log_dir, chain_budget_s=None) -> 
         "final_url": last.get("final_url"),
         "final_url_host_path": last.get("final_url_host_path"),
         "final_view": last.get("final_view"),
+        "page_text": last.get("page_text"),
         "stopped_reason": last.get("stopped_reason"),
         "ticks": sum(int(d.get("ticks") or 0) for d in drives),
         "consequential_hits": [
@@ -271,6 +275,7 @@ def _chain_verdict(record: dict, test: dict) -> dict:
         expected=test["expected"], satisfiable=test["satisfiable"],
         stop_reason=record.get("stopped_reason"),
         final_url=record.get("final_url"), final_view=record.get("final_view"),
+        page_text=record.get("page_text"),
         human_judged=test.get("human_judged", False),
         waste_ticks=record.get("waste_ticks") or 0,
     )
