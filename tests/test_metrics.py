@@ -680,7 +680,10 @@ def test_a_stale_input_is_a_failed_action_and_a_stale_page(clock, monkeypatch):
 def test_a_refused_decision_the_loop_swallowed_is_still_reported(clock, monkeypatch):
     # The click is refused and the control is gone by the time the driver re-reads,
     # so the decision cannot be retried: the tick loop swallows it and asks again.
-    decide = _decide(_decision("e1", label="Open Widget"), _decision("DONE", "DONE"))
+    # DONE at 0.99, not the 0.9 default: the click was swallowed, so no action was
+    # performed, and a zero-action DONE now has to be near-certain to end a run. The
+    # subject here is the swallowed decision being reported, not DONE's probability.
+    decide = _decide(_decision("e1", label="Open Widget"), _decision("DONE", "DONE", probability=0.99))
     agent, browser = _drive(monkeypatch, clock, decide=decide, stale_acts=1, keep_after_reads=1)
 
     agent.command("tick")

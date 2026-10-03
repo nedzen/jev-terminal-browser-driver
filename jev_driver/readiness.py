@@ -6,6 +6,21 @@ import re
 
 DONE_MIN = 0.6
 
+# A DONE that executed nothing is a claim that the page was *already* the end
+# state, so it has to be near-certain rather than merely more likely than not.
+#
+# Calibrated from the seven sev-1 rows in the live ledger: the legitimate
+# already-satisfied DONEs scored 1.00 (S1d, Tether price) and 0.99 (S6a,
+# notifications list), while the zero-action false-dones scored 0.81 (S7b),
+# 0.69 (S5b) and 0.60 (M15) -- every one of them at or above DONE_MIN, which is
+# why DONE_MIN alone let them through. 0.95 separates the two groups on the frozen
+# evidence without touching any run that acted.
+#
+# The cost is a real false-negative risk: a genuine already-satisfied DONE landing
+# between 0.90 and 0.94 would now be rejected and the run would keep driving. That
+# is the cheaper error -- it ends blocked (sev-2) rather than falsely done (sev-1).
+ZERO_ACTION_DONE_MIN = 0.95
+
 REASON_WHY = {
     "shell": "Stopped: the page was still only short labels, not a document. Here is the visible text.",
     "weak_done": "Model chose DONE with low confidence. The goal is not confirmed. Use the visible text.",
@@ -90,11 +105,25 @@ def done_probability(decision: dict | None) -> float:
         return 0.0
 
 
-def done_acceptable(decision: dict | None, page: dict | None) -> bool:
-    if done_probability(decision) < DONE_MIN:
+def done_acceptable(decision: dict | None, page: dict | None, *, executed_actions=None) -> bool:
+    """Whether a DONE may end the run.
+
+    `executed_actions` is the count of actions the run actually performed. When it
+    is 0 the DONE is claiming the start page was already the end state, so it must
+    clear `ZERO_ACTION_DONE_MIN` as well -- DONE_MIN alone is a confidence gate, and
+    confidence is not evidence that the work got done.
+
+    `None` means "the caller does not know", and applies `DONE_MIN` only. That
+    default keeps every existing caller honest rather than silently tightening a
+    gate they were not asking about; `DriveAgent` passes the real count.
+    """
+    probability = done_probability(decision)
+    if probability < DONE_MIN:
         return False
     text = (page or {}).get("text") or ""
     if page_is_shell(text):
+        return False
+    if executed_actions == 0 and probability < ZERO_ACTION_DONE_MIN:
         return False
     return True
 
