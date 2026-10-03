@@ -390,7 +390,7 @@ def test_stale_click_retries_the_same_like(monkeypatch):
     agent.screenshots = False
     clicked = {}
 
-    def act(action, page, text=None):
+    def act(action, page, text=None, **kw):
         clicked["label"] = action["label"]
 
     browser = Mock()
@@ -436,7 +436,7 @@ def test_stale_fill_retries_on_the_same_label(monkeypatch):
     agent.screenshots = False
     typed = {}
 
-    def act(action, page, text=None):
+    def act(action, page, text=None, **kw):
         typed["label"] = action["label"]
         typed["text"] = text
 

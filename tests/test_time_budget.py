@@ -61,7 +61,7 @@ class FakeBrowser:
     def fresh(self, page, kind=None):
         return True
 
-    def act(self, action, page, text=None):
+    def act(self, action, page, text=None, **kw):
         self.acts.append({"id": action.get("id"), "label": action.get("label")})
 
     def sleep(self, seconds):
@@ -495,7 +495,7 @@ class _StaleOnActBrowser(FakeBrowser):
         page["fingerprint"] = fingerprint(page)
         return page
 
-    def act(self, action, page, text=None):
+    def act(self, action, page, text=None, **kw):
         self.attempts.append({"id": action.get("id"), "kind": action.get("kind")})
         if self.stale_left:
             self.stale_left -= 1

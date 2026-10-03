@@ -31,6 +31,25 @@ def _label_stem(label: str) -> str:
     return label.strip()
 
 
+def _observed_label(page: dict | None, target) -> str:
+    """The observed page's own label for a target index, or "" when it has none.
+
+    The fallback `_decision_label` reaches for when the request's criteria carry
+    no entry for the chosen target. The index the model was offered is assigned by
+    `action_space`, so the page's own name for it comes from the same call — this
+    is the control's label, not a guess at one.
+    """
+    if not isinstance(target, str) or not target:
+        return ""
+    elements = action_space((page or {}).get("actions") or [])[0]
+    for element in elements:
+        if isinstance(element, dict) and str(element.get("index")) == target:
+            label = str(element.get("label") or "").strip()
+            if label:
+                return label.split(";")[0].strip()
+    return ""
+
+
 def _click_named(actions, label: str):
     """Find the click target again. Exact label, or the same stem when the count changed."""
     exact = []
@@ -246,7 +265,11 @@ class DriveAgent(Agent):
                         "event": "stale",
                         "goal": self.state.get("goal"),
                         "kind": decision.get("operation"),
-                        "label": self._decision_label(decision) or decision.get("target"),
+                        # The label, or nothing. A bare target key here used to read
+                        # as `label: "1"`, which looks like a control called "1" and
+                        # hides the fact that the label was never recovered.
+                        "label": self._decision_label(decision, self.state.get("page")) or None,
+                        "target": decision.get("target"),
                         "why": str(exc),
                     }
                 )
@@ -289,23 +312,42 @@ class DriveAgent(Agent):
             if isinstance(row, dict):
                 self.metrics.record_text_helper(row.get("latency_ms"))
 
-    def _decision_label(self, decision: dict) -> str:
+    def _decision_label(self, decision: dict, page: dict | None = None) -> str:
+        """The readable label for the target this decision chose, or "" when unknowable.
+
+        Reads the request's own criteria first, which is the only source that names a
+        target the page no longer shows. When the criteria carry no entry for this
+        target it falls back to the observed page's own label for the same index — the
+        same fallback the HUD uses (_hud_payload) — because a retry that cannot name the
+        control it is retrying clicks by target key instead, which is a different
+        control or nothing at all.
+
+        Returns "" rather than the bare target key when neither source has a label.
+        Callers use "" to decline the retry; a caller that logs must not be handed a
+        target id and print it as if it were a label.
+        """
         operation = (decision.get("operation") or "").lower()
         questions = ((decision.get("request") or {}).get("questions") or {})
         criteria = (questions.get(operation + "_target") or {}).get("criteria") or {}
         raw = str(criteria.get(decision.get("target")) or "")
-        if raw.startswith("[") and "]" in raw:
-            raw = raw.split("]", 1)[1]
-        return raw.split(";")[0].strip()
+        if raw:
+            if raw.startswith("[") and "]" in raw:
+                raw = raw.split("]", 1)[1]
+            return raw.split(";")[0].strip()
+        return _observed_label(page, decision.get("target"))
 
     def _retry_fill(self, decision: dict):
         """The feed changed during the decision. Type into the same label on a fresh read."""
         if (decision or {}).get("operation") != "TYPE_TEXT":
             return None
+        state = self.state
+        # Criteria only, no observed-page fallback: this path spends a text-helper
+        # call on the label it recovers, so widening what counts as recoverable
+        # here would buy new paid calls, not new clicks. The fallback is for the
+        # paths that only need a name to log or to match against.
         label = self._decision_label(decision)
         if not label:
             return None
-        state = self.state
         browser = state.get("browser")
         if browser is None:
             return None
@@ -382,10 +424,10 @@ class DriveAgent(Agent):
         """The page changed during the decision. Click the same label on a fresh read."""
         if (decision or {}).get("operation") != "CLICK":
             return None
-        label = self._decision_label(decision)
+        state = self.state
+        label = self._decision_label(decision, state.get("page"))
         if not label:
             return None
-        state = self.state
         browser = state.get("browser")
         if browser is None:
             return None
@@ -401,7 +443,10 @@ class DriveAgent(Agent):
                 # Same as the fill path: no click lands after the deadline.
                 return self._stop_time_budget()
             try:
-                browser.act(action, page)
+                # The page was re-read on the line above, so the probe's settle
+                # window has nothing left to wait for: it would re-decide the
+                # node we just decided, 0.6s later, and reach the same answer.
+                browser.act(action, page, reprobe=False)
                 break
             except StalePage:
                 self.metrics.record_stale()

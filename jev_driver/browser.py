@@ -330,6 +330,9 @@ class Browser:
     sleep = staticmethod(time.sleep)
     # Why the last fresh() call said no. Written by fresh(), read by act() for telemetry.
     _fresh_reason = None
+    # The same call's diagnostic half. Last attempt wins: a probe that ends on
+    # "not_actionable" is the one whose numbers explain it.
+    _probe_detail: dict = {}
 
     def __init__(self, url):
         connect()
@@ -545,14 +548,14 @@ class Browser:
             return page
         return self._observe_once(screenshot)
 
-    def fresh(self, page, action=None):
+    def fresh(self, page, action=None, *, reprobe=True):
         kind = (action or {}).get("kind")
         if kind in {"click", "select", "fill"}:
             node = action["node"]
             if type(node) is not int:
                 self._fresh_reason = "target_detached"
                 return False
-            self._fresh_reason = self._probe_target(kind, page, node)
+            self._fresh_reason = self._probe_target(kind, page, node, reprobe=reprobe)
             return self._fresh_reason == "ok"
         if kind in {"scroll", "wait", "done"}:
             current = self.evaluate("(() => [performance.timeOrigin, location.href])()")
@@ -561,7 +564,7 @@ class Browser:
         self._fresh_reason = "ok" if self.evaluate(MARKER) == page["marker"] else "target_changed"
         return self._fresh_reason == "ok"
 
-    def _probe_target(self, kind, page, node) -> str:
+    def _probe_target(self, kind, page, node, *, reprobe=True) -> str:
         """Probe one target until it is actionable, so a re-parented node is not a stale page.
 
         Same read-only probe every round: no re-snapshot, no action-list rebuild, no new page
@@ -572,19 +575,34 @@ class Browser:
         that reads detached cannot re-attach inside it. Waiting out the full settle window would
         spend 0.6s to learn the same thing. Every other reason can still turn into `ok`, so it is
         retried.
+
+        `reprobe=False` skips the settle window for a caller that just re-read the page and is
+        about to retry regardless; the first probe still runs, so the verdict is unchanged.
         """
         expression = _probe_expression(node)
         reason = "target_changed"
-        for attempt in range(len(PROBE_RETRIES) + 1):
+        attempts = len(PROBE_RETRIES) if reprobe else 0
+        for attempt in range(attempts + 1):
             if attempt:
                 self.sleep(PROBE_RETRIES[attempt - 1])
-            reason = _probe_reason(kind, page, node, self.evaluate(expression))
+            current = self.evaluate(expression)
+            self._probe_detail = _probe_telemetry(current)
+            reason = _probe_reason(kind, page, node, current)
             if reason in {"ok", "target_detached"}:
                 break
         return reason
 
-    def act(self, action, page, text=None):
-        if not self.fresh(page, action):
+    def act(self, action, page, text=None, *, reprobe=True):
+        """Execute one action, gating it on the freshness probe first.
+
+        ``reprobe=False`` runs the probe once instead of retrying it. For a caller
+        that has *already* re-read the page and is retrying anyway
+        (`_retry_click`): that path re-observes immediately before acting, so the
+        four-probe settle window has nothing left to wait for, and running it twice
+        per click spent ~0.6s of duplicated wall clock to learn the same thing twice.
+        The verdict is identical — same probe, same expression, same reason.
+        """
+        if not self.fresh(page, action, reprobe=reprobe):
             kind = action.get("kind")
             reason = "field_changed" if kind in {"click", "select", "fill"} else "page_changed"
             write_event(
@@ -596,6 +614,10 @@ class Browser:
                     # field_changed/page_changed says which guard failed; this says why the
                     # target was not usable, which is the part worth fixing.
                     "probe_reason": self._fresh_reason,
+                    # Which half of `live` went false, so a not_actionable is
+                    # attributable (disabled vs. opacity-0 vs. unboxed) instead of
+                    # being one opaque word. Absent when the probe carried none.
+                    "probe": dict(self._probe_detail) or None,
                     "why": (
                         "The target changed before input."
                         if reason == "field_changed"
@@ -739,6 +761,14 @@ def _probe_expression(node: int) -> str:
     visible to the probe. An off-screen centre is not covered — the executor scrolls the node
     into view and re-hit-tests, and `page_key` ignores scroll, so gating on `inView` here
     would refuse every element below the fold that the executor lands fine.
+
+    A fourth element carries telemetry: `enabled`, `visible`, `visiblePlain`,
+    `opacity`, `boxed` — the halves of `live`, recorded separately so a
+    `not_actionable` that never reaches the hit-test can say *which* half went
+    false. `live` folds enabled-ness and opacity-sensitive visibility into one bit,
+    and the opacity half is the one the executor's own gate does not test. Read by
+    the telemetry writer and by nothing that decides; the verdict is computed from
+    the five bits alone, exactly as before this field existed.
     """
     return (
         "(() => { const c=window.__jevFast, e=c?c.nodes.get("
@@ -753,7 +783,11 @@ def _probe_expression(node: int) -> str:
         "live=attached&&!e.matches(':disabled')&&!e.closest('[aria-disabled=\"true\"],[inert]')"
         "&&e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}), "
         "writable=live&&!e.readOnly&&e.getAttribute('aria-readonly')!=='true'; "
-        "return [c.pageKey(),g,[attached,live,inView,hit,writable]]; })()"
+        "return [c.pageKey(),g,[attached,live,inView,hit,writable],"
+        "{enabled:attached&&!e.matches(':disabled')&&!e.closest('[aria-disabled=\"true\"],[inert]'),"
+        "visible:attached?e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}):false,"
+        "visiblePlain:attached?e.checkVisibility({}):false,"
+        "opacity:attached&&typeof getComputedStyle==='function'?getComputedStyle(e).opacity:null,boxed:boxed}]; })()"
     )
 
 
@@ -773,6 +807,19 @@ def _probe_flags(current) -> tuple | None:
     return tuple(bits[:5])
 
 
+def _probe_telemetry(current) -> dict:
+    """The probe's diagnostic half, or {} when the answer carried none.
+
+    Diagnostic only, and deliberately total: a missing or malformed fourth element
+    must never change a verdict, so an old-shaped probe answer simply reports
+    nothing rather than raising here.
+    """
+    if not isinstance(current, list) or len(current) < 4:
+        return {}
+    extra = current[3]
+    return extra if isinstance(extra, dict) else {}
+
+
 def _probe_reason(kind: str, page: dict, node: int, current) -> str:
     """One word for why this decision can no longer touch `node`.
 
@@ -788,6 +835,9 @@ def _probe_reason(kind: str, page: dict, node: int, current) -> str:
 
     Identity is checked last for the target kinds: a control that is covered or disabled is
     still the control the model chose, and saying so beats reporting its state as a change.
+
+    A pointer target is refused by `_clickable`, which reads `hit` as decisive and lets
+    `live` refuse only what its telemetry can attribute to enabled-ness or a missing box.
     """
     flags = _probe_flags(current)
     if flags is None:
@@ -808,10 +858,42 @@ def _probe_reason(kind: str, page: dict, node: int, current) -> str:
             return "not_actionable"
         if not writable:
             return "not_writable"
-    elif not (live and hit):
+    elif not _clickable(live, hit, _probe_telemetry(current)):
         return "not_actionable"
     same = _same_field(page, node, current) if kind == "fill" else _same_target(page, node, current)
     return "ok" if same else "target_changed"
+
+
+def _clickable(live: bool, hit: bool, telemetry: dict) -> bool:
+    """Whether a pointer target may still be clicked, given the probe's two bits.
+
+    `hit` is the decisive one and always has been: it is a real hit-test at the
+    node's centre. `live` folds enabled-ness together with an opacity-sensitive
+    visibility check, and the two halves disagree exactly when a node is briefly
+    mid-repaint — which is the shape behind the 14 `not_actionable` runs recorded
+    against example.com, a link whose box and hit-test were clean throughout.
+
+    So `live` refuses only what it can attribute:
+
+    - `enabled` false — genuinely disabled, inert, or aria-disabled. Nothing
+      recovers that, and refusing is right.
+    - `boxed` false — no box, so there is nothing to point at and `hit` would be
+      false anyway. Kept explicit because it is the attribution that matters.
+
+    Anything else (a false `live` whose telemetry says enabled and boxed, i.e. a
+    visibility blip) is deferred to the executor, which scrollIntoViews the node
+    and re-hit-tests it before dispatching anything (browser_operation). That gate
+    is authoritative because it is the one about to send input, and it is strictly
+    more capable than this one. With no telemetry at all the old rule stands, so a
+    probe answer that predates the diagnostic is judged exactly as it was.
+    """
+    if not telemetry:
+        return live and hit
+    if not telemetry.get("enabled", live):
+        return False
+    if not telemetry.get("boxed", True):
+        return False
+    return hit
 
 
 def _offer_enter(page: dict | None) -> None:
