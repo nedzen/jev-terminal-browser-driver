@@ -56,3 +56,8 @@ both real drives, both HIT; the duplication is operator re-invocation, noted.
 | S6b-664a2ed5f3 | S6b | x.com | R | mandatory | MISS | sev-2 | wrong-end-state | action_budget | x.com/home | 13 | 0 | 1623.0 | feca83330992f854 | c6f1295 | 8.4 |
 | S6c-01bcf4eadb | S6c | kalshi.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | kalshi.com/markets/kxfeddecision/fed-meeting/kxfeddecision-26oct | 5 | 0 | 1587.0 | feca83330992f854 | fab40d6 | 4.77 |
 | S7a-80feaef951 | S7a | github.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | github.com/search | 4 | 0 | 1620.0 | feca83330992f854 | fab40d6 | 6.07 |
+| S7b-436881a53b | S7b | coinmarketcap.com | R | mandatory | FALSE-DONE | sev-1 | false-done | model_done | coinmarketcap.com/ | 1 | 0 | 2315.0 | feca83330992f854 | 48a2516 | 2.15 |
+| S7c-2ceae347d3 | S7c | coinmarketcap.com | R | mandatory | HIT | - | - | model_done | coinmarketcap.com/ | 1 | 0 | 2413.0 | feca83330992f854 | 48a2516 | 0.79 |
+| S8a-4feb1be05f | S8a | x.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | x.com/home | 2 | 0 | 1523.0 | feca83330992f854 | 48a2516 | 4.12 |
+| S8b-6a98e5226a | S8b | github.com | R | mandatory | HIT | - | - | model_done | github.com/nedzen/jev-terminal-browser-driver/releases/tag/v1.1.0 | 7 | 0 | 2649.0 | feca83330992f854 | 48a2516 | 4.6 |
+| S1a-ii-5bb6e31cc4 | S1a-ii | coinmarketcap.com | R | mandatory | HIT | - | - | model_done | coinmarketcap.com/currencies/tether | 2 | 0 | 1319.0 | feca83330992f854 | 48a2516 | 2.88 |
