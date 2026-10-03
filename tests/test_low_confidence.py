@@ -58,7 +58,7 @@ class FakeBrowser:
     def fresh(self, page, kind=None):
         return True
 
-    def act(self, action, page, text=None):
+    def act(self, action, page, text=None, **kw):
         self.acts.append({"id": action.get("id"), "label": action.get("label")})
 
     def sleep(self, seconds):

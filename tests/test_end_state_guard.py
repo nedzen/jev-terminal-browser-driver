@@ -295,7 +295,7 @@ class _ScrollingBrowser:
         self.scrolled = 0
         self._page = page
 
-    def act(self, action, page):
+    def act(self, action, page, **kw):
         self.scrolled += 1
 
     def observe(self, screenshot=False):

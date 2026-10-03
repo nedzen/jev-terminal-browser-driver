@@ -107,7 +107,7 @@ class FakeBrowser:
         self.clock.advance(COSTS["fresh"])
         return True
 
-    def act(self, action, page, text=None):
+    def act(self, action, page, text=None, **kw):
         self.acts.append({"id": action.get("id"), "kind": action.get("kind")})
         self.clock.advance(COSTS["act"])
         if self.stale_acts > 0:
@@ -573,7 +573,7 @@ def test_a_fresh_probe_inside_an_input_is_its_own_phase(clock):
     class Probing(FakeBrowser):
         """A browser that checks freshness itself, the way the real one does."""
 
-        def act(self, action, page, text=None):
+        def act(self, action, page, text=None, **kw):
             if not self.fresh(page, action):
                 raise StalePage("Page changed since this decision. Observe again.")
             self.clock.advance(COSTS["act"])

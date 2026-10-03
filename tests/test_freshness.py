@@ -388,7 +388,11 @@ LIVE = {"element": {"rect": {"x": 100, "y": 200, "width": 80, "height": 30}}, "g
 
 
 def flags_of(answer):
-    assert isinstance(answer, list) and len(answer) == 3, answer
+    # [pageKey, guard, [five flags], telemetry]. The verdict is answer[2] and the
+    # telemetry after it is diagnostic only, so the assertion pins the flag list
+    # and the presence of both halves rather than an exact arity.
+    assert isinstance(answer, list) and len(answer) >= 3, answer
+    assert isinstance(answer[2], list), answer
     return answer[2]
 
 
