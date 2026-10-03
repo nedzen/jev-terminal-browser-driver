@@ -91,19 +91,6 @@ def connect(url: str | None = None) -> None:
             _discover_enabled = True
 
 
-def disconnect() -> None:
-    global _ws, _next_id, _discover_enabled
-    with _lock:
-        if _ws is not None:
-            try:
-                _ws.close()
-            except Exception:
-                pass
-            _ws = None
-        _next_id = 0
-        _discover_enabled = False
-
-
 def _recv_until(ws, message_id: int) -> dict:
     while True:
         raw = ws.recv()

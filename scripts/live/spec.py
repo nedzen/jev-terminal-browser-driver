@@ -29,26 +29,9 @@ DEFAULT_TIMEOUT_S = 300
 STALL_S = 120
 
 # v3 "Safety tiers". X is never automated, so the runner refuses to carry it.
+# Outcome classes live in taxonomy.py (v3.1 partition); this module only
+# validates the manifest vocabulary.
 TIERS = ("R", "W", "X")
-AUTOMATABLE_TIERS = ("R", "W")
-
-# The four classifications, spelled as v3 spells them. `blocked_unjustified` is
-# not a bucket a run lands in: v3 folds it into MISS, and the name exists so a
-# reader can see the fold happened rather than wondering where it went.
-HIT = "HIT"
-MISS = "MISS"
-BLOCKED_HONEST = "BLOCKED_HONEST"
-
-# v3 also names a fourth outcome, BLOCKED-unjustified, and then says it equals
-# MISS. So it is deliberately *not* a classification here: a blocked stop on a
-# satisfiable goal is recorded as MISS and carries `unjustified_block: True`, so
-# the scoreboard can still report the unjustified-block rate v3 asks for without
-# inventing a bucket the protocol does not have.
-CLASSIFICATIONS = (HIT, MISS, BLOCKED_HONEST)
-
-# Stop reasons that count as a genuine finish. v3 accepts model_done and a P2
-# rescue that reached the right end state; anything else is not a HIT.
-DONE_STOP_REASONS = ("model_done", "end_state_reached")
 
 # The fields every manifest test must declare. `expected` may be present but
 # empty only for a test whose goal is genuinely unsatisfiable, which is checked

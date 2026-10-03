@@ -137,14 +137,6 @@ class CallMeter:
     def bytes_per_call(self) -> float:
         return round(self.total_bytes / len(self.calls), 2) if self.calls else 0.0
 
-    def as_record(self) -> dict:
-        return {
-            "calls": len(self.calls),
-            "total_bytes": self.total_bytes,
-            "bytes_per_call": self.bytes_per_call,
-            "per_call": list(self.calls),
-        }
-
 
 def build_run_record(*, run_id: str, test: dict, meter: CallMeter, decision_outcome: dict, events,
                      final_url: str | None, final_view: str | None, spec_hash: str, commit: str,

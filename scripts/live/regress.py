@@ -28,9 +28,6 @@ CONSECUTIVE_BREACHES_FOR_REGRESSION = 2
 # `final_url` is compared on host+path only; see `host_and_path`.
 EXACT_FIELDS = ("stop_reason",)
 
-# Informational: reported so the reader sees them, never counted as regressions.
-INFO_FIELDS = ("ticks", "spec_hash", "final_url_host_path")
-
 
 def _pct_change(before: float, after: float) -> float | None:
     """Relative movement, or None when there is no baseline to be relative to."""

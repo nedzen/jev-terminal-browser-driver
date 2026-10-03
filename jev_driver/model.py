@@ -267,13 +267,6 @@ def _dedup_from_env() -> bool:
 REQUEST_DEDUP: bool = _dedup_from_env()
 
 
-def set_request_dedup(enabled: bool | None = None) -> bool:
-    """Install the de-duplication gate. None re-reads WWWDRIVE_REQUEST_DEDUP."""
-    global REQUEST_DEDUP
-    REQUEST_DEDUP = _dedup_from_env() if enabled is None else bool(enabled)
-    return REQUEST_DEDUP
-
-
 def denied(action, patterns) -> bool:
     """True when this element's name is denied. Accepts compiled patterns or raw strings.
 

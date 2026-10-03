@@ -375,6 +375,7 @@ def test_an_unreadable_ledger_provisions_rather_than_failing(monkeypatch, tmp_pa
 def test_a_stale_socket_still_routes_to_the_adapter(monkeypatch, tmp_path):
     """The branch reads a *live* socket, not merely an exported variable."""
     monkeypatch.setenv("CMUX_SOCKET_PATH", str(tmp_path / "not-here.sock"))
+    _fake_terminal_browser(monkeypatch, tmp_path)
     routes = []
     monkeypatch.setattr(disc, "_provision_via_cmux", lambda *a, **k: routes.append("cmux"))
     monkeypatch.setattr(disc, "_instance_record_port", lambda text: 40007)

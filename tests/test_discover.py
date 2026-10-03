@@ -153,6 +153,8 @@ def test_provision_parses_instance_record_cdp_port(monkeypatch):
 
 def test_provision_command_is_visible_split(monkeypatch, tmp_path):
     monkeypatch.setenv("HERDR_PANE_ID", "wG:p1")
+    # Unit test: do not require a real terminal-browser binary on PATH.
+    monkeypatch.setattr(disc, "resolve_terminal_browser", lambda: "/bin/terminal-browser")
     seen = {}
 
     class Completed:

@@ -83,7 +83,6 @@ TRACE_FIELDS = (
     TraceField("page_text", cap=TRACE_PAGE_TEXT, truthy=True),
     TraceField("reason"),
 )
-TRACE_BY_NAME = {field.name: field for field in TRACE_FIELDS}
 
 # The one conditional field: a run that never re-read the page has no final
 # view, and writing an empty one would claim it looked.
