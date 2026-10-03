@@ -23,3 +23,12 @@ B/c n/m: S1a executed via CLI (pre-runner-use), no MCP result bytes exist —
 first runner-driven run will carry measured B/c. Slice:
 /tmp/wwwdrive-runs/aa58e97dd1c04724bfea6badc23d0d01.jsonl (2 lines: start +
 finish; tick payloads in drive.jsonl under run_id).
+| S1a-196486ef94 | S1a | coinmarketcap.com | R | mandatory | HIT | - | - | model_done | coinmarketcap.com/currencies/tether | 2 | 0 | 1320.0 | feca83330992f854 | e13d8ff | 1.62 |
+| S1a-97cfbc11a7 | S1a | coinmarketcap.com | R | mandatory | HIT | - | - | model_done | coinmarketcap.com/currencies/tether | 2 | 0 | 1320.0 | feca83330992f854 | e13d8ff | 1.42 |
+
+Correction (§C loop on S1a): runner wrote ticks 0 (payload `ticks` count never
+entered the event stream; string actions invisible to the denylist — second
+live-use bug, fixed + tested in scripts/live). Ticks corrected to 2 per both
+slices' payloads. Row 196486ef94 is the pre-fix-crash attempt's completed
+drive (classification crashed post-drive); row 97cfbc11a7 the clean rerun —
+both real drives, both HIT; the duplication is operator re-invocation, noted.
