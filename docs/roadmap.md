@@ -141,8 +141,12 @@ plugin, Tier 1–4, hardening A–C, debloat, rename. Reinstall sweep done.
   green + ruff clean re-verified on merged main; all-of guard,
   exhaustion-only hook, metrics vocab +1, no schema change); P3 bundled with P1 (see above);
   P4 H3 geometry (quantify `not_actionable`, then fix) — FILED;
-  P5 `model_version` + confidence instrumentation — FILED. No tags/releases
-  for these (accumulate toward future 1.1.1/1.2.0, CEO's call).
+  P5 `model_version` + confidence instrumentation — MERGED (PR #16, d21b4bb;
+  reviewer approved with marker; 700 green + ruff clean re-verified on merged
+  main; request-id provenance + BLOCKED-legibility logging, logging-only).
+  P4 code (items 1–4) IN FLIGHT (arch, branch `feat/geometry-p4`); items 5–6
+  deferred follow-ups. No tags/releases for these (accumulate toward future
+  1.1.1/1.2.0, CEO's call).
   (b) `#jev=` marker observe/act staleness (run 1 evidence, intermittent —
   did NOT reproduce on run 3) — filed, NOT started.
 - Owner-only pending, untouched: GitHub repo rename click; `founder` /
