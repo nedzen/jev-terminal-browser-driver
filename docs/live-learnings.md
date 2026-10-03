@@ -15,3 +15,11 @@ not in this table: a wrapping paragraph in a ledger cell is unreadable.
 
 | run_id | test | site | tier | cap | outcome | sev | cause | stop | url | ticks | waste | B/c | hash | commit | wall |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| aa58e97d | S1a | coinmarketcap.com | R | mandatory | HIT | n/a | n/a | model_done | coinmarketcap.com/currencies/tether/ | 2 | 0 | n/m-CLI | feca8333 | 93a4210 | 3s |
+
+Notes: t0 snapshot pinned #3 = Tether (coinmarketcap.com/currencies/tether/);
+goal named it by name; final_url matches exactly; page shows Tether #3 + price.
+B/c n/m: S1a executed via CLI (pre-runner-use), no MCP result bytes exist —
+first runner-driven run will carry measured B/c. Slice:
+/tmp/wwwdrive-runs/aa58e97dd1c04724bfea6badc23d0d01.jsonl (2 lines: start +
+finish; tick payloads in drive.jsonl under run_id).
