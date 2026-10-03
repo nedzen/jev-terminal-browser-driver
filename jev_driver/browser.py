@@ -47,6 +47,13 @@ LAST_PAGE_PATH = Path.home() / ".cache" / "wwwdrive" / "last-page.json"
 HUD_STATE_PATH = LAST_PAGE_PATH.parent / "hud.json"
 LAST_PAGE_TTL_S = 1800
 LAST_PAGE_KEYS = ("targetId", "url", "source", "browser_id", "ts")
+# `auto_launched` is deliberately NOT in LAST_PAGE_KEYS. That tuple is a *presence*
+# test (`any(key not in data ...)`), so adding a key makes every record written before
+# the flag existed fail the test and read as no record at all -- which would silently
+# void continuity for every existing install on upgrade. Extra keys are already
+# tolerated, so the flag rides along without being required. An absent flag is read as
+# `unknown`, not as False: `lifecycle.instance_origin` keeps what it cannot place.
+PROVENANCE_KEY = "auto_launched"
 LAST_CONTINUITY = None
 
 
@@ -154,10 +161,21 @@ def save_hud_open(opened: bool) -> None:
 
 
 def remember_page(target_id, url):
-    """Remember the driver's tab, including fixture URLs, so the next run can reuse it."""
+    """Remember the driver's tab, including fixture URLs, so the next run can reuse it.
+
+    `auto_launched` records who opened the *browser*, which is the fact a reaper needs
+    and which nothing else on disk carried: without it a browser this driver opened is
+    indistinguishable from one the human opened, so every idle instance looks
+    owner-owned and nothing is ever reclaimable. Written from the in-process
+    Discovery, which is authoritative for the instance this run is driving.
+
+    Preserved on the re-attach path rather than recomputed: a record for a tab this
+    run merely inherited keeps the flag of the run that actually opened the browser.
+    """
     if not target_id:
         return
     source, browser_id = browser_identity()
+    spawned = bool(getattr(_discover.LAST, "auto_launched", False))
     existing = _load_last_page()
     if LEASE.get("tab") == "target":
         if not existing or existing.get("targetId") != target_id:
@@ -173,6 +191,7 @@ def remember_page(target_id, url):
             "source": source,
             "browser_id": browser_id,
             "ts": time.time(),
+            PROVENANCE_KEY: spawned,
         }
     )
 

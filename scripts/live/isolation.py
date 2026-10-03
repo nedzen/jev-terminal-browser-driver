@@ -38,7 +38,12 @@ class IsolationError(RuntimeError):
 
 
 def _events(log_dir: Path):
-    path = log_dir / "drive.jsonl"
+    # Routed through `_dir` like every other entry point, so `open_run_ids()` works
+    # when called with no argument. It read `log_dir / "drive.jsonl"` directly, which
+    # raises TypeError on None -- masked everywhere it was used, because the one
+    # in-tree caller (`assert_pane_idle`) resolves first and passes the path down.
+    # The reaper consults this ledger directly, so it has to stand on its own.
+    path = _dir(log_dir) / "drive.jsonl"
     if not path.is_file():
         return []
     events = []

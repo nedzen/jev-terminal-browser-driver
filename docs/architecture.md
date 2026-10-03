@@ -263,11 +263,49 @@ Chromium, no agent-browser daemon, no loopback scan, no desktop preview.
    from a no-TTY Hermes subprocess cannot see a pane that belongs to another
    terminal. The port is checked against `/json/version` before use.
 4. Provision a visible pane: `terminal-browser open <url> --split right
-   --no-merge`. The child env has every `HERDR_*` variable removed so the
-   split is created by the real terminal (cmux, ghostty, kitty, …) and not
-   nested inside a herdr pane. The CDP port comes from the JSON record
-   `open` prints.
+   --no-merge`. The CDP port comes from the JSON record `open` prints.
 5. Raise `WatchUnavailable`. There is no quieter fallback.
+
+**Provisioning refuses from inside a herdr pane** (`lifecycle.root_terminal_blocker`).
+Scrubbing the environment is necessary but *not* the fix, and the distinction is
+worth keeping because the scrub was believed to be the fix for a long time. Verified
+against the live adapter chain in `@zenbu-labs/pixel@0.0.15`:
+`TERMINALS = [herdr, tmux, tty7, wezterm, kitty, cmux, …]`, herdr first and gated
+only on `HERDR_PANE_ID`. With every `HERDR_*` removed, terminal-browser does switch
+to the cmux adapter — observable, since `ls --all --json` reports `self` as
+`wR:t1`/`wR:p1` under herdr and as the cmux tab/surface UUIDs once scrubbed. But
+`open` only offers `--split`, which always splits the *current surface*, and under a
+herdr pane that surface is the agent's own pane. A correct adapter therefore still
+nests. No terminal-browser adapter exposes a way to open a root-level tab, so the
+browser half of this is not fixable at this version; the remedy belongs to whoever
+owns the outer terminal (cmux calls tabs workspaces: `cmux new-workspace --command`).
+
+Two variables carry a herdr trace *without* the `HERDR_` prefix and were surviving
+the old scrub: `SSH_AUTH_SOCK` (pointing at `~/.config/herdr/herdr.sock.agent`) and
+`TERM_PROGRAM=herdr`. `lifecycle.scrubbed_env` removes both. `SSH_AUTH_SOCK` is
+removed rather than blanked — a socket path that points nowhere is worse than an
+absent one, because an agent that finds it unconnectable falls back to another auth
+path instead of reporting no agent. A *non*-herdr `SSH_AUTH_SOCK` is preserved.
+
+### Provenance and the idle reaper
+
+`~/.cache/wwwdrive/last-page.json` carries an `auto_launched` flag recording who
+opened the *browser*. Without it a browser the driver opened is indistinguishable
+from one the human opened once the process exits, so nothing is reclaimable and any
+reaper would have to guess. The flag is deliberately **not** added to
+`LAST_PAGE_KEYS`: that tuple is a presence test, so requiring it would make every
+record written before the flag existed read as no record at all. An absent flag
+reads as `unknown`, never as `false`.
+
+`lifecycle.reap_plan` decides and never acts. Order is the safety order — origin is
+settled before idleness is considered, so an instance of unknown origin is never
+reaped for being old, and an owner-opened instance is never reaped at all. Lease
+holders are exempt. The two TTLs are different objects on different clocks:
+`INSTANCE_IDLE_TTL_S` (900s) ages a live browser process so an abandoned one is
+reclaimed; `LAST_PAGE_TTL_S` (1800s) ages a continuity record so a stale *tab* is not
+re-attached to. The daemon DB stores `started_at` in **milliseconds**; `lifecycle._age_s`
+normalises, because compared raw against a seconds clock every instance reads as
+freshly started and the reaper silently never reaps anything.
 
 `watch=true` uses that same ladder. The only extra behavior is takeover:
 if the page changes under the driver, the run stops with "user took over

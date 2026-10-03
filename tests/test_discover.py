@@ -6,6 +6,13 @@ import pytest
 
 from jev_driver import discover as disc
 
+# Provisioning-mechanism tests pass `env=NOT_NESTED` so they exercise the visible
+# split rather than the root-terminal placement guard, which refuses by design when
+# the caller is inside a herdr pane (and would otherwise fire in any test run that
+# happens to be executing inside one). Placement has its own tests in
+# tests/test_lifecycle.py.
+NOT_NESTED = {}
+
 
 @pytest.fixture(autouse=True)
 def reset_last(monkeypatch):
@@ -75,7 +82,7 @@ def test_no_browser_provisions_visible_pane(monkeypatch):
         )
 
     monkeypatch.setattr(disc, "_provision_terminal_browser", provision)
-    found = disc.discover(launch_url="https://example.test/")
+    found = disc.discover(launch_url="https://example.test/", env=NOT_NESTED)
     assert calls == ["https://example.test/"]
     assert found.source == "terminal-browser"
     assert found.auto_launched is True
@@ -94,7 +101,7 @@ def test_no_browser_no_binary_raises(monkeypatch):
     monkeypatch.setattr(disc, "_daemon_db_discovery", lambda: None)
     monkeypatch.setattr(disc, "resolve_terminal_browser", lambda: None)
     with pytest.raises(disc.WatchUnavailable, match="terminal-browser is not installed"):
-        disc.discover()
+        disc.discover(env=NOT_NESTED)
 
 
 def test_daemon_db_discovery_finds_live_instance(tmp_path, monkeypatch):
