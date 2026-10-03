@@ -69,3 +69,9 @@ flagged for evidence re-read (landed on prior-run pages).
 | S8a-4feb1be05f | S8a | x.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | x.com/home | 2 | 0 | 1523.0 | feca83330992f854 | 48a2516 | 4.12 |
 | S8b-6a98e5226a | S8b | github.com | R | mandatory | HIT | - | - | model_done | github.com/nedzen/jev-terminal-browser-driver/releases/tag/v1.1.0 | 7 | 0 | 2649.0 | feca83330992f854 | 48a2516 | 4.6 |
 | S1a-ii-5bb6e31cc4 | S1a-ii | coinmarketcap.com | R | mandatory | HIT | - | - | model_done | coinmarketcap.com/currencies/tether | 2 | 0 | 1319.0 | feca83330992f854 | 48a2516 | 2.88 |
+| M1-df39741241 | M1 | github.com | R | mandatory | CRASH (void) | sev-2 | harness-error | - | - | 0 | 0 | 0.0 | feca83330992f854 | a29bcec | 0.06 |
+| M1-43b00b0f1c | M1 | github.com | R | mandatory | CRASH | sev-2 | harness-error | - | - | 0 | 0 | 0.0 | feca83330992f854 | a29bcec | 0.01 |
+| M1-2f01e1cfc8 | M1 | github.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | github.com/notifications | 1 | 0 | 1214.0 | feca83330992f854 | a29bcec | 4.32 |
+| M2-e64bbe4683 | M2 | github.com | R | mandatory | HIT | - | - | model_done | github.com/nedzen/jev-terminal-browser-driver/issues | 9 | 0 | 1471.0 | feca83330992f854 | a29bcec | 6.32 |
+| M3-c11686d469 | M3 | coinmarketcap.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | coinmarketcap.com/ | 5 | 0 | 2286.0 | feca83330992f854 | a29bcec | 5.51 |
+| M4-bcfbebd851 | M4 | github.com | R | mandatory | FALSE-DONE | sev-1 | false-done | model_done | github.com/nedzen/jev-terminal-browser-driver | 4 | 0 | 1415.0 | feca83330992f854 | a29bcec | 3.9 |
