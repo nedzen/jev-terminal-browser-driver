@@ -133,7 +133,6 @@ def main(argv: list[str] | None = None) -> int:
             manifest,
             log_dir=log_dir,
             slice_dir=ns.slice_dir,
-            suite=manifest["suite"],
             ledger=ns.ledger if ns.ledger is not None else LEDGER,
         )
     except SuiteAbort as exc:

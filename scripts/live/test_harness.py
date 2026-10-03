@@ -3,8 +3,8 @@
 No browser, no pane, no network: every outcome is scripted by
 `scripts/live/fake_server.py`. What is being tested is the harness's own claims --
 that it classifies all four v3 outcomes correctly, that it refuses a busy pane,
-that a stall is noticed from the log rather than from the socket, that redaction
-removes amounts, and that the regression diff honours v3's tolerances.
+that a stall is noticed from the log rather than from the socket, and that
+redaction removes amounts.
 """
 
 from __future__ import annotations
@@ -48,7 +48,6 @@ from scripts.live.metrics import (
     waste_ticks,
 )
 from scripts.live.redact import assert_no_amounts, presence_only, redact_record
-from scripts.live.regress import diff_run, is_regression
 from scripts.live.spec import ManifestError, validate_manifest, validate_test
 
 IANA = "https://www.iana.org/help/example-domains"
@@ -209,7 +208,7 @@ def test_a_timeout_is_terminal_rather_than_a_miss():
 
 
 def test_the_final_url_is_compared_on_host_and_path_only():
-    """v3's regression diff field, and it must ignore query and fragment churn."""
+    """End-state matching ignores query and fragment churn."""
     a = host_and_path("https://WWW.IANA.org/help/example-domains?utm=x#frag")
     b = host_and_path("https://www.iana.org/help/example-domains")
     assert a == b == "www.iana.org/help/example-domains"
@@ -301,71 +300,6 @@ def test_a_flagged_record_with_a_surviving_amount_is_caught():
 
 
 # --------------------------------------------------------------------------
-# Regression diff
-# --------------------------------------------------------------------------
-
-
-def _run(**over):
-    base = {"stop_reason": "model_done", "final_url": IANA, "ticks": 4, "bytes_per_call": 1000.0,
-            "spec_hash": "abc123"}
-    base.update(over)
-    return base
-
-
-def test_a_first_run_has_no_baseline_and_is_not_a_regression():
-    diff = diff_run(_run(), None)
-    assert diff["has_baseline"] is False
-    assert is_regression(diff) is False
-
-
-def test_a_stop_reason_change_is_a_regression():
-    diff = diff_run(_run(stop_reason="model_blocked"), _run())
-    assert is_regression(diff) is True
-
-
-def test_a_url_change_is_a_regression_even_when_only_the_query_moved():
-    """v3 compares host+path, so a cache buster is not a regression."""
-    diff = diff_run(_run(final_url=IANA + "?utm=2"), _run())
-    assert is_regression(diff) is False
-
-
-def test_a_real_url_change_is_a_regression():
-    diff = diff_run(_run(final_url="https://elsewhere.test/page"), _run())
-    assert is_regression(diff) is True
-
-
-def test_bytes_within_ten_percent_are_not_a_breach():
-    assert diff_run(_run(bytes_per_call=1090.0), _run())["bytes_breach"] is False
-
-
-def test_a_single_bytes_breach_is_investigate_only():
-    """v3 sharpening E: one churn excursion does not make a regression."""
-    diff = diff_run(_run(bytes_per_call=1500.0), _run())
-    assert diff["bytes_breach"] is True
-    assert is_regression(diff, consecutive_breaches=1) is False
-
-
-def test_two_consecutive_bytes_breaches_are_a_regression():
-    diff = diff_run(_run(bytes_per_call=1500.0), _run())
-    assert is_regression(diff, consecutive_breaches=2) is True
-
-
-def test_a_spec_hash_change_is_reported_but_never_a_regression():
-    """A prompt revision changes every field at once; reading that as regressions
-    buries the real one."""
-    diff = diff_run(_run(spec_hash="def456"), _run())
-    assert diff["info"]["spec_hash"] == {"baseline": "abc123", "current": "def456"}
-    assert is_regression(diff) is False
-
-
-def test_a_tick_change_is_reported_as_information_not_a_verdict():
-    """v3: count thresholds are ranges."""
-    diff = diff_run(_run(ticks=9), _run())
-    assert diff["info"]["ticks"] == {"baseline": 4, "current": 9}
-    assert is_regression(diff) is False
-
-
-# --------------------------------------------------------------------------
 # Isolation
 # --------------------------------------------------------------------------
 
@@ -441,11 +375,10 @@ def _isolated_driver_state(root):
 def _run_one(scenarios, test=None, tmp_path=None, **kwargs):
     root = tmp_path or Path(".")
     client = _client(scenarios, log_dir=root)
-    kwargs.setdefault("baseline_dir", root / "baseline")
     # Every write is redirected into tmp_path, explicitly and by name: the ledger,
-    # the baseline, the log dir the isolation/quarantine steps touch, and the slice
-    # dir. The slice dir was the one that leaked -- run_test used to default it to
-    # the production /tmp/wwwdrive-runs and no self-test passed one, so a full
+    # the log dir the isolation/quarantine steps touch, and the slice dir. The
+    # slice dir was the one that leaked -- run_test used to default it to the
+    # production /tmp/wwwdrive-runs and no self-test passed one, so a full
     # self-test run littered 1352 files there.
     kwargs.setdefault("ledger", root / "ledger.md")
     kwargs.setdefault("log_dir", root)
@@ -540,25 +473,6 @@ def test_the_scoreboard_reports_hits_and_sev1_separately(tmp_path):
     assert board["hit_rate"] == 0.5
 
 
-def test_a_second_run_is_diffed_against_the_first(tmp_path):
-    baseline_dir = tmp_path / "baseline"
-    first = _run_one([HIT], tmp_path=tmp_path)
-    saved = runner.save_baseline(first, suite="live", baseline_dir=baseline_dir)
-    assert runner.load_baseline("live", "S1a", baseline_dir=baseline_dir) is not None
-    assert saved.name == "live__S1a.json"
-    second = _run_one([HIT], tmp_path=tmp_path, baseline_dir=baseline_dir)
-    assert second["diff"]["has_baseline"] is True
-    assert second["regression"] is False
-
-
-def test_a_saved_baseline_is_found_by_the_name_the_loader_looks_for(tmp_path):
-    """Regression guard: the two disagreed once, so every run looked like a first run."""
-    baseline_dir = tmp_path / "baseline"
-    record = _run_one([HIT], tmp_path=tmp_path)
-    runner.save_baseline(record, suite="live", baseline_dir=baseline_dir)
-    assert runner.load_baseline("live", record["test_id"], baseline_dir=baseline_dir) is not None
-
-
 def _shipped_ledger() -> str:
     return (Path(__file__).resolve().parents[2] / "docs" / "live-learnings.md").read_text(
         encoding="utf-8")
@@ -616,8 +530,8 @@ def test_the_slice_directory_is_resolved_at_call_time(tmp_path, monkeypatch):
     target = tmp_path / "redirected"
     monkeypatch.setattr(runner, "SLICE_DIR", target)
     assert Path(runner.SLICE_DIR) == target
-    # The isolation/baseline resolvers read the module constant now, not a
-    # default captured at import time.
+    # The isolation resolvers read the module constant now, not a default
+    # captured at import time.
     assert isolation._dir(None) == Path(isolation.LOG_DIR)
     assert isolation._dir(tmp_path) == tmp_path
 
@@ -661,7 +575,7 @@ def test_the_isolation_quarantine_never_touches_the_real_log_dir(tmp_path):
     client = _client([HIT])
     try:
         runner.run_test(client, _test(), log_dir=tmp_path, slice_dir=tmp_path / "slices",
-                        baseline_dir=tmp_path / "baseline", ledger=tmp_path / "ledger.md")
+                        ledger=tmp_path / "ledger.md")
     finally:
         client.close()
     after = sorted(p.name for p in real_dir.iterdir()) if real_dir.is_dir() else []
@@ -691,7 +605,6 @@ def test_a_written_row_has_one_cell_per_ledger_column(tmp_path):
     try:
         record = runner.run_test(client, _test(), log_dir=tmp_path,
                                  slice_dir=tmp_path / "slices",
-                                 baseline_dir=tmp_path / "baseline",
                                  ledger=tmp_path / "ledger.md")
     finally:
         client.close()
@@ -1167,7 +1080,7 @@ def test_a_chain_quarantines_once_before_the_chain_and_never_between_drives(tmp_
     patcher = _isolated_driver_state(tmp_path)
     try:
         runner_mod.run_test(client, test, log_dir=tmp_path, slice_dir=tmp_path / "slices",
-                            baseline_dir=tmp_path / "baseline", ledger=tmp_path / "ledger.md")
+                            ledger=tmp_path / "ledger.md")
     finally:
         patcher.undo()
         runner_mod.isolation.quarantine_last_page = original
@@ -1289,7 +1202,6 @@ def test_a_run_whose_log_dir_is_misdirected_is_refused_and_never_drives(tmp_path
     try:
         record = runner.run_test(client, _test(), log_dir=tmp_path,
                                  slice_dir=tmp_path / "slices",
-                                 baseline_dir=tmp_path / "baseline",
                                  ledger=tmp_path / "ledger.md")
     finally:
         client.close()
@@ -1370,7 +1282,6 @@ def test_the_runner_refuses_on_the_directory_alone_not_only_via_quarantine(tmp_p
     try:
         record = runner.run_test(client, _test(), log_dir=tmp_path,
                                  slice_dir=tmp_path / "slices",
-                                 baseline_dir=tmp_path / "baseline",
                                  ledger=tmp_path / "ledger.md")
     finally:
         client.close()
@@ -1531,7 +1442,6 @@ def test_run_suite_accepts_a_goal_style_manifest(tmp_path):
         out = runner.run_suite(
             {"tests": [_test(goal="Go to example.com and click Learn more.")]},
             client=client, log_dir=root, slice_dir=root / "slices",
-            baseline_dir=root / "baseline",
             ledger=root / "ledger.md")
     finally:
         client.close()

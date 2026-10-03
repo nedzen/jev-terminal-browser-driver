@@ -3,7 +3,7 @@
 v3 of the design (`live-tests-design.md`) is the spec. This module owns only what
 the manifest declares: a test id, where it runs, the goal text handed to the
 driver, its safety tier, its timeout, and the end state it is scored against.
-Everything downstream -- classification, byte accounting, the regression diff --
+Everything downstream -- classification, byte accounting, the ledger scoreboard --
 reads the shapes declared here rather than re-deriving them, so a manifest that
 validates is a manifest every later stage can rely on.
 
@@ -287,9 +287,9 @@ def validate_test(test: dict, *, index: int | None = None) -> dict:
 def validate_manifest(manifest: dict) -> dict:
     """A whole manifest, checked end to end. Test ids must be unique.
 
-    Duplicated ids would collide in the ledger (one row per run, keyed by run_id,
-    derived from the id) and in the per-test baseline, so they are refused here
-    rather than producing two rows that silently overwrite each other.
+    Duplicated ids would collide in the ledger (one row per run, keyed by run_id
+    derived from the id), so they are refused here rather than producing two rows
+    that silently overwrite each other.
     """
     if not isinstance(manifest, dict):
         raise ManifestError("manifest must be an object")
