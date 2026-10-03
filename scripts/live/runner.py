@@ -92,6 +92,18 @@ def git_commit(root: Path = REPO_ROOT) -> str:
         return "unknown"
 
 
+def driver_state_dir() -> Path:
+    """Where the driver keeps its lease state, read from the product itself.
+
+    Imported lazily and by attribute rather than hardcoded here: the whole point
+    of fix (1) is that this path is the product's to decide, and a copy of it in
+    the harness is exactly the kind of second source that drifted before.
+    """
+    from jev_driver.browser import LAST_PAGE_PATH
+
+    return Path(LAST_PAGE_PATH).parent
+
+
 def spec_hash() -> str:
     """The decision prompt revision this run asked under."""
     from jev_driver.model import QUESTION_SPEC_HASH
@@ -268,10 +280,23 @@ def _attempt(client: McpStdio, test: dict, *, log_dir, slice_dir, suite: str, at
     final_view = None
     started = time.perf_counter()
 
-    # Isolation before anything else: a busy pane invalidates the whole run.
+    # Isolation before anything else: a misdirected log_dir or a busy pane
+    # invalidates the whole run. The state-dir assertion comes first because every
+    # other isolation step is meaningless without it -- that ordering is what let a
+    # misdirected directory report success all the way into a live row.
     try:
+        state_dir = driver_state_dir()
+        isolation.assert_log_dir_matches(log_dir, state_dir)
         isolation.assert_pane_idle(log_dir)
-        quarantine = isolation.quarantine_last_page(log_dir)
+        # `driver_state_dir=` here is defence in depth, not the load-bearing check:
+        # `assert_log_dir_matches` above has already guaranteed log_dir *is* the
+        # driver's state directory, so quarantine's loud branch cannot fire from
+        # here. It is passed anyway because this call is the one that would silently
+        # no-op if that assertion were ever removed -- and no test covers that
+        # wiring specifically (the two failures are indistinguishable by type). Do
+        # not read this line as a substitute for the assertion.
+        quarantine = isolation.quarantine_last_page(log_dir, driver_state_dir=state_dir)
+        report = isolation.isolation_report(log_dir, driver_state_dir=state_dir)
     except isolation.IsolationError as exc:
         outcome = classify(
             expected=test["expected"], satisfiable=test["satisfiable"], stop_reason=None,
@@ -336,6 +361,7 @@ def _attempt(client: McpStdio, test: dict, *, log_dir, slice_dir, suite: str, at
         wall_s=wall, error=error, attempt=attempt,
     )
     record["quarantined_target"] = (quarantine or {}).get("targetId")
+    record["isolation"] = report
     if chain:
         record["chain"] = chain
         record["stopped_at"] = chain["stopped_at"]
