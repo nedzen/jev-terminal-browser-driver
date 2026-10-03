@@ -98,3 +98,5 @@ History stays above; scoreboard counts only rows below this line.
 | S1b-59a74df485 | S1b | coinmarketcap.com | R | mandatory | HIT | - | - | model_done | coinmarketcap.com/currencies/tether | 2 | 0 | 1295.0 | f8b13c650cc5ddf6 | ac7df8b | 2.97 |
 | S1c-e60d8509c9 | S1c | github.com | R | mandatory | BLOCKED-honest | sev-2 | - | model_blocked | github.com/nedzen/jev-terminal-browser-driver | 4 | 0 | 2628.0 | f8b13c650cc5ddf6 | ac7df8b | 4.03 |
 | S1d-efdb25761e | S1d | coinmarketcap.com/currencies/tether/ | R | mandatory | HIT | - | - | model_done | coinmarketcap.com/currencies/tether | 1 | 0 | 1567.0 | f8b13c650cc5ddf6 | ac7df8b | 2.8 |
+| S2a-aee6ace2ec | S2a | coinmarketcap.com | R | mandatory | FALSE-DONE | sev-1 | false-done | model_done | coinmarketcap.com/exchanges/picol | 7 | 0 | 2294.0 | f8b13c650cc5ddf6 | 9953fd3 | 5.92 |
+| S2b-9ddd1f7181 | S2b | github.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | github.com/nedzen/jev-terminal-browser-driver | 4 | 0 | 2516.0 | f8b13c650cc5ddf6 | 9953fd3 | 3.93 |
