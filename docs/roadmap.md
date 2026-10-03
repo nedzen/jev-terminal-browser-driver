@@ -161,7 +161,9 @@ plugin, Tier 1–4, hardening A–C, debloat, rename. Reinstall sweep done.
   F2 split test_harness.py (550+ lines) + test_end_state_guard.py (404) by
   behavior; F3 CLI entry point for scripts/live (manifest path arg; S1a ran
   via /tmp driver script); F4 extra runner guards (duplicate-row dedup on
-  operator re-invocation; pane-busy refuse before browser time).
+  operator re-invocation; pane-busy refuse before browser time); F5
+  multi-drive-call support (M9 continuity-chain tests need drive-1→drive-2
+  same-lease sequencing; runner currently issues one drive call per attempt).
 
 ## Process notes (2026-10-03)
 
