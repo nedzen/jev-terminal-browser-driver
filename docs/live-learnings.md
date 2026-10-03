@@ -48,3 +48,5 @@ both real drives, both HIT; the duplication is operator re-invocation, noted.
 | S3b-e028dae50b | S3b | kalshi.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | kalshi.com/calendar | 2 | 0 | 969.0 | feca83330992f854 | 9ce1fe9 | 8.54 |
 | S4a-4a14b4702c | S4a | github.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | kalshi.com/calendar | 5 | 0 | 2037.0 | feca83330992f854 | 9ce1fe9 | 2.92 |
 | S4b-909fd7d95e | S4b | github.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | kalshi.com/calendar | 4 | 0 | 1311.0 | feca83330992f854 | 9ce1fe9 | 2.16 |
+| S5a-f5ae22880b | S5a | github.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | github.com/trending | 3 | 0 | 2273.0 | feca83330992f854 | f39449d | 4.24 |
+| S5b-a69a3c12bf | S5b | en.wikipedia.org | R | mandatory | FALSE-DONE | sev-1 | false-done | model_done | en.wikipedia.org/wiki/String_trimmer | 1 | 0 | 2934.0 | feca83330992f854 | f39449d | 1.21 |
