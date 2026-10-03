@@ -7,68 +7,23 @@ Mocked browser, mocked model, run log redirected by conftest. No network, no pai
 import json
 
 import pytest
+from conftest import DEFAULT_FAKE_ACTION, FakeBrowser
 
 from jev_driver import agent as loop
 from jev_driver import cli, drive_agent
-from jev_driver.browser import fingerprint
 from jev_driver.readiness import REASON_WHY, done_acceptable
 
 URL = "https://example.test/widget"
 GOAL = "Open the widget panel"
 
-ACTION = {"id": "e1", "kind": "click", "label": "Open Widget", "role": "button", "value": "", "node": 7}
+ACTION = dict(DEFAULT_FAKE_ACTION)
 
 
-class FakeBrowser:
-    """Same URL on every read, growing text, and a record of every mutation asked for."""
-
-    HYDRATE_SLEEP_S = 0
+class _StuckPageBrowser(FakeBrowser):
+    """Same URL on every read, growing text — a run stuck here has not moved on."""
 
     def __init__(self, url):
-        self.url = url
-        self.debug = False
-        self.acts = []
-        self.reads = 0
-        self.closed = False
-        self.huds = []
-
-    def _page(self):
-        # The URL never changes, so a run stuck here has not moved on; the text grows, so
-        # every observation is a fresh fingerprint and a performed action reads as progress.
-        page = {
-            "url": self.url,
-            "title": "Widgets",
-            "text": "The widget list is here with the panel control at the top of the page. " + "." * self.reads,
-            "scroll": {"x": 0, "y": 0, "height": 900},
-            "actions": [dict(ACTION)],
-        }
-        page["fingerprint"] = fingerprint(page)
-        return page
-
-    def observe(self, screenshot=True):
-        page = self._page()
-        self.reads += 1
-        return page
-
-    def _observe_once(self, screenshot=False):
-        page = self._page()
-        self.reads += 1
-        return page
-
-    def fresh(self, page, kind=None):
-        return True
-
-    def act(self, action, page, text=None, **kw):
-        self.acts.append({"id": action.get("id"), "label": action.get("label")})
-
-    def sleep(self, seconds):
-        return None
-
-    def paint_hud(self, payload):
-        self.huds.append(payload)
-
-    def close(self):
-        self.closed = True
+        super().__init__(url, fixed_url=True, growing_text=True)
 
 
 def _click(probabilities):
@@ -95,7 +50,7 @@ DECISIVE = _click({"CLICK": 0.9, "BLOCKED": 0.1})
 @pytest.fixture
 def browser(monkeypatch):
     """The one browser this test's agent will ever see."""
-    fake = FakeBrowser(URL)
+    fake = _StuckPageBrowser(URL)
     monkeypatch.setattr(loop, "Browser", lambda url: fake)
     return fake
 

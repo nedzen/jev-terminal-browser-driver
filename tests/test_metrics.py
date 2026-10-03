@@ -12,18 +12,19 @@ import threading
 from unittest.mock import Mock
 
 import pytest
-from conftest import Clock, _Time
+from conftest import DEFAULT_FAKE_ACTION, Clock, _Time
+from conftest import FakeBrowser as _SharedFakeBrowser
 
 from jev_driver import agent as loop
 from jev_driver import drive_agent
 from jev_driver import metrics as metrics_mod
-from jev_driver.browser import Browser, StalePage, fingerprint
+from jev_driver.browser import Browser, StalePage
 from jev_driver.metrics import Metrics, instrument_browser, metrics_path
 
 URL = "https://example.test/widget"
 GOAL = "Open the widget panel"
 
-CLICK = {"id": "e1", "kind": "click", "label": "Open Widget", "role": "button", "value": "", "node": 7}
+CLICK = dict(DEFAULT_FAKE_ACTION)
 FILL = {"id": "e2", "kind": "fill", "label": "Search query", "role": "textbox", "value": "", "node": 8}
 SCROLL = {"id": "scroll_down", "kind": "scroll", "label": "Scroll down", "node": None}
 
@@ -64,65 +65,21 @@ def _timer(name):
     }
 
 
-class FakeBrowser:
-    """Only source of page reads, and it records every mutation it is asked for."""
-
-    HYDRATE_SLEEP_S = 0
+class FakeBrowser(_SharedFakeBrowser):
+    """Metrics double: charges the test clock and records act kind, not label."""
 
     def __init__(self, url, clock, *, actions=(CLICK,), stable=False, stale_acts=0, keep_after_reads=None):
-        self.url = url
-        self.clock = clock
-        self.debug = False
-        self.actions = [dict(item) for item in actions]
-        self.stable = stable  # same title and text every read: the text helper's cache can hit
-        self.stale_acts = stale_acts  # refuse this many inputs with StalePage
-        self.keep_after_reads = keep_after_reads  # past this read the controls are gone
-        self.acts = []
-        self.reads = 0
-        self.closed = False
-
-    def _page(self):
-        # A different url per read, so a performed action always counts as progress.
-        # ``stable`` freezes title and text, which is what the text helper's cache compares.
-        self.reads += 1
-        actions = self.actions if self.keep_after_reads is None or self.reads <= self.keep_after_reads else []
-        page = {
-            "url": self.url if self.stable else f"{self.url}#read{self.reads}",
-            "title": "Widgets",
-            "text": "The widget list is here with the panel control at the top of the page.",
-            "scroll": {"x": 0, "y": 0, "height": 900},
-            "actions": [dict(item) for item in actions],
-        }
-        page["fingerprint"] = fingerprint(page)
-        return page
-
-    def observe(self, screenshot=True):
-        self.clock.advance(COSTS["observe"])
-        return self._page()
-
-    def _observe_once(self, screenshot=True):
-        return self.observe(screenshot=screenshot)
-
-    def fresh(self, page, action=None):
-        self.clock.advance(COSTS["fresh"])
-        return True
-
-    def act(self, action, page, text=None, **kw):
-        self.acts.append({"id": action.get("id"), "kind": action.get("kind")})
-        self.clock.advance(COSTS["act"])
-        if self.stale_acts > 0:
-            self.stale_acts -= 1
-            raise StalePage("Page changed since this decision. Observe again.")
-
-    def sleep(self, seconds):
-        self.clock.advance(COSTS["sleep"])
-        return None
-
-    def paint_hud(self, payload):
-        return None
-
-    def close(self):
-        self.closed = True
+        super().__init__(
+            url,
+            clock,
+            actions=actions,
+            stable=stable,
+            stale_acts=stale_acts,
+            keep_after_reads=keep_after_reads,
+            costs=COSTS,
+            act_keys=("id", "kind"),
+            count_reads_in_page=True,
+        )
 
 
 def _decision(action_id="e1", operation="CLICK", latency_ms=12, label=None, head="click_target", probability=0.9):

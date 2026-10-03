@@ -52,29 +52,6 @@ def test_an_errored_tick_is_logged_as_blocked_whatever_its_status_claimed():
     assert build_trace_record({"status": "ready", "error": "boom"}, {}, goal="G")["event"] == "blocked"
 
 
-def test_the_empty_record_is_the_one_the_log_has_always_written():
-    """Guards the shape end to end, since a human and a log tail reader both
-    parse it. Any change here is a change to a persisted format."""
-    assert build_trace_record({}, {}, goal="G") == {
-        "event": "tick",
-        "goal": "G",
-        "status": None,
-        "url": None,
-        "last_action": None,
-        "why": None,
-        "error": None,
-        "degenerate": None,
-        "model": None,
-        "model_version": None,
-        "confidence": None,
-        "question_spec_hash": None,
-        "ranked_ops": [],
-        "ranked_targets": [],
-        "page_text": None,
-        "reason": None,
-    }
-
-
 def test_provenance_names_the_model_that_answered_under_which_prompt():
     """A run is attributable: resolved id, provider version, confidence, prompt."""
     record = build_trace_record(

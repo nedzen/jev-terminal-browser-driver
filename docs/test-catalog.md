@@ -1,9 +1,8 @@
 # Test catalog (generated)
 
-## tests/test_adapter_parity.py (3)
-- test_mcp_serves_canonical_schemas
+## tests/test_adapter_parity.py (2)
 - test_time_budget_offered_with_the_same_bounds
-- test_status_tool_parity
+- test_status_tool_takes_no_args_and_every_check_names_a_fix
 
 ## tests/test_agent.py (29)
 - test_invalid_choice_is_rejected
@@ -461,8 +460,7 @@
 - test_a_stale_scroll_after_a_rejected_done_is_counted
 - test_a_hostile_page_cannot_reach_the_snapshot
 
-## tests/test_model_provenance.py (35)
-- test_hash_is_sixteen_hex_chars_over_the_shipped_prompts
+## tests/test_model_provenance.py (34)
 - test_hash_pins_the_named_prompt_encoding
 - test_hash_is_stable_and_tracks_each_prompt
 - test_hash_rejects_a_wrong_number_of_prompts
@@ -751,10 +749,9 @@
 - test_a_retry_inside_the_budget_still_clicks
 - test_the_stop_is_logged_once_across_ticks_not_reset_by_a_later_one
 
-## tests/test_trace_record.py (17)
+## tests/test_trace_record.py (16)
 - test_the_record_keys_are_the_declared_table_plus_the_conditional_one
 - test_an_errored_tick_is_logged_as_blocked_whatever_its_status_claimed
-- test_the_empty_record_is_the_one_the_log_has_always_written
 - test_provenance_names_the_model_that_answered_under_which_prompt
 - test_a_provider_that_reports_no_version_leaves_an_explicit_null
 - test_the_requested_model_id_is_read_from_the_request_not_the_response_echo

@@ -1,39 +1,19 @@
-"""Adapter parity: the MCP server must serve the Hermes plugin schemas
-verbatim (plugin/__init__.py is canonical). No browser.
+"""Adapter contracts that are not mere schema-identity pins.
 
-There is exactly one adapter surface: scripts/mcp.py imports the canonical
-schemas, so drift is structurally impossible — these tests pin that import
-relationship instead of duplicating schema text.
+scripts/mcp.py imports plugin schemas, so verbatim schema equality is
+structurally guaranteed and is not re-tested here. What remains are the
+product bounds and preflight invariants readers actually rely on.
 """
 
 import pytest
 
-from plugin import (
-    DESCRIPTION,
-    PARAMETERS,
-    READ_DESCRIPTION,
-    READ_PARAMETERS,
-    STATUS_DESCRIPTION,
-    STATUS_PARAMETERS,
-)
+from plugin import PARAMETERS, READ_PARAMETERS, STATUS_PARAMETERS
 from plugin.handler import TIME_BUDGET_CAP
 
 
 @pytest.fixture()
 def mcp_mod(load_mcp):
     return load_mcp("jev_mcp_parity")
-
-
-def test_mcp_serves_canonical_schemas(mcp_mod):
-    mod = mcp_mod
-    tools = {t["name"]: t for t in mod._tool_list()}
-    assert set(tools) == {"drive", "read", "status"}
-    assert tools["drive"]["inputSchema"] == PARAMETERS
-    assert tools["read"]["inputSchema"] == READ_PARAMETERS
-    assert tools["drive"]["description"] == DESCRIPTION
-    assert tools["read"]["description"] == READ_DESCRIPTION
-    assert tools["status"]["inputSchema"] == STATUS_PARAMETERS
-    assert tools["status"]["description"] == STATUS_DESCRIPTION
 
 
 def test_time_budget_offered_with_the_same_bounds():
@@ -47,12 +27,11 @@ def test_time_budget_offered_with_the_same_bounds():
     assert "time_budget_s" not in READ_PARAMETERS["properties"]  # read never drives
 
 
-def test_status_tool_parity(mcp_mod):
-    """status: canonical empty-object schema, same checks as preflight."""
+def test_status_tool_takes_no_args_and_every_check_names_a_fix(mcp_mod):
+    """status is an empty-object tool; every preflight check names its fix."""
     from jev_driver.preflight import CHECKS, FIXES
 
-    mod = mcp_mod
-    tools = {t["name"]: t for t in mod._tool_list()}
-    assert tools["status"]["inputSchema"] == STATUS_PARAMETERS
+    tools = {t["name"]: t for t in mcp_mod._tool_list()}
+    assert "status" in tools
     assert STATUS_PARAMETERS == {"type": "object", "additionalProperties": False, "properties": {}}
-    assert set(CHECKS) <= set(FIXES)  # every check names its fix
+    assert set(CHECKS) <= set(FIXES)

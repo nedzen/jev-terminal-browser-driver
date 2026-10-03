@@ -8,7 +8,7 @@ import json
 import subprocess
 
 import pytest
-from conftest import Clock, _Time
+from conftest import DEFAULT_FAKE_ACTION, Clock, FakeBrowser, _Time
 
 from jev_driver import agent as loop
 from jev_driver import cli, drive_agent
@@ -19,59 +19,7 @@ from plugin import handler
 URL = "https://example.test/widget"
 GOAL = "Open the widget panel"
 
-ACTION = {"id": "e1", "kind": "click", "label": "Open Widget", "role": "button", "value": "", "node": 7}
-
-
-class FakeBrowser:
-    """Only source of page reads, and it records every mutation it is asked for."""
-
-    HYDRATE_SLEEP_S = 0
-
-    def __init__(self, url):
-        self.url = url
-        self.debug = False
-        self.acts = []
-        self.reads = 0
-        self.closed = False
-        self.huds = []
-
-    def _page(self):
-        # A different url per read, so a performed action always counts as progress.
-        page = {
-            "url": self.url if self.reads == 0 else f"{self.url}#read{self.reads}",
-            "title": "Widgets",
-            "text": "The widget list is here with the panel control at the top of the page.",
-            "scroll": {"x": 0, "y": 0, "height": 900},
-            "actions": [dict(ACTION)],
-        }
-        page["fingerprint"] = fingerprint(page)
-        return page
-
-    def observe(self, screenshot=True):
-        page = self._page()
-        self.reads += 1
-        return page
-
-    def _observe_once(self, screenshot=False):
-        """The retry paths re-read the page before acting on it."""
-        page = self._page()
-        self.reads += 1
-        return page
-
-    def fresh(self, page, kind=None):
-        return True
-
-    def act(self, action, page, text=None, **kw):
-        self.acts.append({"id": action.get("id"), "label": action.get("label")})
-
-    def sleep(self, seconds):
-        return None
-
-    def paint_hud(self, payload):
-        self.huds.append(payload)
-
-    def close(self):
-        self.closed = True
+ACTION = dict(DEFAULT_FAKE_ACTION)
 
 
 def _decision(action_id="e1"):
