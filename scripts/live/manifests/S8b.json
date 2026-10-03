@@ -1,0 +1,34 @@
+{
+ "id": "S8b",
+ "site": "github.com",
+ "goal": "Open nedzen/jev-terminal-browser-driver Releases then the v1.1.0 notes; done when notes show.",
+ "tier": "R",
+ "satisfiable": true,
+ "expected": {
+  "url_contains": "v1.1.0"
+ },
+ "hit_line": "release-notes URL reached",
+ "miss_line": "wrong release",
+ "timeout_s": 300,
+ "matrix": {
+  "cap": "mandatory"
+ },
+ "deny_actions": [
+  "trade",
+  "buy",
+  "sell",
+  "post",
+  "delete"
+ ],
+ "deny_elements": [
+  "buy",
+  "sell",
+  "trade",
+  "post",
+  "delete",
+  "order",
+  "cart",
+  "checkout"
+ ],
+ "url": "https://github.com/nedzen/jev-terminal-browser-driver"
+}

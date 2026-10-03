@@ -1,0 +1,32 @@
+{
+ "id": "S4a",
+ "site": "github.com",
+ "goal": "Without passing a url, scroll to the top of the current page and stop.",
+ "tier": "R",
+ "satisfiable": true,
+ "expected": {},
+ "hit_line": "continuity=re-attach, same tab",
+ "miss_line": "new tab opened",
+ "timeout_s": 300,
+ "matrix": {
+  "cap": "mandatory"
+ },
+ "deny_actions": [
+  "trade",
+  "buy",
+  "sell",
+  "post",
+  "delete"
+ ],
+ "deny_elements": [
+  "buy",
+  "sell",
+  "trade",
+  "post",
+  "delete",
+  "order",
+  "cart",
+  "checkout"
+ ],
+ "human_judged": true
+}
