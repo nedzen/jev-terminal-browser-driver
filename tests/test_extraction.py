@@ -611,15 +611,27 @@ def test_headline_feed_is_not_a_loading_shell():
     assert page_is_shell(loading) is True
 
 
-def test_top_done_is_accepted_once_the_run_reached_a_new_page(monkeypatch):
+def test_top_done_is_refused_when_the_run_navigated_somewhere_unrelated(monkeypatch):
+    """The navigation bypass used to read "the run reached a new page" as "the run
+    reached the right page". Those are different claims, and this fixture is the
+    difference: the run navigated from String_trimmer to Husqvarna_Group, which is
+    not what "Like the first post" asked for, so the DONE is not corroborated by
+    the navigation and must not end the run. M7 was this shape at scale -- one
+    click onto an event page, DONE at 0.56, accepted because the path differed.
+    """
     monkeypatch.setattr("jev_driver.drive_agent.write_event", lambda event: None)
     agent = _bare_agent()
     agent._start_url = "https://en.wikipedia.org/wiki/String_trimmer"
+    agent._weak_done = 0
     text = "Husqvarna Group\nHusqvarna AB is a Swedish manufacturer of outdoor power products."
-    agent.state["page"] = {"url": "https://en.wikipedia.org/wiki/Husqvarna_Group", "text": text}
+    agent.state["page"] = {"url": "https://en.wikipedia.org/wiki/Husqvarna_Group", "text": text, "actions": []}
     decision = {"choice": "DONE", "operation_probabilities": {"DONE": 0.36, "CLICK": 0.29, "WAIT": 0.26}}
     agent.state["decision"] = decision
-    assert agent._reject_weak_done() is None
+
+    snap = agent._reject_weak_done()
+
+    assert snap is not None
+    assert agent.state["decision"] is None
 
 
 def test_same_link_is_not_followed_twice_but_next_is(monkeypatch):
