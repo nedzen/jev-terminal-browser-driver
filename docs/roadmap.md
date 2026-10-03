@@ -163,6 +163,10 @@ plugin, Tier 1–4, hardening A–C, debloat, rename. Reinstall sweep done.
   (owner, deferred). F5 closed.
 - S1a live: 3× HIT on Tether end state (1 CLI + 2 runner-driven, B/c 1320
   measured). S1b next per cadence.
+- Sev-1 false-done gate MERGED (PR #23, 5d70fe1; reviewer approved with
+  marker; 910 green + ruff clean re-verified on merged main): zero-action
+  DONEs require 0.95 (S1d/S6a shapes exempt); 7 ledger rows were the
+  calibration set.
 - Owner-only pending, untouched: GitHub repo rename click (owner, very end);
   `founder` / `intern` profile re-link + settings re-entry.
 - Follow-up queue (non-blocking polish, worked only when the suite waits):
