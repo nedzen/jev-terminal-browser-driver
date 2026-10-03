@@ -144,8 +144,16 @@ def _append_ledger(row: dict, ledger: Path | None = None) -> None:
         handle.write("| " + " | ".join("" if c is None else str(c) for c in cells) + " |\n")
 
 
-def write_slice(run_id: str, events, *, slice_dir: Path = SLICE_DIR, redact: str | None = None) -> Path:
-    """The run's log slice, one JSON object per line, redacted when the test asked."""
+def write_slice(run_id: str, events, *, slice_dir, redact: str | None = None) -> Path:
+    """The run's log slice, one JSON object per line, redacted when the test asked.
+
+    `slice_dir` is a required keyword with no default. It was `slice_dir=SLICE_DIR`
+    before, and that default was the defect: every self-test run wrote a slice into
+    the production `/tmp/wwwdrive-runs` because `run_test` never passed one. A
+    default here is a silent write to a real directory, so there isn't one --
+    forgetting to pass it is now a TypeError at the call site.
+    """
+    slice_dir = Path(slice_dir)
     slice_dir.mkdir(parents=True, exist_ok=True)
     path = slice_dir / f"{run_id}.jsonl"
     with path.open("w", encoding="utf-8") as handle:
@@ -157,28 +165,29 @@ def write_slice(run_id: str, events, *, slice_dir: Path = SLICE_DIR, redact: str
     return path
 
 
-def load_baseline(suite: str, test_id: str, *, baseline_dir: Path = BASELINE_DIR) -> dict | None:
+def load_baseline(suite: str, test_id: str, *, baseline_dir=None) -> dict | None:
     """The last green slice for this test, or None.
 
     Per test rather than per suite so a test added later starts with no baseline
     instead of being compared against an unrelated run.
     """
-    path = Path(baseline_dir) / f"{suite}__{test_id}.json"
+    path = Path(baseline_dir or BASELINE_DIR) / f"{suite}__{test_id}.json"
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
 
 
-def save_baseline(record: dict, *, suite: str = "live", baseline_dir: Path = BASELINE_DIR) -> Path:
+def save_baseline(record: dict, *, suite: str = "live", baseline_dir=None) -> Path:
     """Promote a run to be this test's baseline.
 
     Named by `load_baseline`'s convention, and that sharing is the point: the two
     used to disagree, so a saved baseline was silently never found and every run
     reported "first run" forever.
     """
-    Path(baseline_dir).mkdir(parents=True, exist_ok=True)
-    path = Path(baseline_dir) / f"{suite}__{record['test_id']}.json"
+    baseline_dir = Path(baseline_dir or BASELINE_DIR)
+    baseline_dir.mkdir(parents=True, exist_ok=True)
+    path = baseline_dir / f"{suite}__{record['test_id']}.json"
     path.write_text(json.dumps({k: record.get(k) for k in BASELINE_FIELDS}, indent=2), encoding="utf-8")
     return path
 
@@ -198,8 +207,8 @@ def _events_from_payload(payload: dict) -> list[dict]:
     return events
 
 
-def run_test(client: McpStdio, test: dict, *, log_dir=None, suite: str = "live",
-             baseline_dir: Path = BASELINE_DIR, ledger: Path | None = None) -> dict:
+def run_test(client: McpStdio, test: dict, *, log_dir, slice_dir, suite: str = "live",
+             baseline_dir=None, ledger: Path | None = None) -> dict:
     """One test, end to end, with v3.1's CRASH retry rule.
 
     A CRASH voids its attempt and gets exactly one retry; two consecutive crashes
@@ -211,8 +220,8 @@ def run_test(client: McpStdio, test: dict, *, log_dir=None, suite: str = "live",
     """
     test = validate_test(test)
     for attempt in range(1, CRASH_RETRIES + 2):
-        record = _attempt(client, test, log_dir=log_dir, suite=suite, attempt=attempt,
-                          baseline_dir=baseline_dir, ledger=ledger)
+        record = _attempt(client, test, log_dir=log_dir, slice_dir=slice_dir, suite=suite,
+                          attempt=attempt, baseline_dir=baseline_dir, ledger=ledger)
         if record["outcome_class"] != CRASH:
             _append_ledger(record, ledger)
             return record
@@ -228,8 +237,8 @@ def run_test(client: McpStdio, test: dict, *, log_dir=None, suite: str = "live",
     raise AssertionError("unreachable: the retry loop always returns")
 
 
-def _attempt(client: McpStdio, test: dict, *, log_dir, suite: str, attempt: int,
-             baseline_dir: Path, ledger: Path | None = None) -> dict:
+def _attempt(client: McpStdio, test: dict, *, log_dir, slice_dir, suite: str, attempt: int,
+             baseline_dir, ledger: Path | None = None) -> dict:
     """One drive attempt.
 
     Returns its record and does not append to the ledger on the normal paths:
@@ -253,9 +262,8 @@ def _attempt(client: McpStdio, test: dict, *, log_dir, suite: str, attempt: int,
 
     # Isolation before anything else: a busy pane invalidates the whole run.
     try:
-        (isolation.assert_pane_idle(log_dir) if log_dir else isolation.assert_pane_idle())
-        quarantine = (isolation.quarantine_last_page(log_dir) if log_dir
-                      else isolation.quarantine_last_page())
+        isolation.assert_pane_idle(log_dir)
+        quarantine = isolation.quarantine_last_page(log_dir)
     except isolation.IsolationError as exc:
         outcome = classify(
             expected=test["expected"], satisfiable=test["satisfiable"], stop_reason=None,
@@ -318,7 +326,7 @@ def _attempt(client: McpStdio, test: dict, *, log_dir, suite: str, attempt: int,
         _append_ledger(record, ledger)
         raise SuiteAbort(f"consequential element on {test['id']}: {record['notes']}")
 
-    slice_path = write_slice(run_id, events, redact=test.get("redact"))
+    slice_path = write_slice(run_id, events, slice_dir=slice_dir, redact=test.get("redact"))
     record["slice"] = str(slice_path)
 
     baseline = load_baseline(suite, test["id"], baseline_dir=baseline_dir)
@@ -329,8 +337,8 @@ def _attempt(client: McpStdio, test: dict, *, log_dir, suite: str, attempt: int,
     return record
 
 
-def run_suite(manifest: dict, *, client=None, log_dir=None, suite: str = "live",
-              baseline_dir: Path = BASELINE_DIR, ledger: Path | None = None) -> dict:
+def run_suite(manifest: dict, *, client=None, log_dir, slice_dir, suite: str = "live",
+              baseline_dir=None, ledger: Path | None = None) -> dict:
     """Every test in the manifest, sequentially, in manifest order.
 
     A manifest that fails validation stops the suite before any browser time,
@@ -342,7 +350,7 @@ def run_suite(manifest: dict, *, client=None, log_dir=None, suite: str = "live",
     if owns_client:
         client.start()
     try:
-        records = [run_test(client, test, log_dir=log_dir, suite=suite,
+        records = [run_test(client, test, log_dir=log_dir, slice_dir=slice_dir, suite=suite,
                             baseline_dir=baseline_dir, ledger=ledger)
                    for test in checked["tests"]]
     finally:
