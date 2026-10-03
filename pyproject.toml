@@ -27,4 +27,7 @@ line-length = 120
 select = ["E", "F", "I"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+# scripts/live carries its self-tests beside the runner, so they are on the path
+# too: a harness whose tests only run when someone remembers the flag is a
+# harness nobody runs the tests of.
+testpaths = ["tests", "scripts/live"]
