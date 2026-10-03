@@ -102,3 +102,7 @@ History stays above; scoreboard counts only rows below this line.
 | S2b-9ddd1f7181 | S2b | github.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | github.com/nedzen/jev-terminal-browser-driver | 4 | 0 | 2516.0 | f8b13c650cc5ddf6 | 9953fd3 | 3.93 |
 | S2c-R-e657345d5c | S2c-R | polymarket.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | polymarket.com/event/btc-updown-5m-1791018000 | 4 | 0 | 2693.0 | f8b13c650cc5ddf6 | 1b12992 | 6.19 |
 | S3a-2a581d3ebc | S3a | x.com | R | mandatory | HIT | - | - | model_done | x.com/bfl_ai/status/2105734605621825738 | 6 | 0 | 1601.0 | f8b13c650cc5ddf6 | 1b12992 | 7.1 |
+| S3b-bdd7a1671e | S3b | kalshi.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | kalshi.com/calendar | 3 | 0 | 974.0 | f8b13c650cc5ddf6 | 5982578 | 10.16 |
+| S4a-abc943ff9a | S4a | github.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | - | 1 | 0 | 396.0 | f8b13c650cc5ddf6 | 5982578 | 0.36 |
+| S6a-ec6720d378 | S6a | github.com | R | mandatory | HIT | - | - | model_done | github.com/notifications | 1 | 0 | 1382.0 | f8b13c650cc5ddf6 | 5982578 | 2.33 |
+| S4a-19ca810b41 | S4a | github.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | - | 1 | 0 | 396.0 | f8b13c650cc5ddf6 | 5982578 | 0.31 |
