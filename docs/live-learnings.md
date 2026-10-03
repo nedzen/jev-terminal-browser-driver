@@ -32,3 +32,7 @@ live-use bug, fixed + tested in scripts/live). Ticks corrected to 2 per both
 slices' payloads. Row 196486ef94 is the pre-fix-crash attempt's completed
 drive (classification crashed post-drive); row 97cfbc11a7 the clean rerun —
 both real drives, both HIT; the duplication is operator re-invocation, noted.
+| S1b-b1b038e07d | S1b | coinmarketcap.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | - | 1 | 0 | 403.0 | feca83330992f854 | d369080 | 2.75 |
+| S1b-8226f57c3e | S1b | coinmarketcap.com | R | mandatory | HIT | - | - | model_done | coinmarketcap.com/currencies/tether | 2 | 0 | 1417.0 | feca83330992f854 | d369080 | 3.44 |
+| S1c-6de4b4dfb9 | S1c | github.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | github.com/nedzen/jev-terminal-browser-driver | 4 | 0 | 2303.0 | feca83330992f854 | f7999eb | 1.95 |
+| S1c-67d8c4cf52 | S1c | github.com | R | mandatory | BLOCKED-honest | sev-2 | - | model_blocked | github.com/nedzen/jev-terminal-browser-driver | 2 | 0 | 2229.0 | feca83330992f854 | f7999eb | 1.0 |
