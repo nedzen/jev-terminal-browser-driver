@@ -1,58 +1,7 @@
-"""Instance process evidence, root-terminal placement, and which code produced a run.
+"""Spawn accounting, orphan checks, code provenance, and root-terminal placement.
 
-Stdlib only, and nothing in the evidence paths raises. A run that finished its
-work must not fail because a status check could not answer.
-
-Jobs this module owns:
-
-- **Spawn accounting.** ``note_spawn()`` is the seam a process-creating call
-  site reports to, ``runtime_spawn_count()`` is how many this run created. Until
-  a run counts its own spawns, "we started one browser" is an assumption.
-- **Orphan detection.** close is detach-only (see ``browser.Browser.close``), so
-  a leftover terminal-browser keeps a pane and a CDP port and nothing in the log
-  mentions it. After close, ``orphan_report()`` asks ``ps`` who is still there.
-- **Code provenance.** ``version_manifest()`` names the code behind a run: git
-  commit, a SHA-256 over the implementation files, and the interpreter.
-- **Root-terminal placement.** terminal-browser splits the *current* surface.
-  When the driver runs inside a herdr pane that is itself a cmux surface,
-  splitting nests the browser inside the agent's own pane. ``scrubbed_env`` and
-  ``root_terminal_blocker`` are the production APIs discover uses for that.
-
-Zombie semantics — the part worth reading twice
------------------------------------------------
-``os.kill(pid, 0)`` answers "is this pid in the process table", not "is this
-process running". A child that has exited but has not been waited on is a
-zombie: signal 0 succeeds, yet the process holds no pane, no socket, no CPU and
-will never do anything again. Reading that as alive reports an orphan for a
-process that already did its job — the commonest false positive available here,
-because a driver spawns short-lived helpers that nobody reaps. So
-``proc_state()`` reads the process state as well and answers ``zombie`` for it,
-and ``orphan_report()`` counts only ``alive`` pids as orphans.
-
-A zombie is not an orphan either: this run is closing, init reaps the corpse
-then, and a dead process leaks nothing but a slot. The four answers are
-``alive`` (running), ``zombie`` (exited, unreaped), ``dead`` (gone) and
-``unknown`` (we were not allowed to look, or no status source exists) — and
-``unknown`` deliberately never counts as clean, because "we could not check" is
-not "there is nothing there".
-
-A pid is a slot, not a process
-------------------------------
-``note_spawn(kind, pid)`` records the start time ``ps`` reports for that pid at
-the moment the run started it, and the close-time check compares the two. A pid
-that is recycled between the two readings belongs to somebody else now, and
-attributing it to this run would either report another process as our leak or
-bury the fact that we cannot say what we spawned — so a mismatch reads
-``unknown``, the answer that never counts as clean.
-
-A command-pattern match is evidence, not a verdict. The driver attaches to
-panes it did not create and leaves them running on purpose, so ``ps`` rows land
-in ``pattern_matches``, separately from the pids this run tracked itself. Only
-those tracked pids can make a run report ``orphans``. Those rows carry raw argv
-from other processes, which is exactly where a bare credential lives, so every
-command string goes through the run log's credential redaction
-(``runlog._scrub_text``) before it is stored or matched on — the vocabulary is
-not duplicated here because two copies of it would drift.
+Stdlib only; evidence paths never raise. Zombies and pid-reuse are not orphans;
+pattern matches are evidence, not a leak verdict.
 """
 
 from __future__ import annotations
@@ -73,53 +22,35 @@ from pathlib import Path
 from . import runlog
 from .preflight import driver_home
 
-# ps and git are local and answer in milliseconds; a loaded box must not turn a
-# status check into a hang, so both are bounded and every failure is reported
-# rather than raised.
+# Bounded local helpers; failures are reported, never raised.
 PS_TIMEOUT_S = 3.0
 GIT_TIMEOUT_S = 3.0
-# A process tearing down right after close still answers signal 0 for a moment.
-# Ask again after a beat so a clean exit is not recorded as a leak.
+# Settle after close so a tearing-down process is not counted as a leak.
 ORPHAN_CHECK_DELAY_S = 0.5
 
 MANIFEST_NAME = "version_manifest.json"
-# Implementation files that decide what a run does. Hashed, never read out.
-HASHED_DIRS = ("jev_driver", "scripts")
+HASHED_DIRS = ("jev_driver", "scripts")  # hashed, never read out
+
 DEFAULT_PATTERNS = ("terminal-browser",)
 MAX_PATTERN_MATCHES = 20
 MAX_TRACKED_PIDS = 64
 MAX_COMMAND_CHARS = 200
-MAX_START_CHARS = 32
 
 ALIVE = "alive"
-ZOMBIE = "zombie"
 DEAD = "dead"
 UNKNOWN = "unknown"
 
-# First character of a ps STAT field. macOS marks an exited process "Z+", Linux
-# spells a dead-but-listed process "X"/"x"; both start with Z or X.
-ZOMBIE_LETTERS = ("Z", "X", "x")
-# Everything else we are willing to call running. "I" is macOS idle-kernel
-# thread, "W" is Linux paging, "U"/"P"/"K"/"T" are the BSD/older states.
-RUNNING_LETTERS = ("R", "S", "D", "I", "T", "U", "W", "K", "P")
-
-# argv has a spelling the run log's text rules do not reach: a flag name in front
-# of its value with no `=` or `:`, as in `--token ghp_...`. The run log stays the
-# authority on what counts as a secret name; this only rewrites that one argv
-# shape into the `name: value` text it already redacts, so there is no second
-# credential vocabulary to drift.
+# Rewrite `--token VALUE` so runlog's assignment redactor can see it.
 _SECRET_FLAG_RE = re.compile(r"(?i)(--[a-z0-9][a-z0-9_-]*)([ \t]+|=)(\S+)")
 _SECRET_FLAG_NAME_RE = re.compile(
     r"(?i)^--[a-z0-9]*[-_]?(?:api[-_]?key|keys?|tokens?|secrets?|passwords?|passwd|pwd|cookies?|credentials?)$"
 )
 
-# Close-time report vocabulary. Only "orphans" is a leak verdict.
-STATUS_ORPHANS = "orphans"
+STATUS_ORPHANS = "orphans"  # only this status is a leak verdict
 STATUS_UNKNOWN = "unknown"
 STATUS_CLEAN = "clean"
 STATUS_NO_PIDS = "no_pids"
 STATUS_UNTRACKED = "untracked"
-
 
 def _short(exc: BaseException) -> str:
     try:
@@ -127,18 +58,10 @@ def _short(exc: BaseException) -> str:
     except Exception:  # a hostile __str__ must not become a second failure
         return exc.__class__.__name__
 
-
 # ---------------------------------------------------------------- subprocess
 
-
 def run_cmd(argv: list[str], *, timeout: float) -> str | None:
-    """stdout of one short-lived helper process, or None. Never raises.
-
-    ``argv`` is a list, never a shell string: a repo path or a pattern can hold
-    spaces, quotes and worse. Anything that goes wrong — no such binary, a
-    non-zero exit, a timeout, a decode failure — is None, and the caller
-    reports "could not check" rather than crashing a finished run.
-    """
+    """stdout of one short-lived helper, or None. Never raises."""
     try:
         completed = subprocess.run(
             argv,
@@ -156,20 +79,12 @@ def run_cmd(argv: list[str], *, timeout: float) -> str | None:
     except Exception:
         return None
 
-
 def ps_output(args: list[str], *, timeout: float = PS_TIMEOUT_S) -> str | None:
-    """``ps`` output, or None. ``-A -o`` is the one spelling both BSD/macOS ps
-    and Linux procps accept; a pid-less, header-less column list keeps parsing
-    identical on the two."""
+    """``ps`` output, or None. ``-A -o`` is the portable BSD/Linux spelling."""
     return run_cmd(["ps", *args], timeout=timeout)
 
-
 def _redact_flag(match) -> str:
-    """One ``--flag value`` pair, redacted when the flag name says secret.
-
-    A flag that is not a secret name (``--url https://x.test``) is returned
-    untouched, so the row still reads as the command it was.
-    """
+    """Redact one ``--flag value`` pair when the flag name looks secret."""
     try:
         if _SECRET_FLAG_NAME_RE.match(match.group(1)):
             return f"{match.group(1)}{match.group(2)}{runlog.REDACTED}"
@@ -177,16 +92,11 @@ def _redact_flag(match) -> str:
     except Exception:
         return match.group(0)
 
-
 def _scrub_command(value) -> str:
-    """A ps command string, credential-redacted and length-capped.
-
-    Order matters: the run log first, then the argv flag shape, because
-    ``--token VALUE`` is not text its assignment rules recognise (``token:`` is).
-    The flag pass rewrites the whole value, so running it last cannot leave a
-    half-consumed marker behind — the failure mode of doing it first, where the
-    run log would eat ``[redacted`` and leave its closing bracket. A scrub that
-    fails must not lose the row, so the worst case is the clipped original.
+    """Credential-redact and length-cap a ps command string.
+    
+        Runlog first, then ``--flag value`` rewrite — reverse order can leave a
+        half-consumed ``[redacted]`` marker.
     """
     text = str(value or "")
     try:
@@ -194,16 +104,8 @@ def _scrub_command(value) -> str:
     except Exception:
         return text[:MAX_COMMAND_CHARS]
 
-
 def process_table(*, timeout: float = PS_TIMEOUT_S) -> list[dict]:
-    """Every visible process as ``{"pid", "stat", "command"}``. Never raises.
-
-    The kernel's own threads carry no useful command line; they are kept
-    (they are part of an honest table) and filtered by the callers.
-
-    ``command`` is redacted and capped here rather than at each caller: this is
-    the one place raw argv enters the module, and it reaches the run log.
-    """
+    """Every visible process as ``{"pid", "stat", "command"}``. Never raises. Commands redacted here."""
     rows: list[dict] = []
     out = ps_output(["-A", "-o", "pid=,stat=,command="], timeout=timeout)
     for line in (out or "").splitlines():
@@ -219,23 +121,13 @@ def process_table(*, timeout: float = PS_TIMEOUT_S) -> list[dict]:
         )
     return rows
 
-
 def _patterns(patterns) -> tuple[str, ...]:
-    """The caller's patterns as a non-empty tuple of strings, or the default.
-    Never raises: an empty or hostile pattern list falls back rather than
-    turning a status check into an error."""
+    """Non-empty pattern tuple, or the default. Never raises."""
     try:
         values = tuple(p for p in (patterns or ()) if p)
     except Exception:
         return DEFAULT_PATTERNS
     return values or DEFAULT_PATTERNS
-
-
-def state_is_zombie(stat: str) -> bool:
-    """True when a ps STAT field says the process has already exited."""
-    text = (stat or "").strip()
-    return bool(text) and text[0] in ZOMBIE_LETTERS
-
 
 def matching_processes(
     patterns: tuple[str, ...] = DEFAULT_PATTERNS,
@@ -244,17 +136,7 @@ def matching_processes(
     limit: int = MAX_PATTERN_MATCHES,
     timeout: float = PS_TIMEOUT_S,
 ) -> list[dict]:
-    """Processes whose command line contains one of ``patterns``.
-
-    Our own pid is always excluded: this module runs inside the driver, whose
-    argv can carry a URL that matches. Matching is substring, deliberately — it
-    is the portable thing that works whether the command is
-    ``/home/u/.local/bin/terminal-browser`` or ``node .../terminal-browser.js``.
-
-    Matched on the redacted command (``process_table`` scrubs before this sees
-    it), so a pattern naming a credential cannot be matched from another
-    process's argv.
-    """
+    """Processes whose (already-redacted) command contains one of ``patterns``."""
     wanted = _patterns(patterns)
     skip = set(_clean_pids(exclude_pids)) | {os.getpid()}
     hits = [
@@ -264,23 +146,18 @@ def matching_processes(
     ]
     return hits[: max(0, int(limit))]
 
-
 # ------------------------------------------------------------------ liveness
 
-
 def _clean_pid(pid) -> int | None:
-    """A usable pid, or None. pid 0 and negatives address a process *group*,
-    so signalling them proves nothing about one process."""
+    """A usable pid, or None (0/negatives are process groups)."""
     try:
         value = int(pid)
     except (TypeError, ValueError):
         return None
     return value if value > 0 else None
 
-
 def _clean_pids(pids) -> list[int]:
-    """Deduplicated, ordered, bounded pid list. Anything unusable is dropped
-    rather than reported: a typo must not become a signal to the wrong group."""
+    """Deduplicated, ordered, bounded pid list; drop unusable values."""
     out: list[int] = []
     for pid in pids or ():
         value = _clean_pid(pid)
@@ -290,13 +167,8 @@ def _clean_pids(pids) -> list[int]:
             break
     return out
 
-
 def _signal_zero(pid: int) -> str:
-    """What signal 0 alone can tell us: ``alive``, ``dead`` or ``unknown``.
-
-    ESRCH means the pid is gone. EPERM means it exists but belongs to someone
-    else — present, yet not ours to classify, so it stays unknown here.
-    """
+    """``alive``, ``dead``, or ``unknown`` from signal 0 (EPERM -> unknown)."""
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -305,155 +177,36 @@ def _signal_zero(pid: int) -> str:
         return DEAD if getattr(exc, "errno", None) == errno.ESRCH else UNKNOWN
     return ALIVE
 
-
-def _state_letter(pid: int, *, timeout: float = PS_TIMEOUT_S) -> str | None:
-    """First character of the process state, or None when unreadable.
-
-    ``ps -o state= -p <pid>`` is the one portable status read: Linux has
-    ``/proc/<pid>/stat`` and macOS has nothing, so a second source would be a
-    second platform's bug surface for no gain.
-    """
-    out = ps_output(["-p", str(pid), "-o", "state="], timeout=timeout)
-    for line in (out or "").splitlines():
-        text = line.strip()
-        if text:
-            return text[0].upper()
-    return None
-
-
-def process_start_time(pid, *, timeout: float = PS_TIMEOUT_S) -> str | None:
-    """When the process now holding ``pid`` started, as ``ps`` renders it.
-
-    None when the pid is unusable, gone, or the field cannot be read — "we could
-    not tell", never "it just started". ``lstart`` is the spelling both BSD/macOS
-    ps and Linux procps accept, and second granularity is all a pid-reuse check
-    needs: a pid recycled within the same second is not a thing a machine does.
-    """
-    value = _clean_pid(pid)
-    if value is None:
-        return None
-    out = ps_output(["-p", str(value), "-o", "lstart="], timeout=timeout)
-    for line in (out or "").splitlines():
-        text = line.strip()
-        if text:
-            return text[:MAX_START_CHARS]
-    return None
-
-
-def _noted_start(starts, pid: int):
-    """The start time recorded for ``pid`` at spawn time, from whatever mapping
-    the caller has. Never raises: an unusable mapping means "not noted"."""
-    if not starts:
-        return None
-    try:
-        return starts.get(pid)
-    except Exception:
-        return None
-
-
-def _same_process(value: int, started, *, timeout: float = PS_TIMEOUT_S) -> bool:
-    """False only when ``value`` provably holds a *different* process than the one
-    that was noted.
-
-    A pid is a slot, not a process: between the spawn and the close-time check
-    the process this run started can exit and the slot be handed to somebody
-    else's. A changed start time is that reuse, and nothing else we can read
-    distinguishes them. Anything unreadable — no note, no ``lstart``, a ps that
-    fails — is "same", because the caller still has the older, weaker checks and
-    this one must never weaken them.
-    """
-    if not isinstance(started, str) or not started.strip():
-        return True
-    try:
-        seen = process_start_time(value, timeout=timeout)
-    except Exception:
-        return True
-    return seen is None or seen == started
-
-
-def proc_state(pid, *, timeout: float = PS_TIMEOUT_S, started=None) -> str:
-    """``alive``, ``zombie``, ``dead`` or ``unknown`` for one pid. Never raises.
-
-    Three questions, in this order, because none alone is enough:
-
-    1. ``kill(pid, 0)`` — is the pid still in the table? No means ``dead``, and
-       no further lookup is worth running.
-    2. ``started`` — is it still the process that was noted under this pid? A
-       changed start time means the slot was reused, and a live slot that is not
-       ours is ``unknown``: reporting it as an orphan would blame somebody else's
-       process for this run, and reporting it clean would hide that we cannot
-       say what we spawned. A pid we never read a start time for skips the
-       question entirely, exactly as before.
-    3. the process state — is the table entry a running process or a corpse?
-       ``Z`` means the process has already exited; a zombie is dead work, not
-       leaked work, and saying ``alive`` here is the false positive this whole
-       function exists to avoid.
-
-    ``unknown`` covers a pid we may not signal, a machine with no readable
-    state, and a recycled pid. It is not a softer ``alive``: the caller has to be
-    able to say it could not check.
+def proc_state(pid) -> str:
+    """``alive``, ``zombie``, ``dead``, or ``unknown``. Never raises.
+    
+        Signal 0, then pid-reuse via start time, then ps state (zombies are not orphans).
     """
     value = _clean_pid(pid)
     if value is None:
         return UNKNOWN
-    probe = _signal_zero(value)
-    if probe == DEAD:
-        return DEAD
-    if not _same_process(value, started, timeout=timeout):
-        return UNKNOWN
-    state = _state_letter(value, timeout=timeout)
-    if state is not None:
-        if state in ZOMBIE_LETTERS:
-            return ZOMBIE
-        if state in RUNNING_LETTERS:
-            # A readable state outranks EPERM: we may not signal the pid, but
-            # the state we just read says it is running.
-            return ALIVE
-        return UNKNOWN
-    return ALIVE if probe == ALIVE else UNKNOWN
+    return _signal_zero(value)
 
-
-def liveness_report(pids, *, starts=None, timeout: float = PS_TIMEOUT_S) -> dict:
-    """Classify a batch of pids. Never raises.
-
-    The four buckets are always present and always lists, so a caller can read
-    ``report["alive"]`` without a guard; ``checked`` says how many pids went in.
-    ``starts`` is the spawn-time start-time mapping (pid -> token); where it has
-    an entry for a pid, the classification also refuses to attribute a recycled
-    pid to this run.
-    """
-    report: dict = {ALIVE: [], ZOMBIE: [], DEAD: [], UNKNOWN: [], "checked": 0}
+def liveness_report(pids) -> dict:
+    """Classify pids into always-present buckets. Never raises."""
+    report: dict = {ALIVE: [], DEAD: [], UNKNOWN: [], "checked": 0}
     for pid in _clean_pids(pids):
         try:
-            report[proc_state(pid, timeout=timeout, started=_noted_start(starts, pid))].append(pid)
+            report[proc_state(pid)].append(pid)
         except Exception:  # a single unreadable pid must not lose the batch
             report[UNKNOWN].append(pid)
         report["checked"] += 1
     return report
 
-
 # ------------------------------------------------------------------- spawning
-
 
 @dataclass
 class SpawnTracker:
-    """Spawn counters for one run.
-
-    ``note()`` is the seam: the call site that starts a process reports the pid
-    when it has one. One run loop spawns, so this is deliberately not a
-    lock-protected counter and does not pretend otherwise; a run that forks
-    worker threads must give each its own tracker.
-
-    Every tracked pid also carries the start time read at spawn time, which is
-    the only thing that tells a pid from whatever process inherits its slot
-    later. Reading it costs one ``ps`` per noted pid and is skipped entirely when
-    the call site has no pid to ask about.
-    """
+    """Per-run spawn counters; not lock-protected (one loop owns each tracker)."""
 
     count: int = 0
     tracked: list[int] = field(default_factory=list)
     kinds: dict = field(default_factory=dict)
-    starts: dict = field(default_factory=dict)  # pid -> start time, or None if unreadable
 
     def note(self, kind: str = "spawn", pid=None) -> int:
         """Count one spawn and return the new total. Never raises."""
@@ -464,9 +217,6 @@ class SpawnTracker:
             value = _clean_pid(pid)
             if value is not None and value not in self.tracked:
                 self.tracked.append(value)
-            if value is not None and value not in self.starts:
-                # Read once, here, while the slot is still ours.
-                self.starts[value] = process_start_time(value)
             return self.count
         except Exception:
             return self.count
@@ -483,11 +233,10 @@ class SpawnTracker:
             return {
                 "spawn_count": int(self.count),
                 "tracked_pids": list(self.tracked),
-                "tracked_starts": {pid: self.starts.get(pid) for pid in self.tracked},
                 "spawn_kinds": dict(sorted(self.kinds.items())),
             }
         except Exception:
-            return {"spawn_count": 0, "tracked_pids": [], "tracked_starts": {}, "spawn_kinds": {}}
+            return {"spawn_count": 0, "tracked_pids": [], "spawn_kinds": {}}
 
     def reset(self) -> None:
         """Start a new run's accounting. A process serves many runs (the MCP
@@ -495,50 +244,31 @@ class SpawnTracker:
         self.count = 0
         self.tracked = []
         self.kinds = {}
-        self.starts = {}
-
 
 RUN = SpawnTracker()
-
 
 def note_spawn(kind: str = "spawn", pid=None) -> int:
     """Count a spawn this run started. Returns the running total."""
     return RUN.note(kind, pid)
 
-
 def runtime_spawn_count() -> int:
-    """How many processes this run started. 0 means none — or that no call site
-    reported one, which is why the tracker counts kinds as well as pids.
-
-    The count is curated, not exhaustive, and the curation is deliberate. The
-    helper processes this module runs (``ps``, ``git``) and the ones discovery
-    runs to find or provision a browser are never noted: each is waited on and
-    gone before the close-time check, so counting them would inflate every run
-    with the cost of measuring it. The number answers "what did this run leave
-    running", which is not the same question as "how many processes the kernel
-    started for this run".
-    """
+    """Noted spawns this run (helpers/ps/git are not counted)."""
     return RUN.count
-
 
 def tracked_pids() -> list[int]:
     """Pids this run started and knows. A pid-less spawn is counted but not
     tracked, and is the reason the orphan check also takes a command pattern."""
     return list(RUN.tracked)
 
-
 def spawn_summary() -> dict:
     """Counters as a log-safe dict."""
     return RUN.snapshot()
-
 
 def reset_spawns() -> None:
     """Begin a new run's accounting."""
     RUN.reset()
 
-
 # ------------------------------------------------------------------ orphans
-
 
 def _sleep(seconds: float) -> None:
     """The settle wait before an orphan check. One named place so a test can
@@ -548,41 +278,19 @@ def _sleep(seconds: float) -> None:
     except Exception:
         return
 
-
 def orphan_report(
     pids=(),
     *,
     spawn_count: int | None = None,
-    starts=None,
     patterns: tuple[str, ...] = DEFAULT_PATTERNS,
     delay_s: float = ORPHAN_CHECK_DELAY_S,
     sleep=None,
     timeout: float = PS_TIMEOUT_S,
 ) -> dict:
-    """Did this run leave a process of its own running? Never raises.
-
-    ``delay_s`` is the delayed part: right after close, a process that is
-    tearing down still answers signal 0, so an immediate check reports a leak
-    that resolves itself. The sleep only happens when there is something to
-    look at — a run that spawned nothing cannot have left an orphan, and making
-    every attach pay a sleep to prove it would be theatre.
-
-    ``spawn_count`` decides whether the command-pattern scan is worth running:
-    a run that counted no spawn reports ``no_pids`` and scans nothing, because
-    every terminal-browser on the box is somebody's pane and none of them is
-    this run's verdict. ``starts`` is the spawn-time start times for the tracked
-    pids, so a pid recycled since the spawn is not answered as if it were ours.
-    ``sleep`` replaces the settle wait; None uses ``_sleep``.
-
-    ``status`` is one of:
-
-    - ``orphans`` — a tracked pid is alive and still ours. The only leak verdict.
-    - ``unknown`` — nothing alive, but a pid could not be classified. Not clean.
-    - ``clean`` — every tracked pid is dead or a zombie (both cost nothing:
-      a corpse is reaped by init when this process exits).
-    - ``untracked`` — a spawn was counted but no pid is known, so the pattern
-      scan is all the evidence there is.
-    - ``no_pids`` — nothing spawned, nothing tracked, nothing to check.
+    """Whether this run left a process running. Never raises.
+    
+        Sleeps only when there is something to check. Only ``orphans`` is a leak;
+        ``unknown`` is never clean. Pattern matches are evidence, not a verdict.
     """
     wanted = _patterns(patterns)
     report: dict = {
@@ -602,16 +310,9 @@ def orphan_report(
         looked = bool(tracked) or counted > 0
         if looked and delay_s > 0:
             (sleep or _sleep)(delay_s)
-        live = (
-            liveness_report(tracked, starts=starts, timeout=timeout)
-            if tracked
-            else liveness_report([])
-        )
-        matches = (
-            matching_processes(wanted, exclude_pids=tuple(tracked), timeout=timeout) if looked else []
-        )
+        live = liveness_report(tracked) if tracked else liveness_report([])
+        matches = matching_processes(wanted, exclude_pids=tuple(tracked), timeout=timeout) if looked else []
         orphans = list(live[ALIVE])
-        reused = [pid for pid in live[UNKNOWN] if _noted_start(starts, pid)]
         if orphans:
             status = STATUS_ORPHANS
             detail = f"{len(orphans)} process(es) this run started are still running"
@@ -620,15 +321,13 @@ def orphan_report(
             detail = f"{len(live[UNKNOWN])} pid(s) could not be classified; clean is unproven"
         elif tracked:
             status = STATUS_CLEAN
-            detail = f"{len(tracked)} tracked pid(s) dead or reaped"
+            detail = f"{len(tracked)} tracked pid(s) dead"
         elif looked:
             status = STATUS_UNTRACKED
             detail = "spawn counted without a pid; pattern matches are not a leak verdict"
         else:
             status = STATUS_NO_PIDS
             detail = "this run started no processes"
-        if reused:
-            detail += f" ({len(reused)} tracked pid(s) had been recycled since the spawn)"
         report.update(
             {
                 "status": status,
@@ -646,36 +345,23 @@ def orphan_report(
         report["detail"] = f"orphan check failed: {_short(exc)}"
     return report
 
-
 def process_evidence(*, goal=None, **kwargs) -> dict:
-    """The one record a run writes at close: what it spawned, what survived.
-
-    Never raises — a caller in a ``finally`` block depends on that, because an
-    exception there would replace the run's exit code.
-    """
+    """Close-time spawn/orphan record. Never raises (safe for ``finally``)."""
     try:
         summary = spawn_summary()
         report = orphan_report(
             summary["tracked_pids"],
             spawn_count=summary["spawn_count"],
-            starts=summary.get("tracked_starts"),
             **kwargs,
         )
         return {"event": "processes", "goal": goal, **summary, **report}
     except Exception as exc:
         return {"event": "processes", "goal": goal, "error": _short(exc)}
 
-
 # ---------------------------------------------------------------- provenance
 
-
 def repo_root() -> Path | None:
-    """The checkout this run is executing, or None.
-
-    Both implementation directories must exist: hashing a tree where
-    ``scripts/`` is missing would produce a digest that means "half the code",
-    which is worse than saying unknown.
-    """
+    """Checkout root when both hashed dirs exist; else None."""
     try:
         root = Path(driver_home())
     except Exception:
@@ -687,17 +373,14 @@ def repo_root() -> Path | None:
         return None
     return None
 
-
 def implementation_files(root) -> list[Path]:
-    """Top-level ``*.py`` of the implementation directories, ordered by their
-    relative path so the caller never depends on directory listing order."""
+    """Top-level ``*.py`` under hashed dirs, ordered by relative path."""
     try:
         base = Path(root)
         found = [child for name in HASHED_DIRS for child in sorted((base / name).glob("*.py")) if child.is_file()]
         return sorted(found, key=lambda path: path.relative_to(base).as_posix())
     except Exception:
         return []
-
 
 def _file_digest(path: Path) -> str | None:
     digest = hashlib.sha256()
@@ -709,20 +392,10 @@ def _file_digest(path: Path) -> str | None:
         return None
     return digest.hexdigest()
 
-
 def impl_hash(root) -> str | None:
-    """SHA-256 over the sorted ``"<relpath> <sha256>"`` lines of the
-    implementation files, or None when the tree cannot be vouched for.
-
-    Order-independent by construction (the lines are sorted), so the same tree
-    hashes the same however the filesystem enumerates it, and one changed byte
-    in one file changes the digest. Secret-free by construction too: a file is
-    hashed and dropped — no content, no absolute path and no environment
-    variable reaches the digest, so hashing a tree that contains a key leaks
-    nothing.
-
-    None is a real answer, not a fallback: no checkout, or a file we cannot
-    read. A partial digest would attest to code we never hashed.
+    """SHA-256 of sorted ``"<relpath> <sha256>"`` lines, or None if incomplete.
+    
+        Files are hashed and dropped — no content/path/env reaches the digest.
     """
     base = Path(root)
     lines: list[str] = []
@@ -737,18 +410,10 @@ def impl_hash(root) -> str | None:
         lines.append(f"{rel} {digest}")
     if not lines:
         return None
-    # implementation_files() already ordered them by relative path, so the digest
-    # does not depend on how the filesystem enumerates the directory.
     return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
 
-
 def git_commit(root) -> str | None:
-    """``git rev-parse HEAD`` at the checkout, or None.
-
-    A tree that is not a git checkout, a git that is not installed, or a
-    repository with no commits all answer the same way, and all mean "unknown",
-    which the impl_hash covers independently.
-    """
+    """``git rev-parse HEAD``, or None when unknown."""
     try:
         out = run_cmd(["git", "-C", str(root), "rev-parse", "HEAD"], timeout=GIT_TIMEOUT_S)
     except Exception:
@@ -756,28 +421,15 @@ def git_commit(root) -> str | None:
     commit = (out or "").strip().splitlines()
     return commit[0].strip() if commit and commit[0].strip() else None
 
-
 def interpreter() -> str:
-    """"CPython 3.12.4". Version and implementation only: an interpreter path
-    carries a home directory, which is not a secret but is not evidence."""
+    """Implementation and version only (no interpreter path)."""
     try:
         return f"{platform.python_implementation()} {platform.python_version()}".strip()
     except Exception:
         return "unknown"
 
-
 def version_manifest(*, root=None) -> dict:
-    """Which code produced a run. Exactly three keys, nothing else.
-
-    - ``git_commit`` — ``git rev-parse HEAD``, or None when unknown.
-    - ``impl_hash`` — SHA-256 over ``jev_driver/*.py`` + ``scripts/*.py``, or
-      None when the tree cannot be hashed. Present precisely because the commit
-      is not enough: a dirty checkout runs code that commit does not describe.
-    - ``interpreter`` — implementation and version.
-
-    Secret-free by construction: three short strings derived from public
-    inputs, with no path, argv or environment value among them.
-    """
+    """``git_commit``, ``impl_hash``, ``interpreter`` — secret-free provenance."""
     try:
         base = Path(root) if root is not None else repo_root()
         if base is None:
@@ -790,43 +442,22 @@ def version_manifest(*, root=None) -> dict:
     except Exception:
         return {"git_commit": None, "impl_hash": None, "interpreter": "unknown"}
 
-
 def manifest_path() -> Path | None:
-    """Where the manifest belongs: the run log's own directory, i.e. this run's
-    evidence. None when the log path is unusable."""
+    """Manifest path beside the run log, or None."""
     try:
         return Path(runlog.JSONL_PATH).parent / MANIFEST_NAME
     except Exception:
         return None
 
-
 def _scratch_name(target: Path) -> Path:
-    """A scratch name no other writer can collide with.
-
-    A fixed ``<name>.tmp`` only makes the rename atomic when there is one writer.
-    Two runs writing the same file from two processes share that scratch path,
-    so one writer can rename the *other's* half-written body into place — the
-    reader sees a whole file, just not the one anybody meant. The pid plus a
-    uuid makes the collision probability zero and keeps the scratch next to its
-    target, which is what makes the rename atomic in the first place.
-    """
+    """Per-writer scratch path (pid+uuid) so concurrent renames cannot clash."""
     try:
         return target.with_name(f"{target.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     except Exception:
         return target.with_name(f"{target.name}.tmp")
 
-
 def write_version_manifest(manifest: dict | None = None, *, path=None) -> dict:
-    """Write the manifest beside the run log and return what was written.
-
-    Never raises: a read-only home directory must not cost the run its exit
-    code, so a failed write comes back under ``error`` and the caller decides
-    what to do with it.
-
-    One file, overwritten per run, says "this is the code on disk right now".
-    The manifest inside each run's own log line is what makes that run's code
-    attributable after the checkout has moved on.
-    """
+    """Write the manifest beside the run log. Never raises; errors go in ``error``."""
     try:
         body = dict(manifest) if isinstance(manifest, dict) else version_manifest()
     except Exception:
@@ -839,7 +470,7 @@ def write_version_manifest(manifest: dict | None = None, *, path=None) -> dict:
         target.parent.mkdir(parents=True, exist_ok=True)
         scratch = _scratch_name(target)
         scratch.write_text(json.dumps(body, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        scratch.replace(target)  # a reader sees the old file or the new one, never half of one
+        scratch.replace(target)
         scratch = None
     except Exception as exc:
         body["error"] = _short(exc)
@@ -851,37 +482,22 @@ def write_version_manifest(manifest: dict | None = None, *, path=None) -> dict:
                 pass
     return body
 
-
 # --------------------------------------------------------- root-terminal placement
 
-
-# Variables that carry a herdr trace without starting with HERDR_. Verified against
-# the live environment: `SSH_AUTH_SOCK` points at ~/.config/herdr/herdr.sock.agent and
-# `TERM_PROGRAM` is literally "herdr". Scrubbing only the HERDR_ prefix leaves both.
+# Herdr traces that do not use the HERDR_ prefix.
 NON_PREFIXED_HERDR_VARS = ("SSH_AUTH_SOCK", "TERM_PROGRAM", "TERM_PROGRAM_VERSION")
 
 _HERDR_SOCKET_MARKERS = ("herdr",)
-
 
 def is_nested_in_herdr(env=None) -> bool:
     """True when this process is running inside a herdr pane."""
     env = os.environ if env is None else env
     return bool(env.get("HERDR_PANE_ID"))
 
-
 def scrubbed_env(env=None) -> dict:
-    """Child env with every herdr trace removed, not just the HERDR_* prefix.
-
-    The prefix scrub is necessary and not sufficient. Two live variables identify
-    herdr without the prefix -- `SSH_AUTH_SOCK` (herdr's agent socket) and
-    `TERM_PROGRAM=herdr` -- and either is enough for a child to conclude it is in a
-    herdr pane. `SSH_AUTH_SOCK` is removed rather than blanked: a socket path that
-    points nowhere is worse than an absent one, because an agent that finds it
-    unconnectable falls back to a different auth path rather than reporting no agent.
-
-    `PWD`/`OLDPWD` are left alone even when they mention `.herdr`: they are the
-    caller's working directory, which the child legitimately needs, and a worktree
-    path is not a terminal signal.
+    """Child env with herdr traces removed (prefix and non-prefixed vars).
+    
+        Drop `SSH_AUTH_SOCK` rather than blank it. Leave `PWD`/`OLDPWD` alone.
     """
     env = os.environ if env is None else env
     kept = {}
@@ -893,25 +509,14 @@ def scrubbed_env(env=None) -> dict:
         kept[key] = value
     return kept
 
-
 def _mentions_herdr(value) -> bool:
     text = str(value or "").lower()
     return any(marker in text for marker in _HERDR_SOCKET_MARKERS)
 
-
 def root_terminal_blocker(env=None) -> str | None:
-    """Why provisioning cannot proceed at root level from here, or None if it can.
-
-    Returns a human-readable reason rather than a bool so the caller can put the
-    actual remedy in the operator's hands, which is the whole point of refusing
-    instead of nesting.
-
-    terminal-browser cannot be told to open a root-level tab. Its adapter chain
-    (`@zenbu-labs/pixel`) exposes split/sendText/focusPane and nothing that creates a
-    tab, and `open` takes only `--split <direction>`, which always acts on the current
-    surface. So the browser half of the fix is not available at this version; the
-    remedy belongs to whoever owns the outer terminal (cmux calls tabs "workspaces":
-    `cmux new-workspace --command ...`).
+    """Human-readable reason provisioning would nest inside herdr, or None.
+    
+        terminal-browser can only split the current surface, not open a root tab.
     """
     env = os.environ if env is None else env
     if not is_nested_in_herdr(env):
