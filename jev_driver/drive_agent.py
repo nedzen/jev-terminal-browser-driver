@@ -277,11 +277,41 @@ class DriveAgent(Agent):
 
     def _note_model_blocked(self):
         state = self.state
+        decision = (state.get("decisions") or [None])[-1] or {}
+        # Logged before the guards, and on every tick the model chose BLOCKED, so
+        # the record survives `_blocked_rescue` converting the run to done. A
+        # BLOCKED that was rescued is exactly the case worth being able to audit.
+        if decision.get("choice") == "BLOCKED" or decision.get("operation") == "BLOCKED":
+            self._log_model_blocked(decision)
         if state.get("status") != "blocked" or state.get("stop_reason"):
             return
-        decision = (state.get("decisions") or [None])[-1] or {}
         if decision.get("choice") == "BLOCKED" or decision.get("operation") == "BLOCKED":
             state["stop_reason"] = "model_blocked"
+
+    def _log_model_blocked(self, decision: dict) -> None:
+        """The four facts that decide whether a BLOCKED was earned: what DONE was
+        worth on the same page, how many targets were even on offer, where the run
+        ended up, and whether this run had navigated to get here.
+
+        `done_p` is the number that was compared against DONE_MIN, and
+        `moved_on` is the precondition of the `_reject_weak_done` bypass, so both
+        are what a reader needs to say whether a BLOCKED was the model's honest
+        read or the framing losing a coin-flip.
+        """
+        state = self.state
+        page = state.get("page") or {}
+        write_event(
+            {
+                "event": "model_blocked",
+                "goal": state.get("goal"),
+                "reason": "model_blocked",
+                "done_p": round(done_probability(decision), 4),
+                "ranked_targets_count": len(decision.get("target_probabilities") or {}),
+                "final_url": page.get("url"),
+                "moved_on": self._moved_on(page),
+                "page_text": (page.get("text") or "")[:150],
+            }
+        )
 
     def _note_text_helper(self, before: int) -> None:
         """Count helper calls by how many the loop appended, so a cached value costs nothing."""

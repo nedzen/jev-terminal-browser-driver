@@ -70,6 +70,14 @@ TRACE_FIELDS = (
     TraceField("why"),
     TraceField("error"),
     TraceField("degenerate", truthy=True),
+    # Decision provenance, so a run is attributable and a drift is visible in the
+    # log rather than inferred from it. All four are `present`: a null is the
+    # answer "the provider did not report this", which is the finding, and it has
+    # to be distinguishable from an older record written before the field existed.
+    TraceField("model"),
+    TraceField("model_version"),
+    TraceField("confidence"),
+    TraceField("question_spec_hash"),
     TraceField("ranked_ops"),
     TraceField("ranked_targets"),
     TraceField("page_text", cap=TRACE_PAGE_TEXT, truthy=True),
@@ -125,6 +133,24 @@ def last_decision(snap: dict) -> dict:
     return decisions[-1] if decisions else {}
 
 
+def decision_provenance(decision: dict) -> dict:
+    """Which model answered, which version of it, how sure it was, and under which prompt.
+
+    ``model`` is the id this run *asked* for, read off the recorded request rather
+    than off the response, because the resolved id is the operator's configuration
+    and the response's own ``model`` is the provider's echo of it. Keeping the two
+    apart is what makes a silent substitution visible instead of plausible.
+    """
+    decision = decision or {}
+    request = decision.get("request") or {}
+    return {
+        "model": request.get("model"),
+        "model_version": decision.get("model_version"),
+        "confidence": decision.get("confidence"),
+        "question_spec_hash": decision.get("question_spec_hash"),
+    }
+
+
 def build_trace_record(rec: dict, decision: dict, *, goal: str) -> dict:
     """One run-log record: the tick row's facts, plus what the decision ranked.
 
@@ -144,6 +170,7 @@ def build_trace_record(rec: dict, decision: dict, *, goal: str) -> dict:
         **rec,
         "event": trace_kind(rec.get("status"), rec.get("error")),
         "goal": goal,
+        **decision_provenance(decision),
         "ranked_ops": top_probs(decision.get("operation_probabilities"), limit=TRACE_PROBS_LIMIT),
         "ranked_targets": top_probs(decision.get("target_probabilities"), labels, limit=TRACE_PROBS_LIMIT),
     }

@@ -64,11 +64,60 @@ def test_the_empty_record_is_the_one_the_log_has_always_written():
         "why": None,
         "error": None,
         "degenerate": None,
+        "model": None,
+        "model_version": None,
+        "confidence": None,
+        "question_spec_hash": None,
         "ranked_ops": [],
         "ranked_targets": [],
         "page_text": None,
         "reason": None,
     }
+
+
+def test_provenance_names_the_model_that_answered_under_which_prompt():
+    """A run is attributable: resolved id, provider version, confidence, prompt."""
+    record = build_trace_record(
+        {},
+        {
+            "request": {"model": "jev-1.13.0"},
+            "model_version": "2026-10-02",
+            "confidence": 0.62,
+            "question_spec_hash": "c81014bb333236aa",
+        },
+        goal="G",
+    )
+    assert record["model"] == "jev-1.13.0"
+    assert record["model_version"] == "2026-10-02"
+    assert record["confidence"] == 0.62
+    assert record["question_spec_hash"] == "c81014bb333236aa"
+
+
+def test_a_provider_that_reports_no_version_leaves_an_explicit_null():
+    """Absent is not the same answer as unreported, and null is what says which.
+
+    `model_version` was null on every observed response, so this is the shape a
+    real run has today: drift is currently undetectable from the log, and the
+    record has to be able to state that rather than omit the key.
+    """
+    record = build_trace_record(
+        {},
+        {"request": {"model": "jev-1.13.0"}, "model_version": None, "confidence": 0.3},
+        goal="G",
+    )
+    assert "model_version" in record
+    assert record["model_version"] is None
+
+
+def test_the_requested_model_id_is_read_from_the_request_not_the_response_echo():
+    """The resolved id is the operator's configuration; the response's own `model`
+    is the provider's echo. A substitution is only visible if they are read apart."""
+    record = build_trace_record(
+        {},
+        {"request": {"model": "jev-1.13.0"}, "model": "jev-1.99.0"},
+        goal="G",
+    )
+    assert record["model"] == "jev-1.13.0"
 
 
 def test_page_text_is_capped_at_the_log_limit_not_the_row_limit():
