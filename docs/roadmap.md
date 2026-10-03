@@ -154,8 +154,14 @@ plugin, Tier 1–4, hardening A–C, debloat, rename. Reinstall sweep done.
   pinned by integration test). Items 5–6 deferred follow-ups.
   (b) `#jev=` marker observe/act staleness (run 1 evidence, intermittent —
   did NOT reproduce on run 3) — filed, NOT started.
-- Owner-only pending, untouched: GitHub repo rename click; `founder` /
-  `intern` profile re-link + settings re-entry.
+- Owner-only pending, untouched: GitHub repo rename click (owner, very end);
+  `founder` / `intern` profile re-link + settings re-entry.
+- Follow-up queue (non-blocking polish, worked only when the suite waits):
+  F1 retention/prune job for /tmp/wwwdrive-runs (30-day/tag rule is manual);
+  F2 split test_harness.py (550+ lines) + test_end_state_guard.py (404) by
+  behavior; F3 CLI entry point for scripts/live (manifest path arg; S1a ran
+  via /tmp driver script); F4 extra runner guards (duplicate-row dedup on
+  operator re-invocation; pane-busy refuse before browser time).
 
 ## Process notes (2026-10-03)
 
