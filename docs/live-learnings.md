@@ -54,3 +54,5 @@ both real drives, both HIT; the duplication is operator re-invocation, noted.
 | S5d-b23409daae | S5d | github.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | github.com/search | 4 | 0 | 873.0 | feca83330992f854 | 551783c | 18.64 |
 | S6a-83f8edf87b | S6a | github.com | R | mandatory | HIT | - | - | model_done | github.com/notifications | 1 | 0 | 1359.0 | feca83330992f854 | c6f1295 | 1.57 |
 | S6b-664a2ed5f3 | S6b | x.com | R | mandatory | MISS | sev-2 | wrong-end-state | action_budget | x.com/home | 13 | 0 | 1623.0 | feca83330992f854 | c6f1295 | 8.4 |
+| S6c-01bcf4eadb | S6c | kalshi.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | kalshi.com/markets/kxfeddecision/fed-meeting/kxfeddecision-26oct | 5 | 0 | 1587.0 | feca83330992f854 | fab40d6 | 4.77 |
+| S7a-80feaef951 | S7a | github.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | github.com/search | 4 | 0 | 1620.0 | feca83330992f854 | fab40d6 | 6.07 |
