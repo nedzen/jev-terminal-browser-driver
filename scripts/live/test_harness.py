@@ -443,7 +443,7 @@ def _run_one(scenarios, test=None, tmp_path=None, **kwargs):
     # slice dir was the one that leaked -- run_test used to default it to the
     # production /tmp/wwwdrive-runs and no self-test passed one, so a full
     # self-test run littered 1352 files there.
-    kwargs.setdefault("ledger", root / "ledger.md")
+    kwargs.setdefault("ledger", root / "ledger.jsonl")
     kwargs.setdefault("log_dir", root)
     kwargs.setdefault("slice_dir", root / "slices")
     patcher = _isolated_driver_state(root)
@@ -536,28 +536,15 @@ def test_the_scoreboard_reports_hits_and_sev1_separately(tmp_path):
     assert board["hit_rate"] == 0.5
 
 
-def _shipped_ledger() -> str:
-    return (Path(__file__).resolve().parents[2] / "docs" / "live-learnings.md").read_text(
-        encoding="utf-8")
-
-
-def _ledger_header_block(text: str) -> list[str]:
-    """The header and its separator, which is what must match the writer.
-
-    Not the whole file: the ledger is *meant* to accumulate one row per run, so
-    comparing it whole would fail the moment a real run landed -- which is exactly
-    what happened, and it made this test report a false problem.
-
-    The separator is found by its own shape (only pipes and dashes) rather than a
-    spelling, because it is written as `|---|` and a `" | --- "` prefix test missed
-    it.
-    """
-    lines = text.splitlines()
-    separator = next(
-        i for i, line in enumerate(lines)
-        if line.startswith("|-") and set(line) <= set("|-")
-    )
-    return lines[: separator + 1]
+def _shipped_ledger_rows() -> list[dict]:
+    path = Path(__file__).resolve().parents[2] / "docs" / "live-ledger.jsonl"
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        rows.append(json.loads(line))
+    return rows
 
 
 # --------------------------------------------------------------------------
@@ -638,45 +625,48 @@ def test_the_isolation_quarantine_never_touches_the_real_log_dir(tmp_path):
     client = _client([HIT])
     try:
         runner.run_test(client, _test(), log_dir=tmp_path, slice_dir=tmp_path / "slices",
-                        ledger=tmp_path / "ledger.md")
+                        ledger=tmp_path / "ledger.jsonl")
     finally:
         client.close()
     after = sorted(p.name for p in real_dir.iterdir()) if real_dir.is_dir() else []
     assert before == after, f"the self-test disturbed {real_dir}: {set(after) ^ set(before)}"
 
 
-def test_the_shipped_ledger_header_is_the_one_the_runner_appends_under():
-    """Header and writer are two literals in two files; they drift silently and a
-    row under the wrong header is unreadable."""
-    assert _ledger_header_block(_shipped_ledger()) == _ledger_header_block(runner.LEDGER_HEADER)
-
-
-def test_every_shipped_ledger_row_has_one_cell_per_column():
-    """The real invariant on a ledger that accumulates: no row may be short or long,
-    or a column silently shifts and every later reading is off by one."""
-    lines = _shipped_ledger().splitlines()
-    columns = len(_ledger_header_block(runner.LEDGER_HEADER)[-2].split("|"))
-    rows = [line for line in lines if line.startswith("| ") and "---" not in line][1:]
+def test_the_shipped_ledger_is_valid_jsonl():
+    """Every historical row must parse; a broken line shifts every later reading."""
+    rows = _shipped_ledger_rows()
+    assert len(rows) >= 24
     for row in rows:
-        assert len(row.split("|")) == columns, f"row has the wrong cell count: {row[:80]}"
+        assert "run_id" in row and "outcome_class" in row
 
 
-def test_a_written_row_has_one_cell_per_ledger_column(tmp_path):
-    """One column per cell in the header; a short row reads as empty."""
+def test_every_shipped_ledger_row_has_the_stable_fields():
+    required = set(runner.LEDGER_FIELDS) - {"void", "owner_flag"}
+    for row in _shipped_ledger_rows():
+        assert required <= set(row), f"missing fields on {row.get('run_id')}"
+
+
+def test_a_written_row_is_one_json_object(tmp_path):
     client = _client([HIT])
     patcher = _isolated_driver_state(tmp_path)
+    ledger = tmp_path / "ledger.jsonl"
     try:
-        record = runner.run_test(client, _test(), log_dir=tmp_path,
-                                 slice_dir=tmp_path / "slices",
-                                 ledger=tmp_path / "ledger.md")
+        record = runner.run_test(
+            client,
+            _test(),
+            log_dir=tmp_path,
+            slice_dir=tmp_path / "slices",
+            ledger=ledger,
+        )
     finally:
         client.close()
         patcher.undo()
-    rows = [line for line in (tmp_path / "ledger.md").read_text().splitlines()
-            if line.startswith("| ") and "---" not in line]
-    assert len(rows) == 2  # header + one run
-    assert len(rows[1].split("|")) - 2 == len(rows[0].split("|")) - 2
-    assert record["run_id"] in rows[1]
+    lines = [line for line in ledger.read_text().splitlines() if line.strip()]
+    assert len(lines) == 1
+    row = json.loads(lines[0])
+    assert row["run_id"] == record["run_id"]
+    assert row["outcome_class"]
+    assert row["disposition"]
 
 
 # --------------------------------------------------------------------------
@@ -950,8 +940,8 @@ def test_a_crash_is_voided_and_the_run_is_retried_once(tmp_path):
     record = _run_one([CRASH, HIT], tmp_path=tmp_path)
     assert record["outcome_class"] == taxonomy.HIT
     assert record["attempt"] == 2
-    ledger = (tmp_path / "ledger.md").read_text()
-    assert "CRASH (void)" in ledger
+    rows = [json.loads(line) for line in (tmp_path / "ledger.jsonl").read_text().splitlines() if line.strip()]
+    assert any(r.get("disposition") == "CRASH (void)" or r.get("void") for r in rows)
 
 
 def test_two_consecutive_crashes_escalate_and_are_never_a_product_miss(tmp_path):
@@ -965,7 +955,8 @@ def test_a_consequential_element_aborts_the_run_and_flags_the_owner(tmp_path):
     test = _test(deny_elements=["buy"])
     with pytest.raises(runner.SuiteAbort, match="consequential element"):
         _run_one([CONSEQUENTIAL_HIT], test=test, tmp_path=tmp_path)
-    assert "consequential-element" in (tmp_path / "ledger.md").read_text()
+    body = (tmp_path / "ledger.jsonl").read_text()
+    assert "consequential-element" in body
 
 
 def test_a_recovered_hit_records_its_recovery_cost(tmp_path):
@@ -1143,7 +1134,7 @@ def test_a_chain_quarantines_once_before_the_chain_and_never_between_drives(tmp_
     patcher = _isolated_driver_state(tmp_path)
     try:
         runner_mod.run_test(client, test, log_dir=tmp_path, slice_dir=tmp_path / "slices",
-                            ledger=tmp_path / "ledger.md")
+                            ledger=tmp_path / "ledger.jsonl")
     finally:
         patcher.undo()
         runner_mod.isolation.quarantine_last_page = original
@@ -1265,7 +1256,7 @@ def test_a_run_whose_log_dir_is_misdirected_is_refused_and_never_drives(tmp_path
     try:
         record = runner.run_test(client, _test(), log_dir=tmp_path,
                                  slice_dir=tmp_path / "slices",
-                                 ledger=tmp_path / "ledger.md")
+                                 ledger=tmp_path / "ledger.jsonl")
     finally:
         client.close()
     assert record["outcome_class"] == taxonomy.CRASH
@@ -1345,7 +1336,7 @@ def test_the_runner_refuses_on_the_directory_alone_not_only_via_quarantine(tmp_p
     try:
         record = runner.run_test(client, _test(), log_dir=tmp_path,
                                  slice_dir=tmp_path / "slices",
-                                 ledger=tmp_path / "ledger.md")
+                                 ledger=tmp_path / "ledger.jsonl")
     finally:
         client.close()
         patcher.undo()
@@ -1506,7 +1497,7 @@ def test_run_suite_accepts_a_goal_style_manifest(tmp_path):
         out = runner.run_suite(
             {"tests": [_test(goal="Go to example.com and click Learn more.")]},
             client=client, log_dir=root, slice_dir=root / "slices",
-            ledger=root / "ledger.md")
+            ledger=root / "ledger.jsonl")
     finally:
         client.close()
         patcher.undo()

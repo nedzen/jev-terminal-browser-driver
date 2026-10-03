@@ -8,7 +8,8 @@ gets one, because a run that left no trace is how a suite ends up looking green
 over a test that never executed.
 
 Slices land in `/tmp/wwwdrive-runs/<run_id>.jsonl` (v3 retention: pruned at 30
-days or on a release tag) and rows in `docs/live-learnings.md`, one per run.
+days or on a release tag). The learnings ledger is append-only JSONL at
+`docs/live-ledger.jsonl` (one object per run); see `docs/live-testing.md`.
 
 Stdlib only.
 """
@@ -40,26 +41,29 @@ from scripts.live.taxonomy import (
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SLICE_DIR = Path("/tmp/wwwdrive-runs")
-LEDGER = REPO_ROOT / "docs" / "live-learnings.md"
+LEDGER = REPO_ROOT / "docs" / "live-ledger.jsonl"
 
-LEDGER_HEADER = """# Live-test learnings ledger
-
-One row per run, appended by `scripts/live`. `outcome` is the v3.1 partition
-(HIT / HIT-recovered / MISS / FALSE-DONE / BLOCKED-honest / BLOCKED-unjustified /
-STALL / CRASH); `sev` is sev-1 (FALSE-DONE only, must stay 0) or sev-2. `bytes/call`
-is the caller-ingested gate; driver Jev token totals are diagnosis only. Slices:
-`/tmp/wwwdrive-runs/<run_id>.jsonl`. S6x rows carry presence-only values, never
-amounts.
-
-Columns: `url` is final_url on host+path only, `waste` is measured waste-ticks
-(post-satisfaction + stale retries only -- the remainder has no oracle), `commit`
-is abbreviated to 7. A `void` row is a CRASH retry attempt and does not count
-toward the scoreboard. Free-text notes are in the run record and the JSONL slice,
-not in this table: a wrapping paragraph in a ledger cell is unreadable.
-
-| run_id | test | site | tier | cap | outcome | sev | cause | stop | url | ticks | waste | B/c | hash | commit | wall |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-"""
+# Fields written to each ledger JSONL object (stable for scoreboard tooling).
+LEDGER_FIELDS = (
+    "run_id",
+    "test_id",
+    "site",
+    "tier",
+    "matrix_cap",
+    "outcome_class",
+    "severity",
+    "failure_cause",
+    "stop_reason",
+    "final_url_host_path",
+    "ticks",
+    "waste_ticks",
+    "bytes_per_call",
+    "spec_hash",
+    "commit",
+    "wall_s",
+    "void",
+    "owner_flag",
+)
 
 # v3.1 F5: a CRASH voids its run and gets one retry; two consecutive crashes are a
 # harness-error investigation and never a product MISS.
@@ -108,14 +112,7 @@ def _run_id(test_id: str) -> str:
 
 
 def _disposition_cell(row: dict) -> str:
-    """The outcome cell, carrying any marker that changes how the row counts.
-
-    A voided CRASH retry and a safety-abort are both ledger rows, and without a
-    marker in the table a reader cannot tell them from scored runs -- which is
-    exactly the confusion the scoreboard's void exclusion exists to prevent. The
-    marker lives here rather than in a free-text notes column because a wrapping
-    paragraph is unreadable in a scan table.
-    """
+    """Outcome label for humans (void / owner_flag markers included)."""
     outcome = row.get("outcome_class") or ("PENDING" if row.get("needs_human_verdict") else "-")
     if row.get("void"):
         return f"{outcome} (void)"
@@ -124,29 +121,62 @@ def _disposition_cell(row: dict) -> str:
     return str(outcome)
 
 
-def _append_ledger(row: dict, ledger: Path | None = None) -> None:
-    """Append one row, creating the ledger with its header if it is new.
+def _ledger_object(row: dict) -> dict:
+    """Stable JSONL record: known fields only, commit abbreviated to 7."""
+    record = {}
+    for key in LEDGER_FIELDS:
+        if key == "commit":
+            record[key] = (row.get("commit") or "")[:7] or None
+        elif key == "void":
+            if row.get("void"):
+                record[key] = True
+        elif key == "owner_flag":
+            if row.get("owner_flag"):
+                record[key] = row.get("owner_flag")
+        else:
+            value = row.get(key)
+            record[key] = None if value in ("",) else value
+    record["disposition"] = _disposition_cell(row)
+    return record
 
-    `ledger` resolves inside the function on purpose. As a default argument it
-    would be bound at import, which means a caller that redirects the module
-    constant is ignored -- and a self-test then appends its rows to the real
-    `docs/live-learnings.md` instead of a tmp file.
-    """
+
+def _append_ledger(row: dict, ledger: Path | None = None) -> None:
+    """Append one JSONL object. Path resolves at call time (never import-bound)."""
     ledger = Path(ledger) if ledger is not None else LEDGER
     ledger.parent.mkdir(parents=True, exist_ok=True)
-    if not ledger.exists() or ledger.read_text(encoding="utf-8").strip() == "":
-        ledger.write_text(LEDGER_HEADER, encoding="utf-8")
-    cells = [
-        row.get("run_id"), row.get("test_id"), row.get("site"), row.get("tier"),
-        row.get("matrix_cap"), _disposition_cell(row),
-        row.get("severity") or "-", row.get("failure_cause") or "-",
-        row.get("stop_reason") or "-",
-        row.get("final_url_host_path") or "-", row.get("ticks"), row.get("waste_ticks"),
-        row.get("bytes_per_call"),
-        row.get("spec_hash"), (row.get("commit") or "")[:7], row.get("wall_s"),
-    ]
     with ledger.open("a", encoding="utf-8") as handle:
-        handle.write("| " + " | ".join("" if c is None else str(c) for c in cells) + " |\n")
+        handle.write(json.dumps(_ledger_object(row), ensure_ascii=False, default=str) + "\n")
+
+
+def summarize_ledger(path: Path | None = None, *, window: int | None = 2) -> dict:
+    """Scoreboard counts from the JSONL ledger.
+
+    ``window=2`` keeps historical window-2 rows plus any row without a window
+    field (new appends). Void retries never count.
+    """
+    path = Path(path) if path is not None else LEDGER
+    counts: dict[str, int] = {}
+    scored = 0
+    if not path.is_file():
+        return {"scored": 0, "outcomes": counts}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if row.get("void"):
+            continue
+        if window is not None:
+            w = row.get("window")
+            if w is not None and w != window:
+                continue
+        scored += 1
+        key = row.get("outcome_class") or "?"
+        counts[key] = counts.get(key, 0) + 1
+    return {"scored": scored, "outcomes": counts}
 
 
 def write_slice(run_id: str, events, *, slice_dir, redact: str | None = None) -> Path:

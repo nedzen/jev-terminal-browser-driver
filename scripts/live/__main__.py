@@ -108,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
         "--ledger",
         type=Path,
         default=None,
-        help="Learnings ledger path (default: docs/live-learnings.md).",
+        help="Learnings ledger path (default: docs/live-ledger.jsonl).",
     )
     ns = parser.parse_args(argv)
 
