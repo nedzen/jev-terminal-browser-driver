@@ -662,13 +662,22 @@ class DriveAgent(Agent):
         return self.snapshot()
 
     def _reject_weak_done(self):
-        """Do not finish on a low-confidence DONE or on a page that is still only labels."""
+        """Do not finish on a weak DONE, on a zero-action DONE, or on a label-only page."""
         state = self.state
         decision = state.get("decision")
         page = state.get("page") or {}
         if not decision or decision.get("choice") != "DONE":
             return None
-        if done_acceptable(decision, page):
+        # `history` is the run's performed-action log: `_remember_click` appends
+        # only when an action actually went out, so its length is the count of
+        # actions executed, not the count of decisions made.
+        performed = len(state.get("history") or [])
+        # A run whose clock is already spent cannot click or type anything else, so
+        # refusing its zero-action DONE can only convert a finish into a failure.
+        # Exempt that case (DONE_MIN still applies); the certainty requirement is
+        # aimed at runs that still had options and spent none of them.
+        effective = None if (performed == 0 and self._time_budget_spent()) else performed
+        if done_acceptable(decision, page, executed_actions=effective):
             return None
         if self._moved_on(page) and _top_operation(decision) == "DONE" and not page_is_shell(page.get("text")):
             return None

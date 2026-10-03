@@ -11,7 +11,7 @@ import pytest
 from jev_driver import agent as loop
 from jev_driver import cli, drive_agent
 from jev_driver.browser import fingerprint
-from jev_driver.readiness import REASON_WHY
+from jev_driver.readiness import REASON_WHY, done_acceptable
 
 URL = "https://example.test/widget"
 GOAL = "Open the widget panel"
@@ -124,6 +124,94 @@ def _events(tmp_path, reason=None):
     path = tmp_path / "run-log" / "drive.jsonl"
     rows = [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
     return [row for row in rows if reason is None or row.get("reason") == reason]
+
+
+# --------------------------------------------------------------------------
+# A DONE that executed nothing (the seven sev-1 rows in the live ledger)
+# --------------------------------------------------------------------------
+
+# Every score below is the operation head as the backend actually returned it for
+# that run, read back from drive.jsonl. DONE_MIN alone let all three false-dones
+# through -- M15 sat exactly on the threshold -- which is why DONE_MIN is a
+# confidence gate and cannot be the only one.
+
+
+def _done(probabilities):
+    """A DONE decision carrying the given operation spread."""
+    decision = _click(probabilities)
+    decision.update({"choice": "DONE", "operation": "DONE", "target": None,
+                     "target_probabilities": {}})
+    return decision
+
+
+S5B_ZERO_ACTION_DONE = _done({"DONE": 0.69, "SCROLL_DOWN": 0.3, "CLICK": 0.01})
+S7B_ZERO_ACTION_DONE = _done({"DONE": 0.81, "CLICK": 0.19})
+M15_ZERO_ACTION_DONE = _done({"DONE": 0.6, "CLICK": 0.39, "BLOCKED": 0.01})
+S1D_ALREADY_SATISFIED = _done({"DONE": 1.0, "WAIT": 0.0, "BLOCKED": 0.0, "CLICK": 0.0})
+S6A_ALREADY_SATISFIED = _done({"DONE": 0.99, "CLICK": 0.01})
+
+PAGE = {"text": "A real paragraph of visible text that is not only short labels."}
+
+
+@pytest.mark.parametrize(
+    "decision, row",
+    [
+        (S5B_ZERO_ACTION_DONE, "S5b"),
+        (S7B_ZERO_ACTION_DONE, "S7b"),
+        (M15_ZERO_ACTION_DONE, "M15"),
+    ],
+)
+def test_a_zero_action_done_from_a_sev1_row_is_not_acceptable(decision, row):
+    """Each of the three zero-action sev-1 rows, at the probability it really scored."""
+    assert not done_acceptable(decision, PAGE, executed_actions=0), row
+
+
+@pytest.mark.parametrize("decision, row", [(S1D_ALREADY_SATISFIED, "S1d"), (S6A_ALREADY_SATISFIED, "S6a")])
+def test_an_already_satisfied_goal_may_still_declare_done_with_no_actions(decision, row):
+    """The exemption the sev-1 fix must not break: S1d and S6a are HITs at zero actions."""
+    assert done_acceptable(decision, PAGE, executed_actions=0), row
+
+
+def test_a_done_that_executed_actions_is_judged_on_done_min_alone():
+    """M16 scored 0.99 after one click and S7b-shaped runs acted too: the gate is
+    unchanged for a run that did something, so this fix cannot cause a new MISS."""
+    assert done_acceptable(_done({"DONE": 0.62, "CLICK": 0.38}), PAGE, executed_actions=1)
+
+
+def test_an_unknown_action_count_falls_back_to_done_min():
+    """`None` means the caller does not know, and must not silently tighten a gate
+    it was not asking about."""
+    assert done_acceptable(_done({"DONE": 0.9}), PAGE)
+
+
+def test_a_zero_action_done_is_still_refused_on_a_shell_page():
+    """Certainty does not buy a label-only page."""
+    assert not done_acceptable(S1D_ALREADY_SATISFIED, {"text": "Menu\nHome\nAbout"},
+                               executed_actions=0)
+
+
+def test_a_zero_action_done_does_not_end_the_run(browser, run):
+    """End to end through DriveAgent: the tick is rejected and the run keeps going
+    instead of reporting a success it did not earn."""
+    agent, _calls = run(S7B_ZERO_ACTION_DONE)
+
+    snap = agent.command("tick")
+
+    assert browser.acts == []
+    assert snap["status"] != "done"
+    assert snap.get("stop_reason") is None  # one weak DONE is not a stop; it re-observes
+    assert snap["decision"] is None  # discarded, not left pending
+
+
+def test_an_already_satisfied_goal_still_finishes_on_its_first_tick(browser, run):
+    """S1d's shape, end to end: no action, DONE at 1.0, run done."""
+    agent, _calls = run(S1D_ALREADY_SATISFIED)
+
+    snap = agent.command("tick")
+
+    assert browser.acts == []
+    assert snap["status"] == "done"
+    assert snap.get("stop_reason") is None
 
 
 def test_the_second_consecutive_degenerate_tick_stops_the_run(browser, run):
