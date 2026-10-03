@@ -323,6 +323,64 @@ def test_a_finished_run_leaves_the_pane_idle(tmp_path):
     isolation.assert_pane_idle(tmp_path, quiet_s=0)
 
 
+def test_wait_pane_idle_polls_until_the_log_is_quiet(monkeypatch, tmp_path):
+    """Sequential live tests share drive.jsonl; wait until mtime ages past quiet_s."""
+
+    class Clock:
+        def __init__(self):
+            self.t = 0.0
+
+        def monotonic(self):
+            return self.t
+
+        def sleep(self, seconds):
+            self.t += float(seconds)
+
+    clock = Clock()
+    attempts = {"n": 0}
+
+    def fake_assert(log_dir=None, *, quiet_s=isolation.IDLE_QUIET_S):
+        attempts["n"] += 1
+        if clock.t < quiet_s:
+            raise isolation.IsolationError(
+                f"pane log moved {quiet_s - clock.t:.2f}s ago (<{quiet_s}s): another driver is active"
+            )
+
+    monkeypatch.setattr(isolation, "assert_pane_idle", fake_assert)
+    monkeypatch.setattr(isolation, "sleep", clock.sleep)
+    monkeypatch.setattr(isolation.time, "monotonic", clock.monotonic)
+
+    isolation.wait_pane_idle(tmp_path, quiet_s=2.0, timeout_s=10.0, poll_s=0.5)
+    assert clock.t >= 2.0
+    assert attempts["n"] >= 2
+
+
+def test_wait_pane_idle_times_out_when_the_pane_never_settles(monkeypatch, tmp_path):
+    class Clock:
+        def __init__(self):
+            self.t = 0.0
+
+        def monotonic(self):
+            return self.t
+
+        def sleep(self, seconds):
+            self.t += float(seconds)
+
+    clock = Clock()
+    monkeypatch.setattr(
+        isolation,
+        "assert_pane_idle",
+        lambda *a, **k: (_ for _ in ()).throw(
+            isolation.IsolationError("pane log moved 0.05s ago (<2.0s): another driver is active")
+        ),
+    )
+    monkeypatch.setattr(isolation, "sleep", clock.sleep)
+    monkeypatch.setattr(isolation.time, "monotonic", clock.monotonic)
+
+    with pytest.raises(isolation.IsolationError, match="did not go idle within 1.0s"):
+        isolation.wait_pane_idle(tmp_path, quiet_s=2.0, timeout_s=1.0, poll_s=0.5)
+
+
 def test_quarantine_clears_the_remembered_tab_and_retains_it(tmp_path):
     """Left in place, the next run silently re-attaches to this tab, which looks
     exactly like a continuity success and is not one."""
@@ -1410,6 +1468,7 @@ def test_the_fake_server_offers_exactly_the_three_tools():
         assert client.tools() == ["drive", "read", "status"]
     finally:
         client.close()
+
 
 def test_a_dict_final_view_is_matched_on_its_text_content():
     """Live drive results carry final_view as an object (url/title/flags),

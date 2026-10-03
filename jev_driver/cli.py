@@ -28,6 +28,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_FIXTURE = (ROOT / "fixtures" / "click.html").resolve()
 TIME_BUDGET_CAP = 900  # same ceiling as the outer timeout_s kill
 
+
 def same_document(left, right) -> bool:
     """True when both URLs are the same page, ignoring a trailing slash and fragment."""
 
@@ -39,6 +40,7 @@ def same_document(left, right) -> bool:
     if not left or not right:
         return False
     return norm(left) == norm(right)
+
 
 def choose_lease(*, url, target_id, continuable, default_url, navigate_explicit=True, dropped=None):
     """Pick tab: explicit id, else reuse driver's tab (navigate if url), else new."""
@@ -67,6 +69,7 @@ def choose_lease(*, url, target_id, continuable, default_url, navigate_explicit=
         "continuity": None if url else dropped,
     }
 
+
 def no_page_error(plan, url):
     """A call without url must reuse the remembered tab, never fall back to the local fixture."""
     if url or plan["tab"] != "new":
@@ -74,9 +77,11 @@ def no_page_error(plan, url):
     reason = plan.get("continuity") or "no remembered tab"
     return f"No page to reuse ({reason}). Pass url to open one."
 
+
 def trace_fields(snap: dict, rec: dict, *, goal: str) -> dict:
     """Run-log record for one tick (shape from plugin.core.trace)."""
     return build_trace_record(rec, last_decision(snap), goal=goal)
+
 
 def tick_record(snap: dict, *, debug: bool = False, **overrides) -> dict:
     """One tick row via plugin.core.result.build_tick_row (overrides win)."""
@@ -151,6 +156,7 @@ def tick_record(snap: dict, *, debug: bool = False, **overrides) -> dict:
         **fields,
     )
 
+
 def _final_view(snap: dict, browser) -> dict:
     """Re-read after DONE for evidence; never changes status. Never raises."""
     page = snap.get("page") or {}
@@ -174,12 +180,14 @@ def _final_view(snap: dict, browser) -> dict:
         "title": fresh.get("title"),
     }
 
+
 def _record_processes(goal) -> None:
     """Close-time spawn/orphan evidence. Never raises (safe for ``finally``)."""
     try:
         write_event(proc_mod.process_evidence(goal=goal))
     except Exception:
         return
+
 
 def _instance_pid(ws_url):
     """Pid of the terminal-browser serving ``ws_url``, or None. Never raises."""
@@ -205,12 +213,14 @@ def _instance_pid(ws_url):
         return pid if pid > 0 else None
     return None
 
+
 def _metrics_of(agent):
     """This run's ``Metrics``, or None for an agent that has none. Never raises."""
     try:
         return getattr(agent, "metrics", None)
     except Exception:
         return None
+
 
 def _bind_run(agent, goal) -> None:
     """Bind goal digest onto metrics. Never raises."""
@@ -221,6 +231,7 @@ def _bind_run(agent, goal) -> None:
         metrics.bind_run(goal)
     except Exception:
         return
+
 
 def _note_stop(agent) -> None:
     """Record stop reason before close freezes the snapshot. Never raises."""
@@ -234,6 +245,7 @@ def _note_stop(agent) -> None:
     except Exception:
         return
 
+
 def _run_event(identity, *, stage: str, agent=None) -> dict:
     """Per-run log record (start + finish share ``run_id``)."""
     record = {"event": "run", "stage": stage, **(identity or {})}
@@ -245,6 +257,7 @@ def _run_event(identity, *, stage: str, agent=None) -> dict:
     except Exception:
         return record
     return record
+
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Drive a terminal-browser tab with Jev decisions.")
@@ -300,10 +313,12 @@ def parse_args(argv=None):
         parser.error("the following arguments are required: --goal (or pass --check)")
     return args
 
+
 def _print_blocked(error: str, *, stream=None, flush: bool = False) -> int:
     """Print blocked status and return 1 (resolve stream at call time)."""
     print(json.dumps({"status": "blocked", "error": error}), file=stream or sys.stderr, flush=flush)
     return 1
+
 
 def _prepare_drive(args):
     """Validate drive args and install the denylist. Returns an exit code on reject."""
@@ -320,6 +335,7 @@ def _prepare_drive(args):
         return _print_blocked(str(exc))
     return None
 
+
 def _discover_browser(args, launch: str):
     """Discover (and optionally note a spawn). Returns found, or an exit code."""
     try:
@@ -335,6 +351,7 @@ def _discover_browser(args, launch: str):
         # Pid from ls --all --json matched by this run's CDP port.
         proc_mod.note_spawn("terminal-browser", _instance_pid(found.ws_url))
     return found
+
 
 def _plan_lease(args, *, url, launch: str) -> tuple[dict | None, int | None]:
     """Choose and install the tab lease. Returns (plan, None) or (None, exit)."""
@@ -364,6 +381,7 @@ def _plan_lease(args, *, url, launch: str) -> tuple[dict | None, int | None]:
         navigate=plan["navigate"],
     )
     return plan, None
+
 
 def _open_agent(args, *, plan: dict, found, visibility: str):
     """Build the agent and run identity; optionally print the JSON browser meta line."""
@@ -395,9 +413,11 @@ def _open_agent(args, *, plan: dict, found, visibility: str):
     _bind_run(agent, args.goal)
     return agent, identity
 
+
 def _emit_tick(args, snap, rec):
     print(json.dumps(rec), flush=True)
     write_event(trace_fields(snap, rec, goal=args.goal))
+
 
 def _refuse_unsupported(args, agent) -> int | None:
     refused = unsupported_goal(args.goal)
@@ -411,6 +431,7 @@ def _refuse_unsupported(args, agent) -> int | None:
     rec = tick_record(snap, debug=args.debug, page_text=((snap.get("page") or {}).get("text") or ""))
     _emit_tick(args, snap, rec)
     return 1
+
 
 def _tick_loop(args, agent) -> int:
     """Run ticks until done/blocked/max-steps. Returns the process exit code."""
@@ -450,6 +471,7 @@ def _tick_loop(args, agent) -> int:
         )
         _emit_tick(args, snap, rec)
     return 0 if agent.state["status"] == "done" else 1
+
 
 def _drive(args) -> int:
     """Discover a browser, lease a tab, run ticks."""
@@ -500,6 +522,7 @@ def _drive(args) -> int:
             finally:
                 _record_processes(args.goal)
 
+
 def main(argv=None) -> int:
     args = parse_args(argv)
     if args.check:
@@ -512,6 +535,7 @@ def main(argv=None) -> int:
     if rejected is not None:
         return rejected
     return _drive(args)
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

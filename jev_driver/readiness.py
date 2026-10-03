@@ -52,11 +52,13 @@ REASON_WHY = {
     ),
 }
 
+
 def _is_sentence(line: str) -> bool:
     words = line.split()
     if len(words) < 4:
         return False
     return line.endswith((".", "!", "?")) or ". " in line or "! " in line or "? " in line
+
 
 def page_is_shell(text: str | None) -> bool:
     """True when visible text is empty or only short labels (no sentence yet)."""
@@ -70,6 +72,7 @@ def page_is_shell(text: str | None) -> bool:
     if len(lines) >= 40 or sum(len(line) for line in lines) >= 1200:
         return False
     return len(lines) >= 3
+
 
 def done_probability(decision: dict | None) -> float:
     decision = decision or {}
@@ -86,6 +89,7 @@ def done_probability(decision: dict | None) -> float:
     except (TypeError, ValueError):
         return 0.0
 
+
 def done_acceptable(decision: dict | None, page: dict | None, *, executed_actions=None) -> bool:
     """Whether a DONE may end the run (confidence + shell + zero-action floor)."""
     probability = done_probability(decision)
@@ -97,6 +101,7 @@ def done_acceptable(decision: dict | None, page: dict | None, *, executed_action
     if executed_actions == 0 and probability < ZERO_ACTION_DONE_MIN:
         return False
     return True
+
 
 def degenerate(decision: dict | None) -> bool:
     """True when the operation spread has no real preference (low top, narrow gap)."""
@@ -112,6 +117,7 @@ def degenerate(decision: dict | None) -> bool:
 
 # BLOCKED end-state rescue: if the run already reached the goal's end state,
 # report done rather than looping on model_blocked. One-sided — false done is worse.
+
 
 _STOPWORDS = frozenset(
     """
@@ -165,6 +171,7 @@ _END_STATE_CLAUSE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+
 def goal_end_state_tokens(goal: str | None) -> set[str]:
     """Content words from a goal (drop stopwords, verbs, scaffolding)."""
     raw = "".join(ch if ch.isalnum() else " " for ch in (goal or "").lower())
@@ -176,6 +183,7 @@ def goal_end_state_tokens(goal: str | None) -> set[str]:
         and token not in _VERBS
         and token not in _SCAFFOLDING
     }
+
 
 def goal_steps(goal: str | None) -> tuple[list[set[str]], set[str]]:
     """Step token sets plus trailing end-state qualifier words (not a step)."""
@@ -189,6 +197,7 @@ def goal_steps(goal: str | None) -> tuple[list[set[str]], set[str]]:
             steps.append(tokens)
     return steps, qualifier
 
+
 def _url_path_evidence(url: str | None) -> str:
     """Path (+ query) only — host is never goal evidence."""
     if not url:
@@ -197,6 +206,7 @@ def _url_path_evidence(url: str | None) -> str:
     path = parts.path or ""
     query = f"?{parts.query}" if parts.query else ""
     return f"{path}{query}".lower()
+
 
 def _visible_text(page: dict | None) -> str:
     """Title, body text, and URL path/query — never the host."""
@@ -209,6 +219,7 @@ def _visible_text(page: dict | None) -> str:
         )
     )
 
+
 def _history_text(history: list | None) -> str:
     """Labels/values this run acted on (destination pages often omit goal words)."""
     bits = []
@@ -218,15 +229,18 @@ def _history_text(history: list | None) -> str:
         bits.extend(str(entry.get(key) or "") for key in ("action", "label", "text", "operation", "kind"))
     return " ".join(bits).lower()
 
+
 def _token_in_evidence(token: str, evidence: str) -> bool:
     """Whole-word match: ``coin`` must not hit ``coinmarketcap``."""
     if not token or not evidence:
         return False
     return re.search(rf"(?<![a-z0-9]){re.escape(token)}(?![a-z0-9])", evidence) is not None
 
+
 def model_action_count(history: list | None) -> int:
     """Model actions only — auto-scrolls after rejected DONE/BLOCKED do not count."""
     return sum(1 for entry in (history or []) if isinstance(entry, dict) and not entry.get("auto"))
+
 
 def progressed_action_count(history: list | None) -> int:
     """Non-scroll, non-wait, non-auto actions — the end-state step counter."""
@@ -238,6 +252,7 @@ def progressed_action_count(history: list | None) -> int:
         and str(entry.get("kind") or "") not in {"scroll", "wait"}
     )
 
+
 def goal_evidenced(page: dict | None, *, goal: str | None, history: list | None) -> bool:
     """Every goal step (and qualifier) has at least one whole-word token in evidence."""
     steps, qualifier = goal_steps(goal)
@@ -246,6 +261,7 @@ def goal_evidenced(page: dict | None, *, goal: str | None, history: list | None)
     evidence = _visible_text(page) + " " + _history_text(history)
     required = [*steps, qualifier] if qualifier else steps
     return all(any(_token_in_evidence(token, evidence) for token in step) for step in required)
+
 
 def end_state_reached(page: dict | None, *, goal: str | None, history: list | None, moved_on: bool) -> bool:
     """True when moved_on, non-shell, every step evidenced, and progressed ≥ steps."""
@@ -259,6 +275,7 @@ def end_state_reached(page: dict | None, *, goal: str | None, history: list | No
     if not goal_evidenced(page, goal=goal, history=history):
         return False
     return progressed_action_count(history) >= len(steps)
+
 
 @dataclass(frozen=True)
 class Evidence:
@@ -281,6 +298,7 @@ class Evidence:
     end_state: bool
     goal_evidenced: bool = False
 
+
 @dataclass(frozen=True)
 class Verdict:
     """What DriveAgent should do next. Side effects stay in the agent."""
@@ -289,8 +307,10 @@ class Verdict:
     status: str | None = None
     stop_reason: str | None = None
 
+
 # Mid-band acted DONEs need goal-token evidence.
 ACTED_DONE_EVIDENCE_MAX = 0.8
+
 
 def verdict(ev: Evidence) -> Verdict:
     """Finish/stop decision (DriveAgent owns browser I/O)."""
@@ -335,6 +355,7 @@ def verdict(ev: Evidence) -> Verdict:
         return Verdict("look_scroll")
 
     return Verdict("noop")
+
 
 def unsupported_goal(goal: str | None) -> str | None:
     text = (goal or "").lower()

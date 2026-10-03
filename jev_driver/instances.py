@@ -1,7 +1,6 @@
 """Spawn accounting, orphan checks, code provenance, and root-terminal placement.
 
-Stdlib only; evidence paths never raise. Zombies and pid-reuse are not orphans;
-pattern matches are evidence, not a leak verdict.
+Stdlib only; evidence paths never raise. Pattern matches are evidence, not a leak verdict.
 """
 
 from __future__ import annotations
@@ -52,6 +51,7 @@ STATUS_CLEAN = "clean"
 STATUS_NO_PIDS = "no_pids"
 STATUS_UNTRACKED = "untracked"
 
+
 def _short(exc: BaseException) -> str:
     try:
         return (str(exc) or exc.__class__.__name__)[:200]
@@ -59,6 +59,7 @@ def _short(exc: BaseException) -> str:
         return exc.__class__.__name__
 
 # ---------------------------------------------------------------- subprocess
+
 
 def run_cmd(argv: list[str], *, timeout: float) -> str | None:
     """stdout of one short-lived helper, or None. Never raises."""
@@ -79,9 +80,11 @@ def run_cmd(argv: list[str], *, timeout: float) -> str | None:
     except Exception:
         return None
 
+
 def ps_output(args: list[str], *, timeout: float = PS_TIMEOUT_S) -> str | None:
     """``ps`` output, or None. ``-A -o`` is the portable BSD/Linux spelling."""
     return run_cmd(["ps", *args], timeout=timeout)
+
 
 def _redact_flag(match) -> str:
     """Redact one ``--flag value`` pair when the flag name looks secret."""
@@ -92,9 +95,10 @@ def _redact_flag(match) -> str:
     except Exception:
         return match.group(0)
 
+
 def _scrub_command(value) -> str:
     """Credential-redact and length-cap a ps command string.
-    
+
         Runlog first, then ``--flag value`` rewrite — reverse order can leave a
         half-consumed ``[redacted]`` marker.
     """
@@ -103,6 +107,7 @@ def _scrub_command(value) -> str:
         return _SECRET_FLAG_RE.sub(_redact_flag, runlog._scrub_text(text))[:MAX_COMMAND_CHARS]
     except Exception:
         return text[:MAX_COMMAND_CHARS]
+
 
 def process_table(*, timeout: float = PS_TIMEOUT_S) -> list[dict]:
     """Every visible process as ``{"pid", "stat", "command"}``. Never raises. Commands redacted here."""
@@ -121,6 +126,7 @@ def process_table(*, timeout: float = PS_TIMEOUT_S) -> list[dict]:
         )
     return rows
 
+
 def _patterns(patterns) -> tuple[str, ...]:
     """Non-empty pattern tuple, or the default. Never raises."""
     try:
@@ -128,6 +134,7 @@ def _patterns(patterns) -> tuple[str, ...]:
     except Exception:
         return DEFAULT_PATTERNS
     return values or DEFAULT_PATTERNS
+
 
 def matching_processes(
     patterns: tuple[str, ...] = DEFAULT_PATTERNS,
@@ -148,6 +155,7 @@ def matching_processes(
 
 # ------------------------------------------------------------------ liveness
 
+
 def _clean_pid(pid) -> int | None:
     """A usable pid, or None (0/negatives are process groups)."""
     try:
@@ -155,6 +163,7 @@ def _clean_pid(pid) -> int | None:
     except (TypeError, ValueError):
         return None
     return value if value > 0 else None
+
 
 def _clean_pids(pids) -> list[int]:
     """Deduplicated, ordered, bounded pid list; drop unusable values."""
@@ -167,6 +176,7 @@ def _clean_pids(pids) -> list[int]:
             break
     return out
 
+
 def _signal_zero(pid: int) -> str:
     """``alive``, ``dead``, or ``unknown`` from signal 0 (EPERM -> unknown)."""
     try:
@@ -177,15 +187,14 @@ def _signal_zero(pid: int) -> str:
         return DEAD if getattr(exc, "errno", None) == errno.ESRCH else UNKNOWN
     return ALIVE
 
+
 def proc_state(pid) -> str:
-    """``alive``, ``zombie``, ``dead``, or ``unknown``. Never raises.
-    
-        Signal 0, then pid-reuse via start time, then ps state (zombies are not orphans).
-    """
+    """``alive``, ``dead``, or ``unknown`` via signal 0. Never raises."""
     value = _clean_pid(pid)
     if value is None:
         return UNKNOWN
     return _signal_zero(value)
+
 
 def liveness_report(pids) -> dict:
     """Classify pids into always-present buckets. Never raises."""
@@ -199,6 +208,7 @@ def liveness_report(pids) -> dict:
     return report
 
 # ------------------------------------------------------------------- spawning
+
 
 @dataclass
 class SpawnTracker:
@@ -245,30 +255,37 @@ class SpawnTracker:
         self.tracked = []
         self.kinds = {}
 
+
 RUN = SpawnTracker()
+
 
 def note_spawn(kind: str = "spawn", pid=None) -> int:
     """Count a spawn this run started. Returns the running total."""
     return RUN.note(kind, pid)
 
+
 def runtime_spawn_count() -> int:
     """Noted spawns this run (helpers/ps/git are not counted)."""
     return RUN.count
+
 
 def tracked_pids() -> list[int]:
     """Pids this run started and knows. A pid-less spawn is counted but not
     tracked, and is the reason the orphan check also takes a command pattern."""
     return list(RUN.tracked)
 
+
 def spawn_summary() -> dict:
     """Counters as a log-safe dict."""
     return RUN.snapshot()
+
 
 def reset_spawns() -> None:
     """Begin a new run's accounting."""
     RUN.reset()
 
 # ------------------------------------------------------------------ orphans
+
 
 def _sleep(seconds: float) -> None:
     """The settle wait before an orphan check. One named place so a test can
@@ -277,6 +294,7 @@ def _sleep(seconds: float) -> None:
         time.sleep(max(0.0, float(seconds)))
     except Exception:
         return
+
 
 def orphan_report(
     pids=(),
@@ -288,7 +306,7 @@ def orphan_report(
     timeout: float = PS_TIMEOUT_S,
 ) -> dict:
     """Whether this run left a process running. Never raises.
-    
+
         Sleeps only when there is something to check. Only ``orphans`` is a leak;
         ``unknown`` is never clean. Pattern matches are evidence, not a verdict.
     """
@@ -345,6 +363,7 @@ def orphan_report(
         report["detail"] = f"orphan check failed: {_short(exc)}"
     return report
 
+
 def process_evidence(*, goal=None, **kwargs) -> dict:
     """Close-time spawn/orphan record. Never raises (safe for ``finally``)."""
     try:
@@ -360,6 +379,7 @@ def process_evidence(*, goal=None, **kwargs) -> dict:
 
 # ---------------------------------------------------------------- provenance
 
+
 def repo_root() -> Path | None:
     """Checkout root when both hashed dirs exist; else None."""
     try:
@@ -373,6 +393,7 @@ def repo_root() -> Path | None:
         return None
     return None
 
+
 def implementation_files(root) -> list[Path]:
     """Top-level ``*.py`` under hashed dirs, ordered by relative path."""
     try:
@@ -381,6 +402,7 @@ def implementation_files(root) -> list[Path]:
         return sorted(found, key=lambda path: path.relative_to(base).as_posix())
     except Exception:
         return []
+
 
 def _file_digest(path: Path) -> str | None:
     digest = hashlib.sha256()
@@ -392,9 +414,10 @@ def _file_digest(path: Path) -> str | None:
         return None
     return digest.hexdigest()
 
+
 def impl_hash(root) -> str | None:
     """SHA-256 of sorted ``"<relpath> <sha256>"`` lines, or None if incomplete.
-    
+
         Files are hashed and dropped — no content/path/env reaches the digest.
     """
     base = Path(root)
@@ -412,6 +435,7 @@ def impl_hash(root) -> str | None:
         return None
     return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
 
+
 def git_commit(root) -> str | None:
     """``git rev-parse HEAD``, or None when unknown."""
     try:
@@ -421,12 +445,14 @@ def git_commit(root) -> str | None:
     commit = (out or "").strip().splitlines()
     return commit[0].strip() if commit and commit[0].strip() else None
 
+
 def interpreter() -> str:
     """Implementation and version only (no interpreter path)."""
     try:
         return f"{platform.python_implementation()} {platform.python_version()}".strip()
     except Exception:
         return "unknown"
+
 
 def version_manifest(*, root=None) -> dict:
     """``git_commit``, ``impl_hash``, ``interpreter`` — secret-free provenance."""
@@ -442,6 +468,7 @@ def version_manifest(*, root=None) -> dict:
     except Exception:
         return {"git_commit": None, "impl_hash": None, "interpreter": "unknown"}
 
+
 def manifest_path() -> Path | None:
     """Manifest path beside the run log, or None."""
     try:
@@ -449,12 +476,14 @@ def manifest_path() -> Path | None:
     except Exception:
         return None
 
+
 def _scratch_name(target: Path) -> Path:
     """Per-writer scratch path (pid+uuid) so concurrent renames cannot clash."""
     try:
         return target.with_name(f"{target.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     except Exception:
         return target.with_name(f"{target.name}.tmp")
+
 
 def write_version_manifest(manifest: dict | None = None, *, path=None) -> dict:
     """Write the manifest beside the run log. Never raises; errors go in ``error``."""
@@ -482,6 +511,7 @@ def write_version_manifest(manifest: dict | None = None, *, path=None) -> dict:
                 pass
     return body
 
+
 # --------------------------------------------------------- root-terminal placement
 
 # Herdr traces that do not use the HERDR_ prefix.
@@ -489,14 +519,16 @@ NON_PREFIXED_HERDR_VARS = ("SSH_AUTH_SOCK", "TERM_PROGRAM", "TERM_PROGRAM_VERSIO
 
 _HERDR_SOCKET_MARKERS = ("herdr",)
 
+
 def is_nested_in_herdr(env=None) -> bool:
     """True when this process is running inside a herdr pane."""
     env = os.environ if env is None else env
     return bool(env.get("HERDR_PANE_ID"))
 
+
 def scrubbed_env(env=None) -> dict:
     """Child env with herdr traces removed (prefix and non-prefixed vars).
-    
+
         Drop `SSH_AUTH_SOCK` rather than blank it. Leave `PWD`/`OLDPWD` alone.
     """
     env = os.environ if env is None else env
@@ -509,13 +541,15 @@ def scrubbed_env(env=None) -> dict:
         kept[key] = value
     return kept
 
+
 def _mentions_herdr(value) -> bool:
     text = str(value or "").lower()
     return any(marker in text for marker in _HERDR_SOCKET_MARKERS)
 
+
 def root_terminal_blocker(env=None) -> str | None:
     """Human-readable reason provisioning would nest inside herdr, or None.
-    
+
         terminal-browser can only split the current surface, not open a root tab.
     """
     env = os.environ if env is None else env

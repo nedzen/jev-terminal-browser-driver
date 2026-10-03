@@ -1,19 +1,35 @@
-"""Adapter contracts that are not mere schema-identity pins.
+"""Adapter contracts: MCP descriptions match the plugin; product bounds hold.
 
-scripts/mcp.py imports plugin schemas, so verbatim schema equality is
-structurally guaranteed and is not re-tested here. What remains are the
-product bounds and preflight invariants readers actually rely on.
+scripts/mcp.py imports plugin schemas, so inputSchema equality is structural.
+Descriptions are still asserted: a hand-edited MCP list must not drift from
+plugin/__init__.py.
 """
 
 import pytest
 
-from plugin import PARAMETERS, READ_PARAMETERS, STATUS_PARAMETERS
+from plugin import (
+    DESCRIPTION,
+    PARAMETERS,
+    READ_DESCRIPTION,
+    READ_PARAMETERS,
+    STATUS_DESCRIPTION,
+    STATUS_PARAMETERS,
+)
 from plugin.handler import TIME_BUDGET_CAP
 
 
 @pytest.fixture()
 def mcp_mod(load_mcp):
     return load_mcp("jev_mcp_parity")
+
+
+def test_each_mcp_tool_description_matches_the_plugin(mcp_mod):
+    """Every MCP tool description is the plugin's canonical string."""
+    tools = {t["name"]: t for t in mcp_mod._tool_list()}
+    assert set(tools) == {"drive", "read", "status"}
+    assert tools["drive"]["description"] == DESCRIPTION
+    assert tools["read"]["description"] == READ_DESCRIPTION
+    assert tools["status"]["description"] == STATUS_DESCRIPTION
 
 
 def test_time_budget_offered_with_the_same_bounds():

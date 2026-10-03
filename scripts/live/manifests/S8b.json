@@ -5,10 +5,7 @@
   "tier": "R",
   "satisfiable": true,
   "expected": {
-    "any_of": [
-      {"url_contains": "v1.1.0"},
-      {"url_contains": "/releases", "text_present": "v1.1.0"}
-    ]
+    "url_contains": "/releases/tag/v1.1.0"
   },
   "hit_line": "release-notes URL reached",
   "miss_line": "wrong release",

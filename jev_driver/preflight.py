@@ -22,8 +22,10 @@ FIXES = {
     "python_env": "install uv, or create the repo .venv",
 }
 
+
 def _status(found: bool) -> str:
     return "ok" if found else "missing"
+
 
 def terminal_browser_binary() -> Path | None:
     """terminal-browser path (PATH, TERMINAL_BROWSER, ~/.local/bin), or None."""
@@ -38,8 +40,10 @@ def terminal_browser_binary() -> Path | None:
             return path
     return None
 
+
 def terminal_browser_installed() -> bool:
     return terminal_browser_binary() is not None
+
 
 def _key_in_env_file(path: Path) -> bool:
     """True when the file holds a non-empty key assignment. The value is dropped here."""
@@ -55,6 +59,7 @@ def _key_in_env_file(path: Path) -> bool:
             return True
     return False
 
+
 def has_decision_key() -> bool:
     """True when a decision key is reachable from env or the Hermes env file."""
     if any(os.environ.get(var, "").strip() for var in KEY_VARS):
@@ -64,6 +69,7 @@ def has_decision_key() -> bool:
     if hermes_home:
         homes.append(Path(hermes_home).expanduser() / ".env")
     return any(_key_in_env_file(path) for path in homes)
+
 
 def driver_home() -> Path:
     """Directory holding scripts/drive.py (WWWDRIVE_HOME / JEV_DRIVER_HOME override)."""
@@ -76,8 +82,10 @@ def driver_home() -> Path:
             return candidate
     return here
 
+
 def python_env_ready() -> bool:
     return bool(shutil.which("uv")) or (driver_home() / ".venv").exists()
+
 
 def preflight() -> dict:
     """Startup checks as ok/missing, plus missing names and fix hints."""

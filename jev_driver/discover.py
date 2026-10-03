@@ -43,8 +43,10 @@ CMUX_UNAVAILABLE = (
     "Install cmux or run where terminal-browser's own terminal detection works."
 )
 
+
 class WatchUnavailable(RuntimeError):
     """watch=true could not open a visible terminal-browser pane."""
+
 
 @dataclass
 class Discovery:
@@ -54,15 +56,18 @@ class Discovery:
     auto_launched: bool = False
     visibility: str = "terminal-browser-pane"
 
+
 LAST: Discovery | None = None
 
 # Per-cmux-session instance reuse (keyed by socket digest).
 LEDGER_PATH = Path.home() / ".cache" / "wwwdrive" / "cmux-instance.json"
 
+
 def _ledger_key() -> str:
     """Digest of CMUX_SOCKET_PATH for this session's ledger records."""
     path = (os.environ.get("CMUX_SOCKET_PATH") or "").strip()
     return hashlib.sha256(path.encode("utf-8")).hexdigest()[:16] if path else ""
+
 
 def _read_ledger() -> dict | None:
     """Recorded instance for this cmux session, or None. Never raises."""
@@ -83,6 +88,7 @@ def _read_ledger() -> dict | None:
         return None
     return data
 
+
 def _write_ledger(record: dict) -> None:
     """Record the provisioned instance. Never raises."""
     try:
@@ -91,6 +97,7 @@ def _write_ledger(record: dict) -> None:
     except OSError:
         return
 
+
 def _ledger_stamp() -> dict:
     context = cmux_context() or {}
     return {
@@ -98,6 +105,7 @@ def _ledger_stamp() -> dict:
         "workspace": context.get("workspace") or "",
         "socket_path": context.get("socket_path") or "",
     }
+
 
 def _instance_in_record(record: dict) -> Discovery | None:
     """Discovery if key/port/pid still match a live instance."""
@@ -123,6 +131,7 @@ def _instance_in_record(record: dict) -> Discovery | None:
         )
     return None
 
+
 def ws_to_http_origin(ws_url: str) -> str:
     parsed = urlparse(ws_url)
     host = parsed.hostname or "127.0.0.1"
@@ -131,6 +140,7 @@ def ws_to_http_origin(ws_url: str) -> str:
     if port:
         return f"{scheme}://{host}:{port}"
     return f"{scheme}://{host}"
+
 
 def json_version_ws(origin: str, timeout: float = 2.0) -> str | None:
     url = origin.rstrip("/") + "/json/version"
@@ -141,6 +151,7 @@ def json_version_ws(origin: str, timeout: float = 2.0) -> str | None:
         return None
     ws = (info.get("webSocketDebuggerUrl") or "").strip()
     return ws or None
+
 
 def normalize_cdp_url(raw: str) -> str:
     value = (raw or "").strip()
@@ -167,6 +178,7 @@ def normalize_cdp_url(raw: str) -> str:
         raise RuntimeError(f"No webSocketDebuggerUrl at {origin}/json/version")
     return ws
 
+
 def resolve_terminal_browser() -> str | None:
     found = shutil.which("terminal-browser")
     if found:
@@ -176,9 +188,11 @@ def resolve_terminal_browser() -> str | None:
         return str(path)
     return None
 
+
 def _provision_env() -> dict:
     """Child env with herdr traces stripped; CMUX_* kept for the socket route."""
     return _instances.scrubbed_env()
+
 
 def cmux_context() -> dict | None:
     """Socket (+ workspace) for cmux control, or None. No credentials returned."""
@@ -192,6 +206,7 @@ def cmux_context() -> dict | None:
     if workspace:
         context["workspace"] = workspace
     return context
+
 
 def _terminal_browser_discovery() -> Discovery | None:
     try:
@@ -208,6 +223,7 @@ def _terminal_browser_discovery() -> Discovery | None:
     except (RuntimeError, urllib.error.URLError, TimeoutError, OSError):
         return None
     return Discovery(ws_url=ws, http_origin=f"http://127.0.0.1:{port}", source="terminal-browser")
+
 
 def _daemon_db_discovery() -> Discovery | None:
     """Find a live instance via the daemon DB when ``ls`` is TTY-blind."""
@@ -234,6 +250,7 @@ def _daemon_db_discovery() -> Discovery | None:
             return Discovery(ws_url=ws, http_origin=f"http://127.0.0.1:{int(port)}", source="terminal-browser")
     return None
 
+
 def _instance_record_port(text: str) -> int | None:
     """Parse cdpPort from ``terminal-browser open`` JSON stdout."""
     for line in (text or "").splitlines():
@@ -248,6 +265,7 @@ def _instance_record_port(text: str) -> int | None:
             return rec["cdpPort"]
     return None
 
+
 def _resolve_cmux() -> str | None:
     """Path to the ``cmux`` CLI, or None."""
     found = shutil.which("cmux")
@@ -258,6 +276,7 @@ def _resolve_cmux() -> str | None:
         return bundled
     return None
 
+
 def _provisioned_instance_discovery() -> Discovery | None:
     """Reuse a prior cmux-provisioned instance when still alive; else None."""
     if cmux_context() is None:
@@ -266,6 +285,7 @@ def _provisioned_instance_discovery() -> Discovery | None:
     if record is None:
         return None
     return _instance_in_record(record)
+
 
 def _provision_via_cmux(
     url: str, context: dict, *, tries: int = POST_LAUNCH_TRIES, delay: float = POST_LAUNCH_DELAY_S
@@ -318,6 +338,7 @@ def _provision_via_cmux(
         f"{WATCH_TERMINAL_NOTE}"
     )
 
+
 def _remember_instance(found: Discovery) -> None:
     """Ledger key/port/pid for the provisioned instance (reuse on next drive)."""
     try:
@@ -340,6 +361,7 @@ def _remember_instance(found: Discovery) -> None:
             }
         )
         return
+
 
 def _provision_terminal_browser(
     url: str, *, tries: int = POST_LAUNCH_TRIES, delay: float = POST_LAUNCH_DELAY_S
@@ -400,10 +422,12 @@ def _provision_terminal_browser(
         f"terminal-browser pane did not become ready within {int(tries * delay)}s. {WATCH_TERMINAL_NOTE}"
     )
 
+
 def _in_cmux_context(env=None) -> bool:
     """True when both CMUX_SOCKET_PATH and CMUX_WORKSPACE_ID are set."""
     env = os.environ if env is None else env
     return bool(env.get("CMUX_SOCKET_PATH") and env.get("CMUX_WORKSPACE_ID"))
+
 
 def _provision_cmux_split(url: str, *, env=None) -> Discovery:
     """Env-form wrapper around ``_provision_via_cmux`` (one spawner)."""
@@ -416,6 +440,7 @@ def _provision_cmux_split(url: str, *, env=None) -> Discovery:
     if workspace:
         context["workspace"] = workspace
     return _provision_via_cmux(url, context, tries=POST_LAUNCH_TRIES, delay=POST_LAUNCH_DELAY_S)
+
 
 def discover(
     *,

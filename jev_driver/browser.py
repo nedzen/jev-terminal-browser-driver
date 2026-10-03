@@ -107,8 +107,10 @@ READ_STATE = Path(__file__).with_name("snapshot.js").read_text()
 HUD_JS = Path(__file__).with_name("hud.js").read_text()
 MARKER = f"(() => {{ const state={READ_STATE}; return state?.marker ?? null; }})()"
 
+
 class StalePage(ValueError):
     """A decision no longer refers to the observed page."""
+
 
 def __getattr__(name):
     """Forward reads of lease's rebound globals, so `browser.X` always sees the live value.
@@ -122,6 +124,7 @@ def __getattr__(name):
     if name in {"LAST_CONTINUITY", "LAST_PAGE_PATH", "HUD_STATE_PATH", "LAST_PAGE_TTL_S"}:
         return getattr(lease, name)
     raise AttributeError(name)
+
 
 class Browser:
     HYDRATE_MIN_ACTIONS = 8

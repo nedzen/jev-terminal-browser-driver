@@ -18,9 +18,11 @@ from .probe import fingerprint
 # (`browser` imports this module to re-export `browser_operation`).
 READ_STATE = Path(__file__).with_name("snapshot.js").read_text()
 
+
 def _enter_is_read_only_submit(action: dict) -> bool:
     """True when Enter is a search-only submit (``searchbox`` role — narrow on purpose)."""
     return (action.get("role") or "") == "searchbox"
+
 
 def _offer_enter(page: dict | None) -> None:
     """Offer Enter when the field holds text or is a searchbox — never implied by Jev."""
@@ -37,6 +39,7 @@ def _offer_enter(page: dict | None) -> None:
         for item in actions
     ):
         actions.append({"id": "press_enter", "kind": "enter", "label": "Press Enter"})
+
 
 def _insert_fill(call, text: str) -> None:
     modifier = 4 if sys.platform == "darwin" else 2
@@ -57,6 +60,7 @@ def _insert_fill(call, text: str) -> None:
     )
     call("Input.insertText", text=text)
 
+
 def _focus_covered_field(evaluate, action) -> bool:
     """Focus a fill target the hit-test could not click. The field is often covered by its own label."""
     from .browser import StalePage
@@ -76,6 +80,7 @@ def _focus_covered_field(evaluate, action) -> bool:
     except StalePage:
         return False
     return focused is True
+
 
 def browser_operation(request):
     from .browser import StalePage

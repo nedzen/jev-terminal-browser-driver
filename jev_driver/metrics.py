@@ -72,6 +72,7 @@ _METHOD_PHASES = {
 }
 _ATTACHED = "_jev_metrics"
 
+
 def _number(value) -> float:
     """A finite, non-negative float. NaN, infinity, negatives and junk all become 0.0."""
     try:
@@ -82,18 +83,22 @@ def _number(value) -> float:
         return 0.0
     return out
 
+
 def _kind(value) -> str:
     text = value.strip().lower() if isinstance(value, str) else ""
     return text if text in _KINDS else "other"
+
 
 def _status(value) -> str | None:
     text = value.strip().lower() if isinstance(value, str) else ""
     return text if text in _STATUSES else ("unknown" if text else None)
 
+
 def _stop_reason(value) -> str | None:
     """The stop vocabulary, or None when there was no stop to name."""
     text = value.strip().lower() if isinstance(value, str) else ""
     return text if text in _STOP_REASONS else ("other" if text else None)
+
 
 def _goal_digest(goal) -> str | None:
     """Truncated sha256 of the goal, or None — never stores the goal text."""
@@ -103,6 +108,7 @@ def _goal_digest(goal) -> str | None:
         return hashlib.sha256(str(goal).encode("utf-8", "replace")).hexdigest()[:GOAL_HASH_CHARS]
     except Exception:
         return None
+
 
 def _error_kind(error) -> str | None:
     """Classify an exception by its type name. The message is never read."""
@@ -114,12 +120,14 @@ def _error_kind(error) -> str | None:
             return kind
     return "other"
 
+
 def _book(fn, *args, **kwargs) -> None:
     """Call a recorder, ignoring its failures. Telemetry must not break a run."""
     try:
         fn(*args, **kwargs)
     except Exception:
         return
+
 
 class _Timer:
     """One running total, max and count -- the only shape a timing takes."""
@@ -144,6 +152,7 @@ class _Timer:
             "max_ms": round(self.max, 1),
             "avg_ms": round(self.total / self.count, 1) if self.count else 0.0,
         }
+
 
 class Metrics:
     """Per-run counters/timings with identity (``run_id``, ``started_at``, ``goal_hash``)."""
@@ -281,16 +290,19 @@ class Metrics:
         except Exception:
             return False
 
+
 def metrics_path(jsonl_path=None) -> Path:
     """The run log's own directory, so the two files stay together."""
     base = Path(jsonl_path) if jsonl_path is not None else runlog.JSONL_PATH
     return base.parent / METRICS_NAME
+
 
 def _action_kind(args, kwargs):
     action = kwargs.get("action")
     if action is None and args:
         action = args[0]
     return action.get("kind") if isinstance(action, dict) else None
+
 
 def _timed(busy, metrics, phase, original, *, with_action):
     """Wrap one browser method: time the outermost call, book the outcome."""
@@ -318,6 +330,7 @@ def _timed(busy, metrics, phase, original, *, with_action):
             _book(metrics.record_phase, phase, elapsed)
 
     return timed
+
 
 def instrument_browser(browser, metrics) -> None:
     """Wrap browser methods to record phase times. Idempotent; no-op if missing."""

@@ -37,8 +37,10 @@ _SECRET_ASSIGN_RE = re.compile(
 )
 _BEARER_RE = re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{6,}")
 
+
 def _stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
 
 def _one_line(value, limit=400) -> str:
     text = " ".join(str(value or "").split())
@@ -46,8 +48,10 @@ def _one_line(value, limit=400) -> str:
         return text
     return text[: limit - 1] + "…"
 
+
 def _clip(text: str) -> str:
     return text if len(text) <= MAX_STRING else text[: MAX_STRING - 1] + "…"
+
 
 def _redact_secrets(text: str) -> str:
     """Redact secret-looking values in free text (assignments, then bare bearer)."""
@@ -57,9 +61,11 @@ def _redact_secrets(text: str) -> str:
     except Exception:
         return text
 
+
 def _scrub_text(text: str) -> str:
     """Redact secret-looking values in free text, then cap the length."""
     return _clip(_redact_secrets(text))
+
 
 def _sanitize(value, key: str = "", depth: int = 0, seen=frozenset()) -> object:
     """Return a JSON-safe, redacted, size-capped copy. Never raises."""
@@ -100,6 +106,7 @@ def _sanitize(value, key: str = "", depth: int = 0, seen=frozenset()) -> object:
     except Exception:
         return f"<unserializable {type(value).__name__}>"
 
+
 def _record(event) -> dict:
     """One JSON-safe record. `ts` is ours; a caller cannot forge it."""
     if isinstance(event, dict):
@@ -115,9 +122,11 @@ def _record(event) -> dict:
     record.update({key: value for key, value in sanitized.items() if key != "ts"})
     return record
 
+
 # Nesting a wire payload is walked to. Bodies the driver builds sit about seven
 # deep, so this is a backstop against a pathological structure, not a policy.
 MAX_WIRE_DEPTH = 12
+
 
 def redact_for_wire(value, key: str = "", depth: int = 0) -> object:
     """Redact secrets in a request body without size caps. Never raises."""
@@ -155,6 +164,7 @@ def redact_for_wire(value, key: str = "", depth: int = 0) -> object:
     except Exception:
         return f"<unserializable {type(value).__name__}>"
 
+
 def _ranked(pairs) -> str:
     if not isinstance(pairs, (list, tuple)) or not pairs:
         return "—"
@@ -165,6 +175,7 @@ def _ranked(pairs) -> str:
         else:
             bits.append(_one_line(item, 80))
     return " | ".join(bits)
+
 
 def _text_lines(record: dict) -> str:
     kind = record.get("event") or "event"
@@ -205,6 +216,7 @@ def _text_lines(record: dict) -> str:
         lines.append(f"  page: {_one_line(record['page_text'], 400)}")
     return "\n".join(lines)
 
+
 def _append(path: Path | str, line: str) -> None:
     """Append one line; ignore FS errors; replace lone surrogates."""
     try:
@@ -214,6 +226,7 @@ def _append(path: Path | str, line: str) -> None:
             handle.write(line + "\n")
     except Exception:
         return
+
 
 def write_event(event: dict, *, jsonl_path: Path | None = None, text_path: Path | None = None) -> None:
     """Append JSON + text lines. Never raises; never mutates ``event``."""

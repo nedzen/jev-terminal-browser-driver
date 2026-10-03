@@ -32,8 +32,10 @@ LAST_PAGE_KEYS = ("targetId", "url", "source", "browser_id", "ts")
 PROVENANCE_KEY = "auto_launched"
 LAST_CONTINUITY = None
 
+
 def set_lease(*, tab="new", target_id=None, browser_key=None, navigate=True):
     LEASE.update(tab=tab, target_id=target_id, browser_key=browser_key, navigate=navigate, create_fallback=None)
+
 
 def _pick_browser_key(data=None):
     data = data or list_browsers()
@@ -46,6 +48,7 @@ def _pick_browser_key(data=None):
     chosen = (current or browsers)[0]
     return chosen["key"]
 
+
 def _target_ok(info, *, allow_denylist):
     if (info.get("type") or "page") != "page":
         return False
@@ -57,6 +60,7 @@ def _target_ok(info, *, allow_denylist):
         return False
     return True
 
+
 def _is_ephemeral_url(url):
     text = url or ""
     if "jev-terminal-browser-driver/fixtures/" in text:
@@ -64,6 +68,7 @@ def _is_ephemeral_url(url):
     if text.startswith(("about:", "chrome:", "devtools:", "chrome-untrusted:", "chrome-extension:")):
         return True
     return False
+
 
 def _netloc_id(url: str) -> str:
     """Host:port from a ws/http URL. Bracket IPv6 so [::1]:9222 round-trips."""
@@ -78,6 +83,7 @@ def _netloc_id(url: str) -> str:
         return f"{host}:{port}" if port is not None else host
     return (parsed.netloc or "").lower()
 
+
 def browser_identity():
     last = _discover.LAST
     if last is None:
@@ -86,10 +92,12 @@ def browser_identity():
     ident = _netloc_id(last.ws_url) or _netloc_id(last.http_origin)
     return source, ident
 
+
 def _log_continuity(reason: str) -> None:
     print(f"wwwdrive: continuity {reason}", file=sys.stderr)
     if reason != "lookup":
         write_event({"event": "continuity", "why": reason})
+
 
 def _load_last_page():
     if not LAST_PAGE_PATH.is_file():
@@ -102,9 +110,11 @@ def _load_last_page():
         return None
     return data
 
+
 def _write_last_page(record: dict) -> None:
     LAST_PAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
     LAST_PAGE_PATH.write_text(json.dumps(record))
+
 
 def hud_open() -> bool:
     """Whether the user left the debug panel expanded. Survives navigation and new runs."""
@@ -113,12 +123,14 @@ def hud_open() -> bool:
     except (OSError, ValueError, AttributeError):
         return False
 
+
 def save_hud_open(opened: bool) -> None:
     try:
         HUD_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
         HUD_STATE_PATH.write_text(json.dumps({"open": bool(opened)}))
     except OSError:
         return
+
 
 def remember_page(target_id, url):
     """Remember the driver's tab for reuse; preserve ``auto_launched`` on re-attach."""
@@ -144,6 +156,7 @@ def remember_page(target_id, url):
             PROVENANCE_KEY: spawned,
         }
     )
+
 
 def find_continuable_page():
     """Re-attach to a previously driven page when the caller omitted --url."""
@@ -220,20 +233,25 @@ def find_continuable_page():
     _log_continuity("stale-id")
     return None, None
 
+
 def _get_targets():
     return cdp("Target.getTargets").get("targetInfos") or []
 
+
 def _attach(target_id):
     return cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
+
 
 def _json_pages():
     with urllib.request.urlopen(f"http://127.0.0.1:{cdp_port()}/json/list", timeout=5) as resp:
         return json.loads(resp.read())
 
+
 def _unique_url(url):
     """Distinct new-tab URL. A fragment, so the site never sees a changed request."""
     sep = "&" if "#" in url else "#"
     return f"{url}{sep}jev={time.time_ns()}"
+
 
 def _wait_new_page(before_ids, timeout=15):
     deadline = time.monotonic() + timeout
@@ -243,6 +261,7 @@ def _wait_new_page(before_ids, timeout=15):
                 return page["id"]
         time.sleep(0.05)
     return None
+
 
 def _open_via_new_tab(url):
     url = _unique_url(url)
@@ -268,6 +287,7 @@ def _open_via_new_tab(url):
         raise RuntimeError("new-tab did not appear in CDP /json/list")
     return created, True
 
+
 def _open_via_chrome(url):
     url = _unique_url(url)
     try:
@@ -278,6 +298,7 @@ def _open_via_chrome(url):
             "Target.createTarget is not supported on this browser; "
             "wwwdrive only provisions terminal-browser panes (TUI-only scope)."
         ) from exc
+
 
 def _open_owned_tab(url):
     last = _discover.LAST

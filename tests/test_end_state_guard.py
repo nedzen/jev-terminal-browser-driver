@@ -430,6 +430,7 @@ def test_a_decision_that_was_not_blocked_logs_no_blocked_record(monkeypatch):
     agent.state["decisions"] = [{"choice": "DONE", "operation": "DONE"}]
     assert _capture_blocked_log(monkeypatch, agent) == []
 
+
 # --------------------------------------------------------------------------
 # The same bar on the DONE path: the navigation bypass
 # --------------------------------------------------------------------------

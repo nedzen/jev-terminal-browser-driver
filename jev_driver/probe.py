@@ -15,9 +15,11 @@ PROBE_RETRIES = (0.1, 0.2, 0.3)
 # Probe refusal reasons (telemetry; act() still reports field/page_changed).
 PROBE_REASONS = ("target_detached", "target_changed", "not_actionable", "not_writable", "ok")
 
+
 def fingerprint(state):
     content = {k: state[k] for k in ("url", "text", "actions", "scroll")}
     return hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()
+
 
 def _same_field_document(page: dict, page_key) -> bool:
     """True when the fill's URL still matches (same-URL re-render is OK)."""
@@ -28,6 +30,7 @@ def _same_field_document(page: dict, page_key) -> bool:
         return False
     return page_key[1] == stored[1]
 
+
 def _swapped_document(page: dict, page_key) -> bool:
     """Whether `page_key` comes from a different document that kept the same URL."""
     if not isinstance(page_key, list) or len(page_key) < 2:
@@ -36,6 +39,7 @@ def _swapped_document(page: dict, page_key) -> bool:
     if not isinstance(stored, list) or len(stored) < 2:
         return False
     return page_key[0] != stored[0]
+
 
 def _same_field(page: dict, node: int, current) -> bool:
     """True when field identity, value, and URL are unchanged."""
@@ -56,14 +60,18 @@ def _same_field(page: dict, node: int, current) -> bool:
         return bool(guard[3]) and bool(stored_guard[3])
     return True
 
+
 _COUNTS = re.compile(r"\d[\d.,]*\s*[KMBkmb]?")
+
 
 def without_counts(value):
     """Live feeds tick like counts and relative times. Those must not cancel a click."""
     return _COUNTS.sub("#", value) if isinstance(value, str) else value
 
+
 # Driver-authored fragment param from `_unique_url` (whole parameter only).
 _JEV_MARKER_RE = re.compile(r"jev=\d+")
+
 
 def _same_marker(stored, current) -> bool:
     """True when two MARKER readings match after stripping the driver nonce."""
@@ -72,6 +80,7 @@ def _same_marker(stored, current) -> bool:
     if len(stored) != len(current) or len(stored) < 2:
         return stored == current
     return _same_href(stored[1], current[1]) and stored[:1] == current[:1] and stored[2:] == current[2:]
+
 
 def _strip_jev_marker(href):
     """URL with the driver's ``#jev=<nonce>`` fragment parameter removed."""
@@ -83,9 +92,11 @@ def _strip_jev_marker(href):
     kept = [part for part in fragment.split("&") if not _JEV_MARKER_RE.fullmatch(part)]
     return f"{base}#{'&'.join(kept)}" if kept else base
 
+
 def _same_href(stored, current) -> bool:
     """Two hrefs are the same place, ignoring the driver's own nonce fragment."""
     return _strip_jev_marker(stored) == _strip_jev_marker(current)
+
 
 def _same_document(page: dict, current) -> bool:
     stored = page.get("page_key")
@@ -94,6 +105,7 @@ def _same_document(page: dict, current) -> bool:
     if not isinstance(stored, list) or len(stored) < 2:
         return _same_href(current[1], page.get("url"))
     return current[0] == stored[0] and _same_href(current[1], stored[1])
+
 
 def _same_target(page: dict, node: int, current) -> bool:
     """Same document and the same control. Scroll position and ticking numbers are ignored."""
@@ -106,6 +118,7 @@ def _same_target(page: dict, node: int, current) -> bool:
     if not isinstance(guard, list) or not isinstance(stored, list) or len(guard) != len(stored):
         return False
     return [without_counts(item) for item in guard] == [without_counts(item) for item in stored]
+
 
 def _probe_expression(node: int) -> str:
     """Read-only probe expression for one node (bits + optional telemetry).
@@ -132,6 +145,7 @@ def _probe_expression(node: int) -> str:
         "opacity:attached&&typeof getComputedStyle==='function'?getComputedStyle(e).opacity:null,boxed:boxed}]; })()"
     )
 
+
 def _probe_flags(current) -> tuple | None:
     """Probe flag tuple, or None when the answer is unusable."""
     if not isinstance(current, list) or len(current) < 3:
@@ -143,12 +157,14 @@ def _probe_flags(current) -> tuple | None:
         return None
     return tuple(bits[:5])
 
+
 def _probe_telemetry(current) -> dict:
     """Probe telemetry dict, or {} — never affects the verdict."""
     if not isinstance(current, list) or len(current) < 4:
         return {}
     extra = current[3]
     return extra if isinstance(extra, dict) else {}
+
 
 def _probe_reason(kind: str, page: dict, node: int, current) -> str:
     """One of PROBE_REASONS explaining why ``node`` cannot be touched."""
@@ -175,6 +191,7 @@ def _probe_reason(kind: str, page: dict, node: int, current) -> str:
         return "not_actionable"
     same = _same_field(page, node, current) if kind == "fill" else _same_target(page, node, current)
     return "ok" if same else "target_changed"
+
 
 def _clickable(live: bool, hit: bool, telemetry: dict) -> bool:
     """Whether a pointer target may still be clicked.

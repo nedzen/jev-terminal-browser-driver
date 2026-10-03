@@ -339,9 +339,6 @@ def test_usage_is_recorded_for_a_pure_model_decision(monkeypatch):
     assert decision["usage"] == {"input_tokens": 5, "output_tokens": 1, "cost": 0.0002}
 
 
-
-
-
 @pytest.mark.parametrize(
     "probabilities", [{"a": 0.55, "b": 0.42}, {"a": 0.55, "b": 0.45}, {"a": 0.7, "b": 0.34}]
 )

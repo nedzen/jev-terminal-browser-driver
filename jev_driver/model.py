@@ -43,6 +43,7 @@ _MODEL_ID_MAX = 128
 _SPEC_NAMES = ("NEXT_ACTION", "TARGET", "TEXT_VALUE")
 _SPEC_PROMPTS = (NEXT_ACTION, TARGET, TEXT_VALUE)
 
+
 def question_spec_hash(prompts=None):
     """Truncated sha256 of the shipped decision prompts (prompt provenance)."""
     if prompts is None:
@@ -55,7 +56,9 @@ def question_spec_hash(prompts=None):
     blob = "".join(f"{name}\x1f{prompt}\x1e" for name, prompt in pairs)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
+
 QUESTION_SPEC_HASH = question_spec_hash()
+
 
 def decisions_url() -> str:
     explicit = os.environ.get("DECISION_GATE_URL", "").strip()
@@ -66,6 +69,7 @@ def decisions_url() -> str:
         return base
     return base + "/v1/systemone"
 
+
 def explicit_endpoint(name: str) -> str | None:
     """Operator-configured endpoint for ``name``, or None (hosted defaults need a key)."""
     try:
@@ -73,12 +77,14 @@ def explicit_endpoint(name: str) -> str | None:
     except Exception:
         return None
 
+
 def _env_files():
     homes = [Path.home() / ".hermes" / ".env"]
     hermes_home = os.environ.get("HERMES_HOME", "").strip()
     if hermes_home:
         homes.append(Path(hermes_home).expanduser() / ".env")
     return homes
+
 
 def _key_from_env_files(names: tuple[str, ...]) -> str | None:
     for name in names:
@@ -94,12 +100,14 @@ def _key_from_env_files(names: tuple[str, ...]) -> str | None:
                     return val
     return None
 
+
 def _key_from_environ(names: tuple[str, ...]) -> str | None:
     for name in names:
         val = os.environ.get(name, "").strip()
         if val:
             return val
     return None
+
 
 def load_decision_key() -> str | None:
     url = decisions_url()
@@ -108,8 +116,10 @@ def load_decision_key() -> str | None:
         names = ("DECISION_GATE_API_KEY", "OPENROUTER_API_KEY", "TYPESAFE_API_KEY")
     return _key_from_environ(names) or _key_from_env_files(names)
 
+
 def load_text_key() -> str | None:
     return _key_from_environ(_TEXT_KEYS) or _key_from_env_files(_TEXT_KEYS)
+
 
 def post_json(url, key, body):
     # An unauthenticated local backend must not receive a "Bearer " header:
@@ -148,6 +158,7 @@ def post_json(url, key, body):
         return data
     raise RuntimeError("Model unavailable")
 
+
 def validate_choice(answer, ids):
     try:
         probabilities = answer["probabilities"]
@@ -172,6 +183,7 @@ def validate_choice(answer, ids):
     # always read the winner under "choice".
     return {**answer, "choice": chosen}
 
+
 def validate_response_model(answer):
     """Validated response model id, or refuse (never echo the offending value)."""
     name = answer.get("model") if isinstance(answer, dict) else None
@@ -179,15 +191,18 @@ def validate_response_model(answer):
         raise RuntimeError("Model provider returned an unexpected model id; no action executed.")
     return name
 
+
 def sole_candidate_answer(candidates):
     """Sole legal answer for a one-candidate head (same shape as validate_choice)."""
     (index,) = candidates
     return {"choice": index, "confidence": 1.0, "probabilities": {index: 1.0}}
 
+
 # Element names this run refuses to act on, as compiled regexes. Installed once
 # per run by cli.main: agent.py is upstream-verbatim and cannot pass arguments
 # into action_space, so the denylist lives here where both callers read it.
 DENY_NAMES: tuple = ()
+
 
 def set_deny_names(patterns=()) -> tuple:
     """Install this run's denylist, compiled once. A bad pattern raises before any decision."""
@@ -201,9 +216,11 @@ def set_deny_names(patterns=()) -> tuple:
     DENY_NAMES = tuple(compiled)
     return DENY_NAMES
 
+
 def _dedup_from_env() -> bool:
     raw = os.environ.get("WWWDRIVE_REQUEST_DEDUP", "").strip().lower()
     return raw not in {"", "0", "false", "no"}
+
 
 # Request-assembly de-duplication, off by default so the full request keeps
 # working unchanged: WWWDRIVE_REQUEST_DEDUP=1 opts a run into the compact body.
@@ -219,10 +236,12 @@ def _dedup_from_env() -> bool:
 # calls choose() directly) without any of them having to know this exists.
 REQUEST_DEDUP: bool = _dedup_from_env()
 
+
 def denied(action, patterns) -> bool:
     """True when the element name matches the denylist. Empty labels never deny."""
     label = str(action.get("label") or "")
     return bool(label) and any(re.search(pattern, label) for pattern in patterns)
+
 
 def action_space(actions, deny_names=None):
     """Indexed actions after denylist drop — denied names are never offered."""
@@ -259,6 +278,7 @@ def action_space(actions, deny_names=None):
         group[target] = action
     return elements, targets, controls
 
+
 def short_criterion(index, action):
     label = (action.get("label") or "")[:LABEL_MAX]
     bits = [f"[{index}] {label}"]
@@ -271,6 +291,7 @@ def short_criterion(index, action):
         if key in action:
             bits.append(f"{key}={action[key]}")
     return "; ".join(bits)
+
 
 def choose(state, goal, history):
     elements, targets, controls = action_space(state["actions"])
@@ -408,6 +429,7 @@ def choose(state, goal, history):
         "stages": stages,
     }
 
+
 def field_context(goal, action, page, history):
     return {
         "goal": goal,
@@ -416,8 +438,10 @@ def field_context(goal, action, page, history):
         "recent_actions": [{k: h.get(k) for k in ("action", "text")} for h in history[-6:]],
     }
 
+
 class _PermanentError(ValueError):
     """Deterministic field_text failure — do not retry."""
+
 
 def _request_retryable(exc: RuntimeError) -> bool:
     """True for retryable provider failures (429/5xx), not deterministic ones."""
@@ -427,6 +451,7 @@ def _request_retryable(exc: RuntimeError) -> bool:
     if "HTTP 4" in msg:
         return False
     return "Model unavailable" not in msg
+
 
 def _strip_code_fences(text):
     """Remove a surrounding markdown code fence (with or without a language tag)."""
@@ -438,6 +463,7 @@ def _strip_code_fences(text):
     if lines and lines[-1].strip() == "```":
         lines = lines[:-1]
     return "\n".join(lines).strip()
+
 
 def field_text(context):
     """Value to type from the text helper, or refuse (keyless only if endpoint is explicit)."""

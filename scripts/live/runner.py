@@ -65,6 +65,7 @@ not in this table: a wrapping paragraph in a ledger cell is unreadable.
 # harness-error investigation and never a product MISS.
 CRASH_RETRIES = 1
 
+
 # v3.1 safety: a consequential-element hit aborts the suite and queues an owner
 # flag rather than being scored, because the click may already have landed.
 class SuiteAbort(RuntimeError):
@@ -251,7 +252,9 @@ def _attempt(client: McpStdio, test: dict, *, log_dir, slice_dir, attempt: int,
     try:
         state_dir = driver_state_dir()
         isolation.assert_log_dir_matches(log_dir, state_dir)
-        isolation.assert_pane_idle(log_dir)
+        # Wait for the previous test's log writes to age past quiet_s (and for any
+        # open run to finish). Assert alone CRASHes every test after the first.
+        isolation.wait_pane_idle(log_dir)
         # `driver_state_dir=` here is defence in depth, not the load-bearing check:
         # `assert_log_dir_matches` above has already guaranteed log_dir *is* the
         # driver's state directory, so quarantine's loud branch cannot fire from

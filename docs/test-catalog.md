@@ -1,6 +1,7 @@
 # Test catalog (generated)
 
-## tests/test_adapter_parity.py (2)
+## tests/test_adapter_parity.py (3)
+- test_each_mcp_tool_description_matches_the_plugin
 - test_time_budget_offered_with_the_same_bounds
 - test_status_tool_takes_no_args_and_every_check_names_a_fix
 
@@ -746,7 +747,7 @@
 - test_remember_continuity_same_id_refreshes_url
 - test_remember_continuity_different_id_does_not_overwrite
 
-## scripts/live/test_harness.py (155)
+## scripts/live/test_harness.py (157)
 - test_a_manifest_defaults_the_timeout_to_300_seconds
 - test_a_per_test_timeout_overrides_the_default
 - test_an_unknown_tier_is_refused
@@ -782,6 +783,8 @@
 - test_a_flagged_record_with_a_surviving_amount_is_caught
 - test_a_pane_with_an_unfinished_run_is_refused
 - test_a_finished_run_leaves_the_pane_idle
+- test_wait_pane_idle_polls_until_the_log_is_quiet
+- test_wait_pane_idle_times_out_when_the_pane_never_settles
 - test_quarantine_clears_the_remembered_tab_and_retains_it
 - test_quarantining_an_absent_page_is_a_no_op
 - test_the_runner_scores_a_scripted_hit

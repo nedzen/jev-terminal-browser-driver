@@ -27,12 +27,14 @@ TIME_BUDGET_WHY = (
     "The decision that crossed the deadline was discarded, so nothing was clicked or typed after it."
 )
 
+
 def _label_stem(label: str) -> str:
     """Drop a leading count so '12 comments' still matches '13 comments'."""
     parts = label.split(None, 1)
     if len(parts) == 2 and parts[0].isdigit():
         return parts[1].strip()
     return label.strip()
+
 
 def _observed_label(page: dict | None, target) -> str:
     """Observed label for a target index, or ""."""
@@ -45,6 +47,7 @@ def _observed_label(page: dict | None, target) -> str:
             if label:
                 return label.split(";")[0].strip()
     return ""
+
 
 def _click_named(actions, label: str):
     """Find the click target again. Exact label, or the same stem when the count changed."""
@@ -65,12 +68,14 @@ def _click_named(actions, label: str):
         return stemmed[0]
     return None
 
+
 def label_of(text, fallback, width=60) -> str:
     """A criterion's readable label: drop the "[KEY]" prefix and the ";" tail, clipped to width."""
     raw = str(text or fallback or "")
     if raw.startswith("[") and "]" in raw:
         raw = raw.split("]", 1)[1]
     return raw.split(";")[0].strip()[:width]
+
 
 def _why(status, decision, history, reason=None):
     if reason in REASON_WHY:
@@ -91,8 +96,10 @@ def _why(status, decision, history, reason=None):
         return "Stopped before the goal was visibly done."
     return ""
 
+
 _PAGINATION = re.compile(r"^(next|previous|prev|more|load more|show more|continue|older|newer)\b|[›»→←‹«]|^\d+$")
 _REPEAT_GOAL = re.compile(r"\b(twice|times|each|every|until|pages|all of)\b")
+
 
 def _top_operation(decision) -> str | None:
     probs = (decision or {}).get("operation_probabilities") or {}
@@ -100,15 +107,19 @@ def _top_operation(decision) -> str | None:
         return None
     return max(probs.items(), key=lambda kv: float(kv[1] or 0))[0]
 
+
 _TERMINAL = {"DONE", "BLOCKED"}
+
 
 def _performs_input(decision) -> bool:
     """False for DONE/BLOCKED (settle-only). Uses ``choice`` only, not ``operation``."""
     return (decision or {}).get("choice") not in _TERMINAL
 
+
 def _ranked(probs, limit=6):
     items = sorted((probs or {}).items(), key=lambda kv: -float(kv[1] or 0))
     return [[str(key), round(float(val), 3)] for key, val in items[:limit]]
+
 
 class DriveAgent:
     """Observe → decide → act, with finish/stop gates and optional debug HUD."""
