@@ -104,6 +104,10 @@ def end_state_matched(expected: dict, final_url: str | None, final_view: str | N
     """
     if not expected:
         return False
+    if isinstance(final_view, dict):
+        # Live drive results carry final_view as an object (url/title/flags);
+        # match predicates against its text content, never its structure.
+        final_view = " ".join(str(v) for v in final_view.values())
     view = (final_view or "").lower()
     text = (final_url or "").lower()
     if "url_host_path" in expected:

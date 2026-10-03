@@ -1024,3 +1024,14 @@ def test_the_fake_server_offers_exactly_the_three_tools():
         assert client.tools() == ["drive", "read", "status"]
     finally:
         client.close()
+
+def test_a_dict_final_view_is_matched_on_its_text_content():
+    """Live drive results carry final_view as an object (url/title/flags),
+    not a string. Predicate matching must read its text, never crash on it."""
+    from scripts.live.classify import end_state_matched
+    view = {"url": "https://coinmarketcap.com/currencies/tether/",
+            "title": "Tether price today",
+            "page_changed_since_decision": False}
+    assert end_state_matched({"url_contains": "/currencies/tether/"}, view["url"], view) is True
+    assert end_state_matched({"text_present": "Tether price"}, view["url"], view) is True
+    assert end_state_matched({"text_present": "nope absent"}, view["url"], view) is False
