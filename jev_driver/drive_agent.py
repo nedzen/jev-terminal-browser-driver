@@ -273,9 +273,8 @@ class DriveAgent(Agent):
     def _note_model_blocked(self):
         state = self.state
         decision = (state.get("decisions") or [None])[-1] or {}
-        # Logged before the guards, and on every tick the model chose BLOCKED, so
-        # the record survives `_blocked_rescue` converting the run to done. A
-        # BLOCKED that was rescued is exactly the case worth being able to audit.
+        # Logged before the guards on every BLOCKED tick, so a later rescue still
+        # leaves an audit trail of the model's choice.
         if decision.get("choice") == "BLOCKED" or decision.get("operation") == "BLOCKED":
             self._log_model_blocked(decision)
         if state.get("status") != "blocked" or state.get("stop_reason"):
@@ -633,97 +632,100 @@ class DriveAgent(Agent):
         )
         return self.snapshot()
 
+    LOOK_SCROLLS = 3
+
+    def _hydrate(self, *, rounds: int, ready) -> bool:
+        """Sleep and re-observe until ``ready(text)`` or rounds run out."""
+        state = self.state
+        browser = state.get("browser")
+        if browser is None:
+            return False
+        for _ in range(rounds):
+            browser.sleep(getattr(browser, "HYDRATE_SLEEP_S", 0) or 0)
+            state["page"] = browser._observe_once(screenshot=False)
+            if ready((state["page"] or {}).get("text") or ""):
+                return True
+        return False
+
+    def _auto_scroll(self, page: dict, *, usage=None) -> bool:
+        """One driver corrective scroll_down (``history.auto`` — not a model action)."""
+        state = self.state
+        browser = state.get("browser")
+        scroll = next((item for item in (page.get("actions") or []) if item.get("id") == "scroll_down"), None)
+        if scroll is None or browser is None:
+            return False
+        try:
+            browser.act(scroll, page)
+        except StalePage:
+            self.metrics.record_stale()
+        state["page"] = browser.observe(screenshot=getattr(self, "screenshots", False))
+        history = state.setdefault("history", [])
+        history.append(
+            {
+                "step": len(history) + 1,
+                "action": "Scroll down",
+                "kind": "scroll",
+                "operation": "SCROLL_DOWN",
+                "page_changed": (state["page"] or {}).get("fingerprint") != page.get("fingerprint"),
+                "usage": usage or {},
+                "auto": True,
+            }
+        )
+        return True
+
     def _reject_weak_done(self):
-        """Do not finish on a weak DONE, on a zero-action DONE, or on a label-only page."""
+        """Do not finish on a weak DONE, zero-action DONE, or label-only page."""
         state = self.state
         decision = state.get("decision")
         page = state.get("page") or {}
         if not decision or decision.get("choice") != "DONE":
             return None
-        judgment = verdict(self._evidence())
+        ev = self._evidence()
+        judgment = verdict(ev)
         if judgment.kind == "allow":
             return None
-        # reject_done or stop (weak_done)
         state["decision"] = None
-        probability = done_probability(decision)
         write_event(
             {
                 "event": "reject_done",
                 "goal": state.get("goal"),
-                "why": f"DONE p={probability:.2f} was not accepted",
+                "why": f"DONE p={done_probability(decision):.2f} was not accepted",
                 "url": page.get("url"),
             }
         )
-        text = page.get("text") or ""
-        if page_is_shell(text):
-            browser = state.get("browser")
-            for _ in range(6):
-                if browser is None:
-                    break
-                browser.sleep(getattr(browser, "HYDRATE_SLEEP_S", 0) or 0)
-                state["page"] = browser._observe_once(screenshot=False)
-                if not page_is_shell((state["page"] or {}).get("text") or ""):
-                    state["status"] = "ready"
-                    return self.snapshot()
+        if ev.shell:
+            if self._hydrate(rounds=6, ready=lambda text: not page_is_shell(text)):
+                state["status"] = "ready"
+                return self.snapshot()
             state["status"] = "blocked"
             state["stop_reason"] = "shell"
             return self.snapshot()
         self._weak_done = getattr(self, "_weak_done", 0) + 1
-        if judgment.kind == "stop" or self._weak_done >= 2:
-            state["status"] = "blocked"
-            state["stop_reason"] = "weak_done"
+        if judgment.kind == "stop":
+            state["status"] = judgment.status or "blocked"
+            state["stop_reason"] = judgment.stop_reason or "weak_done"
             return self.snapshot()
-        scroll = next((item for item in (page.get("actions") or []) if item.get("id") == "scroll_down"), None)
-        browser = state.get("browser")
-        if scroll is not None and browser is not None:
-            try:
-                browser.act(scroll, page)
-            except StalePage:
-                self.metrics.record_stale()
-            state["page"] = browser.observe(screenshot=self.screenshots)
-            history = state.setdefault("history", [])
-            history.append(
-                {
-                    "step": len(history) + 1,
-                    "action": "Scroll down",
-                    "kind": "scroll",
-                    "operation": "SCROLL_DOWN",
-                    "page_changed": True,
-                    # Driver corrective scroll — must not count as a model action (#23).
-                    "auto": True,
-                }
-            )
-        elif browser is not None:
-            browser.sleep(getattr(browser, "HYDRATE_SLEEP_S", 0) or 0)
-            state["page"] = browser._observe_once(screenshot=False)
+        if not self._auto_scroll(page):
+            browser = state.get("browser")
+            if browser is not None:
+                browser.sleep(getattr(browser, "HYDRATE_SLEEP_S", 0) or 0)
+                state["page"] = browser._observe_once(screenshot=False)
         state["status"] = "ready"
         return self.snapshot()
 
-    LOOK_SCROLLS = 3
-
     def _moved_on(self, page: dict) -> bool:
-        """This run already took the user to another page, so the goal's action has happened."""
+        """True when this run left the start URL (goal action likely happened)."""
         start = getattr(self, "_start_url", None)
         url = (page or {}).get("url")
         return bool(start and url) and start.split("#")[0] != url.split("#")[0]
 
-    def _blocked_rescue(self, page: dict):
-        """Last chance for a BLOCKED that this run had already earned its way out of."""
+    def _apply_rescue(self, page: dict):
+        """Apply a verdict ``rescue_done`` — no re-check, no Evidence rebuild."""
         state = self.state
-        decision = state.get("decision") or {}
-        if decision.get("choice") != "BLOCKED":
-            return None
-        if not end_state_reached(
-            page,
-            goal=state.get("goal"),
-            history=state.get("history"),
-            moved_on=self._moved_on(page),
-        ):
-            return None
         state["decision"] = None
         state["status"] = "done"
         state["stop_reason"] = "end_state_reached"
-        if state.get("elapsed_ms") is None:
+        if state.get("elapsed_ms") is None and state.get("started_at") is not None:
             state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
         write_event(
             {
@@ -739,27 +741,21 @@ class DriveAgent(Agent):
         return self.snapshot()
 
     def _look_further(self):
-        """BLOCKED usually means the target is below the viewport. Scroll and ask again, a few times."""
+        """BLOCKED recovery: wait, scroll, or rescue — policy is entirely in verdict()."""
         state = self.state
         decision = state.get("decision") or {}
         if decision.get("choice") != "BLOCKED":
             return None
-        page = state.get("page") or {}
-        browser = state.get("browser")
         judgment = verdict(self._evidence())
         if judgment.kind == "rescue_done":
-            return self._blocked_rescue(page)
-        if judgment.kind == "noop":
-            return self._blocked_rescue(page)
+            return self._apply_rescue(state.get("page") or {})
         if judgment.kind == "look_wait":
             self._looked = getattr(self, "_looked", 0) + 1
             state["decision"] = None
-            for _ in range(8):
-                browser.sleep(getattr(browser, "HYDRATE_SLEEP_S", 0) or 0)
-                state["page"] = browser._observe_once(screenshot=False)
-                now = (state["page"] or {}).get("text") or ""
-                if not page_is_shell(now) and len(now.strip()) >= 160:
-                    break
+            self._hydrate(
+                rounds=8,
+                ready=lambda text: not page_is_shell(text) and len(text.strip()) >= 160,
+            )
             state["status"] = "ready"
             write_event(
                 {
@@ -769,39 +765,24 @@ class DriveAgent(Agent):
                 }
             )
             return self.snapshot()
-        if judgment.kind != "look_scroll":
-            return self._blocked_rescue(page)
-        scroll = next((item for item in page.get("actions") or [] if item.get("id") == "scroll_down"), None)
-        if scroll is None or browser is None:
-            return self._blocked_rescue(page)
-        self._looked = getattr(self, "_looked", 0) + 1
-        state["decision"] = None
-        try:
-            browser.act(scroll, page)
-        except StalePage:
-            self.metrics.record_stale()
-        state["page"] = browser.observe(screenshot=getattr(self, "screenshots", False))
-        history = state.setdefault("history", [])
-        history.append(
-            {
-                "step": len(history) + 1,
-                "action": "Scroll down",
-                "kind": "scroll",
-                "operation": "SCROLL_DOWN",
-                "page_changed": state["page"].get("fingerprint") != page.get("fingerprint"),
-                "usage": decision.get("usage") or {},
-                "auto": True,
-            }
-        )
-        state["status"] = "ready"
-        write_event(
-            {
-                "event": "look_further",
-                "goal": state.get("goal"),
-                "why": f"Model chose BLOCKED; scrolled to look for the target ({self._looked}/{self.LOOK_SCROLLS}).",
-            }
-        )
-        return self.snapshot()
+        if judgment.kind == "look_scroll":
+            page = state.get("page") or {}
+            self._looked = getattr(self, "_looked", 0) + 1
+            state["decision"] = None
+            self._auto_scroll(page, usage=decision.get("usage") or {})
+            state["status"] = "ready"
+            write_event(
+                {
+                    "event": "look_further",
+                    "goal": state.get("goal"),
+                    "why": (
+                        f"Model chose BLOCKED; scrolled to look for the target "
+                        f"({self._looked}/{self.LOOK_SCROLLS})."
+                    ),
+                }
+            )
+            return self.snapshot()
+        return None
 
     def _maybe_unblock_scroll(self, snap, before_y):
         state = self.state

@@ -238,7 +238,7 @@ def test_the_rescue_converts_to_done_with_its_own_stop_reason(monkeypatch):
     result says the model blocked and the driver overrode it."""
     monkeypatch.setattr("jev_driver.drive_agent.write_event", lambda event: None)
     agent = _blocked_agent()
-    snap = agent._blocked_rescue(agent.state["page"])
+    snap = agent._look_further()
     assert snap["status"] == "done"
     assert agent.state["stop_reason"] == "end_state_reached"
 
@@ -257,41 +257,37 @@ def test_the_rescue_explains_itself_in_the_agents_words(monkeypatch):
     must be able to say the model blocked and why the driver disagreed."""
     monkeypatch.setattr("jev_driver.drive_agent.write_event", lambda event: None)
     agent = _blocked_agent()
-    agent._blocked_rescue(agent.state["page"])
+    agent._look_further()
     why = REASON_WHY[agent.state["stop_reason"]]
     assert "BLOCKED" in why
     assert "end state" in why
 
 
 def test_the_rescue_consumes_the_decision_it_overrode():
-    """agent.py writes history and metrics from the live decision. Leaving a
-    BLOCKED in state after reporting done would let the next reader see a blocked
-    choice under a done status."""
+    """Leaving a BLOCKED in state after reporting done would let the next reader
+    see a blocked choice under a done status."""
     agent = _blocked_agent()
-    agent._blocked_rescue(agent.state["page"])
+    agent._look_further()
     assert agent.state["decision"] is None
 
 
 @pytest.mark.parametrize("choice", ["DONE", "CLICK", None])
-def test_the_rescue_ignores_a_decision_that_is_not_blocked(choice):
-    """It hangs off the BLOCKED path only. A DONE or a CLICK that reaches this
-    function is a caller bug and must not be rewritten into a done."""
+def test_look_further_ignores_a_decision_that_is_not_blocked(choice):
+    """Recovery hangs off the BLOCKED path only."""
     agent = _blocked_agent()
     agent.state["decision"] = {"choice": choice, "operation": choice}
-    assert agent._blocked_rescue(agent.state["page"]) is None
+    assert agent._look_further() is None
     assert agent.state["status"] == "predicted"
 
 
 def test_a_blocked_the_guard_declines_is_left_exactly_as_it_was():
-    """The no-op must not touch status, reason, or the decision: this path runs on
-    every BLOCKED, so it has to be invisible when it declines."""
+    """noop must not touch status, reason, or the decision."""
     agent = _blocked_agent(history=[])
     before = dict(agent.state)
-    assert agent._blocked_rescue(agent.state["page"]) is None
+    assert agent._look_further() is None
     assert agent.state["status"] == before["status"]
     assert agent.state.get("stop_reason") == before.get("stop_reason")
     assert agent.state["decision"] == before["decision"]
-
 
 # --------------------------------------------------------------------------
 # It hangs off the exhausted-BLOCKED path, after scrolling has been tried
@@ -443,7 +439,7 @@ def test_a_decision_that_was_not_blocked_logs_no_blocked_record(monkeypatch):
 # which is a comparison of two strings and not a claim about the goal. M7 DONE'd at
 # 0.56 on a Polymarket event page with one click and no scroll and was accepted
 # because the path changed; the goal had named an order book the run never reached.
-# The bypass now requires `end_state_reached`, the same bar `_blocked_rescue` applies
+# The bypass now requires `end_state_reached`, the same bar rescue_done applies
 # to a BLOCKED. The two frozen shapes below are the pair that fixes the rule: the same
 # navigation, once with a destination the goal actually names and once without.
 
