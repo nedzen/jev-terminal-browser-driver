@@ -18,6 +18,13 @@ from jev_driver.browser import (
 from jev_driver.discover import Discovery
 from jev_driver.takeover import TAKEOVER_REASON, WatchAgent
 
+# Provisioning-mechanism tests pass `env=NOT_NESTED` so they exercise the visible
+# split rather than the root-terminal placement guard, which refuses by design when
+# the caller is inside a herdr pane (and would otherwise fire in any test run that
+# happens to be executing inside one). Placement has its own tests in
+# tests/test_lifecycle.py.
+NOT_NESTED = {}
+
 
 @pytest.fixture(autouse=True)
 def reset_last(monkeypatch):
@@ -60,7 +67,7 @@ def test_watch_opens_split_when_tb_binary_exists(monkeypatch):
         )
 
     monkeypatch.setattr(disc, "_provision_terminal_browser", fake_open)
-    found = disc.discover(watch=True, launch_url="https://example.test/flights")
+    found = disc.discover(watch=True, launch_url="https://example.test/flights", env=NOT_NESTED)
     assert spawned == ["https://example.test/flights"]
     assert found.auto_launched is True
     assert found.visibility == "terminal-browser-pane"
@@ -71,9 +78,9 @@ def test_watch_missing_binary_is_actionable(monkeypatch):
     monkeypatch.setattr(disc, "_daemon_db_discovery", lambda: None)
     monkeypatch.setattr(disc, "resolve_terminal_browser", lambda: None)
     with pytest.raises(disc.WatchUnavailable, match="not installed"):
-        disc.discover(watch=True)
+        disc.discover(watch=True, env=NOT_NESTED)
     with pytest.raises(disc.WatchUnavailable, match="kitty-graphics"):
-        disc.discover(watch=True)
+        disc.discover(watch=True, env=NOT_NESTED)
 
 
 def test_watch_open_surfaces_tb_stderr(monkeypatch):
