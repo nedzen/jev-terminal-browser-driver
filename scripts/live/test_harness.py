@@ -1247,3 +1247,22 @@ def test_payload_ticks_materialize_as_tick_events_and_string_actions_as_acts():
     ev = _events_from_payload({"ticks": 2, "actions": ["Buy Bitcoin", "DONE"]})
     assert count_ticks(ev) == 2
     assert len(consequential_hits(ev, deny_elements=["buy"])) == 1
+
+
+def test_run_suite_accepts_a_goal_style_manifest(tmp_path):
+    """run_suite validates the manifest, then run_test re-validates each test.
+    Without idempotent re-entry the second pass sees goal + derived drives and
+    refuses the manifest — which made every goal-style suite unrunnable while
+    all run_test-level tests stayed green."""
+    root = tmp_path
+    client = _client([HIT], log_dir=root)
+    try:
+        out = runner.run_suite(
+            {"tests": [_test(goal="Go to example.com and click Learn more.")]},
+            client=client, log_dir=root, slice_dir=root / "slices",
+            baseline_dir=root / "baseline",
+            ledger=root / "ledger.md")
+    finally:
+        client.close()
+    assert out["classified"] == 1
+    assert out["by_class"].get("HIT") == 1

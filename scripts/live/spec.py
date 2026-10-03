@@ -167,6 +167,12 @@ def validate_test(test: dict, *, index: int | None = None) -> dict:
     MISS, or worse, every outcome a HIT).
     """
     where = f"test[{index}]" if index is not None else str(test.get("id", "<no id>"))
+    if test.get("_validated") and isinstance(test.get("drives"), list):
+        # Idempotent re-entry: run_suite validates the manifest, then run_test
+        # validates each test again. Without this guard the second pass sees
+        # the normalized copy (goal + derived drives) and refuses it as
+        # ambiguous — which made every goal-style manifest unrunnable.
+        return dict(test)
     if not isinstance(test, dict):
         raise ManifestError(f"{where}: a test must be an object")
 
@@ -275,6 +281,7 @@ def validate_test(test: dict, *, index: int | None = None) -> dict:
     normalized["comparative"] = dict(comparative)
     normalized["anomaly_tags"] = list(tags)
     normalized["site_fingerprint"] = fingerprint
+    normalized["_validated"] = True
     return normalized
 
 
