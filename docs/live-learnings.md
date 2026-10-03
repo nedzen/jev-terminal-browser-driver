@@ -78,3 +78,5 @@ flagged for evidence re-read (landed on prior-run pages).
 | M5-e3375bffa4 | M5 | x.com | R | mandatory | MISS | sev-2 | wrong-end-state | action_budget | x.com/home | 13 | 0 | 1325.0 | feca83330992f854 | 9cf85ac | 9.29 |
 | M6-9f33e9e37f | M6 | kalshi.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | chromewebdata/ | 4 | 0 | 631.0 | feca83330992f854 | 9cf85ac | 15.26 |
 | M6-67bb4a667a | M6 | kalshi.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | kalshi.com/ | 2 | 0 | 1809.0 | feca83330992f854 | 9cf85ac | 3.68 |
+| M7-7dd0bfa1e7 | M7 | polymarket.com | R | mandatory | FALSE-DONE | sev-1 | false-done | model_done | polymarket.com/event/btc-updown-5m-1791012900 | 3 | 0 | 2982.0 | feca83330992f854 | 3a9beae | 3.84 |
+| M8-ad106edd4e | M8 | github.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | github.com/search | 4 | 0 | 872.0 | feca83330992f854 | 3a9beae | 19.55 |
