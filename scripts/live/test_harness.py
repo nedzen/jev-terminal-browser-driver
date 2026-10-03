@@ -19,6 +19,7 @@ from scripts.live import isolation, runner, taxonomy
 from scripts.live.classify import (
     classify,
     confidence_inversion,
+    end_state_matched,
     host_and_path,
 )
 from scripts.live.driver import McpStdio
@@ -33,6 +34,7 @@ from scripts.live.fake_server import (
     HONEST_BLOCKED,
     ISOLATION_VIOLATION,
     NEVER_RETURNS,
+    PAGE_TEXT_AT_PREFIX,
     STALL_SILENT,
     UNJUSTIFIED_BLOCKED,
     spawn,
@@ -827,8 +829,22 @@ def test_every_class_is_reachable_from_some_stop_reason():
 
 def test_the_text_present_predicate_is_auto_judgeable():
     out = classify(expected={"text_present": "iana example domains"}, satisfiable=True,
-                   stop_reason="model_done", final_url=IANA, final_view="IANA Example Domains")
+                   stop_reason="model_done", final_url=IANA, final_view="IANA Example Domains",
+                   page_text="IANA Example Domains: this is the page body.")
     assert out["outcome_class"] == taxonomy.HIT
+
+
+def test_text_present_never_falls_back_to_url_or_title():
+    """Body predicates match the page body only. A needle living in the URL or
+    the title must NOT satisfy text_present — that false-HIT shape is what the
+    predicate exists to exclude."""
+    out = classify(expected={"text_present": "tether price"}, satisfiable=True,
+                   stop_reason="model_done",
+                   final_url="https://coinmarketcap.com/currencies/tether/",
+                   final_view={"url": "https://coinmarketcap.com/currencies/tether/",
+                               "title": "Tether price today"},
+                   page_text="")
+    assert out["end_state_matched"] is False
 
 
 def test_the_url_contains_predicate_is_auto_judgeable():
@@ -1355,6 +1371,100 @@ def test_the_runner_refuses_on_the_directory_alone_not_only_via_quarantine(tmp_p
     assert "not the driver's state directory" in (record["error"] or "")
 
 
+# --------------------------------------------------------------------------
+# text_present is scored on page text, not on url+title
+# --------------------------------------------------------------------------
+
+# What a live drive result actually carries: final_view is an object of
+# url/title/flags and carries no body text at all. A `text_present` predicate
+# matched against it alone could only ever find words inside a URL or a title,
+# which made M7's order-book predicate structurally unmatchable.
+FINAL_VIEW_DICT = {
+    "page_changed_since_decision": True,
+    "url": "https://polymarket.com/event/btc-updown-5m-1791012900",
+    "title": "BTC Up or Down 5m Predictions & Odds 2026 | Polymarket",
+}
+ORDER_BOOK_PAGE = "Skip to main content\nLog in\nTrending\nBest Bid\nBest Ask\nOrder Book\n"
+
+EXPECTED_ORDER_BOOK = {"text_present": "order book"}
+
+
+def test_text_present_matches_body_text_the_final_view_never_carried():
+    """The M7 shape: the goal's end state is body text, so page text is the only
+    place the answer can come from."""
+    assert classify(
+        expected=EXPECTED_ORDER_BOOK, satisfiable=True, stop_reason="model_done",
+        final_url=FINAL_VIEW_DICT["url"], final_view=FINAL_VIEW_DICT,
+        page_text=ORDER_BOOK_PAGE,
+    )["end_state_matched"] is True
+
+
+def test_text_present_is_false_when_the_body_text_lacks_it():
+    out = classify(
+        expected=EXPECTED_ORDER_BOOK, satisfiable=True, stop_reason="model_done",
+        final_url=FINAL_VIEW_DICT["url"], final_view=FINAL_VIEW_DICT,
+        page_text="Skip to main content\nLog in\nTrending\nPolitics\nSports\n",
+    )
+    assert out["end_state_matched"] is False
+    assert out["false_done"] is True
+
+
+def test_text_present_is_false_and_never_raises_when_page_text_is_missing():
+    """Total by contract: absent text means absent evidence, not a crash."""
+    out = classify(
+        expected=EXPECTED_ORDER_BOOK, satisfiable=True, stop_reason="model_done",
+        final_url=FINAL_VIEW_DICT["url"], final_view=FINAL_VIEW_DICT, page_text=None,
+    )
+    assert out["end_state_matched"] is False
+
+
+def test_a_dict_final_view_alone_does_not_raise_the_matcher():
+    """The old `(final_view or "").lower()` raised AttributeError on every real
+    run, because a live final_view is a dict."""
+    assert end_state_matched(EXPECTED_ORDER_BOOK, FINAL_VIEW_DICT["url"], FINAL_VIEW_DICT) is False
+
+
+def test_text_present_with_no_page_text_matches_nothing():
+    """Removed fallback (2026-10-03): view-words satisfying body predicates is
+    the false-HIT shape. With no page text, text_present is False;
+    view-scoped matching belongs to final_view_contains."""
+    assert end_state_matched({"text_present": "polymarket"}, FINAL_VIEW_DICT["url"],
+                             FINAL_VIEW_DICT) is False
+    assert end_state_matched({"final_view_contains": "polymarket"}, FINAL_VIEW_DICT["url"],
+                             FINAL_VIEW_DICT) is True
+
+
+def test_final_view_contains_still_matches_the_flattened_view():
+    """The v3 spelling keeps its own haystack; this fix does not move it."""
+    assert end_state_matched({"final_view_contains": "BTC Up or Down"},
+                             FINAL_VIEW_DICT["url"], FINAL_VIEW_DICT) is True
+
+
+def test_a_non_string_page_text_is_coerced_rather_than_raising():
+    for value in (None, 42, {"a": "order book"}, ["order", "book"]):
+        assert end_state_matched(EXPECTED_ORDER_BOOK, FINAL_VIEW_DICT["url"],
+                                 FINAL_VIEW_DICT, value) in (True, False)
+
+
+def test_the_runner_threads_page_text_into_the_predicate(tmp_path):
+    """End to end, and only via page text: the fake's final_view is a dict of
+    url/title (as a live result is), so the needle exists nowhere but the body."""
+    test = _test(expected={"text_present": "release notes"}, url=M9_NOTES)
+    record = _run_one([f"{PAGE_TEXT_AT_PREFIX}{M9_NOTES}|release notes for v1.1.0"],
+                      test=test, tmp_path=tmp_path)
+    assert record["end_state_matched"] is True
+    assert record["outcome_class"] in (taxonomy.HIT, taxonomy.HIT_RECOVERED)
+
+
+def test_a_text_predicate_fails_when_the_body_text_never_arrives(tmp_path):
+    """The counter-case: same goal, same end URL, body text absent. Without this the
+    test above could pass on the url alone."""
+    test = _test(expected={"text_present": "release notes"}, url=M9_NOTES)
+    record = _run_one([f"{HIT_AT_PREFIX}{M9_NOTES}"], test=test, tmp_path=tmp_path)
+    assert record["end_state_matched"] is False
+    assert record["outcome_class"] == taxonomy.FALSE_DONE
+
+
 def test_the_pane_guard_refuses_two_concurrent_drives(tmp_path):
     """One drive at a time, enforced locally even though the mutex is the caller's."""
     from scripts.live import driver as driver_mod
@@ -1384,8 +1494,9 @@ def test_a_dict_final_view_is_matched_on_its_text_content():
             "title": "Tether price today",
             "page_changed_since_decision": False}
     assert end_state_matched({"url_contains": "/currencies/tether/"}, view["url"], view) is True
-    assert end_state_matched({"text_present": "Tether price"}, view["url"], view) is True
-    assert end_state_matched({"text_present": "nope absent"}, view["url"], view) is False
+    assert end_state_matched({"final_view_contains": "Tether price"}, view["url"], view) is True
+    assert end_state_matched({"text_present": "Tether price"}, view["url"], view,
+                             page_text="nope nothing here") is False
 
 
 def test_payload_ticks_materialize_as_tick_events_and_string_actions_as_acts():

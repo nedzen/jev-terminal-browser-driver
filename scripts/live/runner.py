@@ -326,6 +326,7 @@ def _attempt(client: McpStdio, test: dict, *, log_dir, slice_dir, suite: str, at
                                       "stopped_reason": entry["stopped_reason"],
                                       "final_url": entry["final_url"],
                                       "final_view": entry["final_view"],
+                                      "page_text": entry.get("page_text"),
                                       "ticks": entry["ticks"]}})
             events.extend({"event": "tick"} for _ in range(int(entry.get("ticks") or 0)))
             events.extend({"event": "act", "kind": a.get("kind"), "label": a.get("label")}
