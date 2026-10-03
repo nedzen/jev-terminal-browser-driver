@@ -51,3 +51,14 @@
 - **Silent observer**: god (wJ:p34) gets zero routine traffic; all reporting
   terminates at ceo (wJ:p20). Frozen workers get routing notes only on
   reactivation. W-tier held for owner; X never automated.
+
+## Merge findings (cmux-provision union, recorded at merge)
+- Live pane tests are ambient-sensitive: my own manual `new-split` probes
+  polluted baselines and failed the leak assertions mid-run; clean env =
+  full green (1015). Tests assume a quiescent cmux workspace — note before
+  trusting a red live run.
+- `NESTED_CMUX` fixture uses fake paths (`/Users/m/`): a socket-exists
+  guard on `_in_cmux_context` would break 16 tests. Staleness is handled
+  by failure-fallback, not pre-checks. Do not add exists-checks.
+- Env isolation is now mandatory pattern: tests that assert routing must
+  delenv CMUX_*/HERDR_* (or pass explicit env) — real shells carry both.
