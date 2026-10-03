@@ -86,3 +86,6 @@ flagged for evidence re-read (landed on prior-run pages).
 | M13-508657a185 | M13 | amazon.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | www.amazon.com/s | 5 | 0 | 2236.0 | feca83330992f854 | 3762a4e | 10.25 |
 | M14-450398291c | M14 | arxiv.org | R | mandatory | FALSE-DONE | sev-1 | false-done | model_done | arxiv.org/list/cs.AI/new | 4 | 0 | 2883.0 | feca83330992f854 | 84599b0 | 3.69 |
 | M15-2a3d60a83e | M15 | sec.gov | R | mandatory | FALSE-DONE | sev-1 | false-done | model_done | www.sec.gov/cgi-bin/browse-edgar | 1 | 0 | 3044.0 | feca83330992f854 | 84599b0 | 6.02 |
+| M16-b26ddd4990 | M16 | huggingface.co | R | mandatory | FALSE-DONE | sev-1 | false-done | model_done | huggingface.co/datasets/osunlp/Online-Mind2Web/tree/main | 2 | 0 | 1826.0 | feca83330992f854 | 3856781 | 3.42 |
+| M17-13e7a7fd7f | M17 | huggingface.co | R | mandatory | MISS | sev-2 | wrong-end-state | action_budget | huggingface.co/meta-llama/Llama-3-70B | 13 | 0 | 1560.0 | feca83330992f854 | 3856781 | 8.34 |
+| M18-01ac591c9e | M18 | huggingface.co | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | huggingface.co/models | 4 | 0 | 2532.0 | feca83330992f854 | 3856781 | 4.18 |
