@@ -197,13 +197,23 @@ def _events_from_payload(payload: dict) -> list[dict]:
 
     The result carries the action labels the run touched; flattening them means
     the safety denylist and the waste-tick accounting read one stream instead of
-    each reaching into the payload separately.
+    each reaching into the payload separately. The driver's own tick count is
+    materialized as `tick` events (one per executed step) so tick-derived
+    measures read the same stream; string actions become act events with the
+    label as the only known field.
     """
     events = [{"event": "drive_result", "result": payload}]
+    try:
+        ticks = int(payload.get("ticks") or 0)
+    except (TypeError, ValueError):
+        ticks = 0
+    events.extend({"event": "tick"} for _ in range(max(ticks, 0)))
     for action in payload.get("actions") or []:
         if isinstance(action, dict):
             events.append({"event": "act", "kind": action.get("kind"),
                            "label": action.get("label") or action.get("target")})
+        elif isinstance(action, str):
+            events.append({"event": "act", "kind": None, "label": action})
     return events
 
 

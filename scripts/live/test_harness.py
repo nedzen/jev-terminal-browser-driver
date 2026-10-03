@@ -1035,3 +1035,14 @@ def test_a_dict_final_view_is_matched_on_its_text_content():
     assert end_state_matched({"url_contains": "/currencies/tether/"}, view["url"], view) is True
     assert end_state_matched({"text_present": "Tether price"}, view["url"], view) is True
     assert end_state_matched({"text_present": "nope absent"}, view["url"], view) is False
+
+
+def test_payload_ticks_materialize_as_tick_events_and_string_actions_as_acts():
+    """Live MCP results carry ticks as a count and actions as bare strings.
+    Both must enter the event stream or tick-derived measures read zero and
+    the safety denylist goes blind to string-labelled actions."""
+    from scripts.live.metrics import consequential_hits, count_ticks
+    from scripts.live.runner import _events_from_payload
+    ev = _events_from_payload({"ticks": 2, "actions": ["Buy Bitcoin", "DONE"]})
+    assert count_ticks(ev) == 2
+    assert len(consequential_hits(ev, deny_elements=["buy"])) == 1
