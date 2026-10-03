@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts.live import chain as chain_mod
 from scripts.live import isolation, runner, taxonomy
 from scripts.live.classify import (
     classify,
@@ -27,8 +28,10 @@ from scripts.live.fake_server import (
     FALSE_DONE,
     FALSE_DONE_SEV1,
     HIT,
+    HIT_AT_PREFIX,
     HIT_RECOVERED,
     HONEST_BLOCKED,
+    ISOLATION_VIOLATION,
     NEVER_RETURNS,
     STALL_SILENT,
     UNJUSTIFIED_BLOCKED,
@@ -395,8 +398,8 @@ def test_quarantining_an_absent_page_is_a_no_op(tmp_path):
 # --------------------------------------------------------------------------
 
 
-def _client(scenarios):
-    proc = spawn(scenarios)
+def _client(scenarios, log_dir=None):
+    proc = spawn(scenarios, log_dir=log_dir)
     client = McpStdio(command=None)
     client.proc = proc
     client._id = 0
@@ -408,8 +411,8 @@ def _client(scenarios):
 
 
 def _run_one(scenarios, test=None, tmp_path=None, **kwargs):
-    client = _client(scenarios)
     root = tmp_path or Path(".")
+    client = _client(scenarios, log_dir=root)
     kwargs.setdefault("baseline_dir", root / "baseline")
     # Every write is redirected into tmp_path, explicitly and by name: the ledger,
     # the baseline, the log dir the isolation/quarantine steps touch, and the slice
@@ -1002,6 +1005,204 @@ def test_a_voided_row_is_marked_so_it_cannot_be_read_as_a_scored_run(tmp_path):
 def test_an_aborted_row_is_marked_with_its_owner_flag(tmp_path):
     aborted = {"outcome_class": taxonomy.HIT, "owner_flag": "consequential-element"}
     assert runner._disposition_cell(aborted) == "HIT (consequential-element)"
+
+
+# --------------------------------------------------------------------------
+# Multi-drive chains (F5 / M9 continuity)
+# --------------------------------------------------------------------------
+
+M9_RELEASES = "https://github.com/nedzen/jev-terminal-browser-driver/releases"
+M9_NOTES = "https://github.com/nedzen/jev-terminal-browser-driver/releases/tag/v1.1.0"
+
+
+def _chain_test(*goals, **over):
+    """A chain test: drives[] only, no test-level goal (the schema refuses both)."""
+    base = {
+        "id": "M9", "site": "github", "tier": "R", "satisfiable": True,
+        "drives": [{"goal": goal, **({"url": M9_RELEASES} if i == 0 else {})}
+                   for i, goal in enumerate(goals)],
+        "expected": {"url_contains": "releases/tag/v1.1.0"},
+        "hit_line": "release notes showing", "miss_line": "anything else",
+    }
+    base.update(over)
+    return base
+
+
+def test_a_two_drive_chain_where_both_reach_the_end_state_is_a_hit(tmp_path):
+    at_notes = f"{HIT_AT_PREFIX}{M9_NOTES}"
+    record = _run_one([at_notes, at_notes],
+                      test=_chain_test("open the releases page",
+                                       "open the v1.1.0 release notes"),
+                      tmp_path=tmp_path)
+    assert record["outcome_class"] == taxonomy.HIT
+    assert record["stopped_at"] is None
+    assert record["drive_count"] == 2
+    assert record["completed_drives"] == 2
+    assert len(record["chain"]["drives"]) == 2
+
+
+def test_the_second_drive_may_omit_its_url_so_the_driver_re_attaches(tmp_path):
+    """S4a/M9: drive 2 runs *without* a url, which is the whole point of the chain."""
+    checked = validate_test(_chain_test("open the releases page", "open the v1.1.0 notes"))
+    assert checked["drives"][0]["url"] == M9_RELEASES
+    assert checked["drives"][1]["url"] is None
+
+
+def test_a_chain_stalled_on_its_second_drive_is_partial_with_stopped_at(tmp_path):
+    """M9: PARTIAL = MISS with stopped-at-k and a cause, not a bare MISS."""
+    record = _run_one([HIT, STALL_SILENT],
+                      test=_chain_test("open the releases page", "open the v1.1.0 notes",
+                                       drives=[{"goal": "open the releases page", "url": M9_RELEASES},
+                                               {"goal": "open the v1.1.0 notes", "stall_s": 1}]),
+                      tmp_path=tmp_path)
+    assert record["outcome_class"] == taxonomy.MISS
+    assert record["partial"] is True
+    assert record["stopped_at"] == 2
+    assert record["stop_detail"] == "stalled"
+    assert record["failure_cause"] == "stall"
+    assert record["completed_drives"] == 1
+    assert record["severity"] == taxonomy.SEV_2
+
+
+def test_a_chain_interrupted_by_a_foreign_session_stops_at_the_next_drive(tmp_path):
+    """S4 "no interleave": another session appearing between calls must not share
+    the tab, so the chain refuses to continue."""
+    record = _run_one([ISOLATION_VIOLATION, HIT],
+                      test=_chain_test("open the releases page", "open the v1.1.0 notes"),
+                      tmp_path=tmp_path)
+    assert record["stopped_at"] == 2
+    assert record["stop_detail"] == "isolation-violation"
+    assert record["failure_cause"] == "harness-error"
+    assert record["outcome_class"] == taxonomy.MISS
+    assert record["chain"]["isolation_violation"]
+    # Drive 2 never ran.
+    assert len(record["chain"]["drives"]) == 1
+
+
+def test_a_chain_stopped_on_its_first_drive_keeps_the_terminal_class(tmp_path):
+    """A chain that never started is not partial: calling it PARTIAL would blame the
+    product for a timeout the harness itself imposed."""
+    record = _run_one([STALL_SILENT],
+                      test=_chain_test("open the releases page", "open the v1.1.0 notes",
+                                       drives=[{"goal": "open the releases page", "url": M9_RELEASES,
+                                                "stall_s": 1}]),
+                      tmp_path=tmp_path)
+    assert record["outcome_class"] == taxonomy.STALL
+    assert record["partial"] is False
+    assert record["stopped_at"] == 1
+    assert record["completed_drives"] == 0
+
+
+def test_every_drive_in_a_chain_records_its_own_session_linkage(tmp_path):
+    """The result carries no CDP session_id, so the tab targetId is the linkage
+    proxy -- and its absence has to be recorded as absent, not invented."""
+    record = _run_one([HIT, HIT], test=_chain_test("a", "b"), tmp_path=tmp_path)
+    keys = {"continuity", "auto_launched", "cdp_url", "source"}
+    for entry in record["chain"]["drives"]:
+        assert set(entry["linkage"]) == keys
+    assert len(record["session_ids"]) == 2
+
+
+def test_a_chain_quarantines_once_before_the_chain_and_never_between_drives(tmp_path):
+    """Renaming last-page.json between calls is exactly what would destroy the
+    re-attach drive 2 depends on."""
+    calls = []
+    real = isolation.quarantine_last_page
+
+    def counting(log_dir=None):
+        calls.append(log_dir)
+        return real(log_dir)
+
+    test = _chain_test("a", "b")
+    client = _client([HIT, HIT], log_dir=tmp_path)
+    import scripts.live.runner as runner_mod
+    original = runner_mod.isolation.quarantine_last_page
+    runner_mod.isolation.quarantine_last_page = counting
+    try:
+        runner_mod.run_test(client, test, log_dir=tmp_path, slice_dir=tmp_path / "slices",
+                            baseline_dir=tmp_path / "baseline", ledger=tmp_path / "ledger.md")
+    finally:
+        runner_mod.isolation.quarantine_last_page = original
+        client.close()
+    assert len(calls) == 1, f"quarantine ran {len(calls)} times for a two-drive chain"
+
+
+def test_the_chain_budget_stops_a_chain_that_per_call_timeouts_would_not(tmp_path):
+    """Three calls each inside their own timeout can still overrun the suite."""
+    record = _run_one([HIT, HIT],
+                      test=_chain_test("a", "b", "c"),
+                      tmp_path=tmp_path)
+    # The declared budget defaults to the sum of the per-call timeouts.
+    assert record["chain_budget_s"] == 3 * 300
+
+
+def test_a_chain_that_exhausts_its_budget_stops_before_the_next_drive(tmp_path):
+    checked = validate_test(_chain_test("a", "b"))
+    client = _client([HIT, HIT], log_dir=tmp_path)
+    try:
+        record = chain_mod.run_chain(client, checked, log_dir=tmp_path, chain_budget_s=0.0)
+    finally:
+        client.close()
+    assert record["stopped_at"] == 1
+    assert record["stop_detail"] == "chain-budget-exhausted"
+    assert record["drives"] == []
+
+
+def test_a_chain_reports_bytes_per_call_across_its_drives(tmp_path):
+    """Measurement contract (a) is per call, so two drives must average two calls."""
+    record = _run_one([HIT, HIT], test=_chain_test("a", "b"), tmp_path=tmp_path)
+    assert len(record["chain"]["drives"]) == 2
+    assert record["bytes_per_call"] > 0
+    deltas = [d["bytes"] for d in record["chain"]["drives"]]
+    assert sum(deltas) == record["bytes_total"]
+
+
+def test_a_single_drive_test_takes_the_chain_path_with_one_step():
+    checked = validate_test(_test())
+    assert len(checked["drives"]) == 1
+    assert checked["drives"][0]["goal"] == checked["goal"]
+
+
+def test_declaring_both_a_goal_and_drives_is_refused():
+    """Which of the two the author meant is not knowable, and guessing changes what
+    the test measures."""
+    with pytest.raises(ManifestError, match="either goal or drives"):
+        validate_test(_chain_test("a", "b", goal="also a goal"))
+
+
+def test_a_single_drive_chain_with_no_url_is_refused():
+    with pytest.raises(ManifestError, match="single-drive chain needs a url"):
+        validate_test({"id": "X", "site": "s", "tier": "R", "satisfiable": True,
+                       "drives": [{"goal": "a"}], "expected": {"url_contains": "x"},
+                       "hit_line": "h", "miss_line": "m"})
+
+
+def test_a_drive_without_a_goal_is_refused():
+    with pytest.raises(ManifestError, match="needs a goal"):
+        validate_test({"id": "X", "site": "s", "tier": "R", "satisfiable": True,
+                       "drives": [{"goal": "a", "url": "u"}, {"url": "u2"}],
+                       "expected": {"url_contains": "x"},
+                       "hit_line": "h", "miss_line": "m"})
+
+
+def test_an_empty_drives_list_is_refused():
+    with pytest.raises(ManifestError, match="non-empty list"):
+        validate_test({"id": "X", "site": "s", "tier": "R", "satisfiable": True,
+                       "drives": [], "expected": {"url_contains": "x"},
+                       "hit_line": "h", "miss_line": "m"})
+
+
+def test_an_unknown_key_inside_a_drive_is_refused():
+    with pytest.raises(ManifestError, match="unknown key"):
+        validate_test({"id": "X", "site": "s", "tier": "R", "satisfiable": True,
+                       "drives": [{"goal": "a", "url": "u", "clik": "typo"}],
+                       "expected": {"url_contains": "x"},
+                       "hit_line": "h", "miss_line": "m"})
+
+
+def test_a_non_positive_chain_budget_is_refused():
+    with pytest.raises(ManifestError, match="chain_budget_s"):
+        validate_test(_chain_test("a", "b", chain_budget_s=0))
 
 
 def test_the_pane_guard_refuses_two_concurrent_drives(tmp_path):

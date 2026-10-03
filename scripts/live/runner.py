@@ -22,8 +22,9 @@ import uuid
 from pathlib import Path
 
 from scripts.live import isolation
+from scripts.live.chain import run_chain
 from scripts.live.classify import classify
-from scripts.live.driver import CallTimeout, DriverError, McpStdio, Stalled
+from scripts.live.driver import McpStdio
 from scripts.live.metrics import CallMeter, build_run_record, waste_ticks
 from scripts.live.redact import assert_no_amounts, redact_record
 from scripts.live.regress import diff_run, is_regression
@@ -263,9 +264,6 @@ def _attempt(client: McpStdio, test: dict, *, log_dir, slice_dir, suite: str, at
     meter = CallMeter()
     events: list = []
     error = None
-    timed_out = False
-    stalled = False
-    crashed = False
     final_url = None
     final_view = None
     started = time.perf_counter()
@@ -288,38 +286,49 @@ def _attempt(client: McpStdio, test: dict, *, log_dir, slice_dir, suite: str, at
         record["quarantined_target"] = None
         return record
 
+    chain = None
     try:
-        response = client.call(
-            "drive",
-            {"goal": test["goal"], "url": test.get("url"), "max_steps": test.get("max_steps")},
-            log_dir=log_dir, stall_s=test.get("stall_s"), timeout_s=test.get("timeout_s"),
-        )
-        payload = McpStdio.payload(response)
-        meter.record("drive", payload)
-        final_url = payload.get("final_url")
-        final_view = payload.get("final_view")
-        events = _events_from_payload(payload)
-    except Stalled as exc:
-        stalled = True
-        error = str(exc)
-    except CallTimeout as exc:
-        timed_out = True
-        error = str(exc)
-    except DriverError as exc:
-        crashed = True
-        error = str(exc)
+        # One chain, every drive in it, sequentially. A single-drive test takes
+        # this path too, so there is exactly one code path for the transport.
+        chain = run_chain(client, test, log_dir=log_dir)
+    except SuiteAbort:
+        raise
+    events = []
+    if chain and chain["drives"]:
+        for entry in chain["drives"]:
+            events.append({"event": "drive_result", "drive": entry["drive"],
+                           "result": {"status": entry["status"],
+                                      "stopped_reason": entry["stopped_reason"],
+                                      "final_url": entry["final_url"],
+                                      "final_view": entry["final_view"],
+                                      "ticks": entry["ticks"]}})
+            events.extend({"event": "tick"} for _ in range(int(entry.get("ticks") or 0)))
+            events.extend({"event": "act", "kind": a.get("kind"), "label": a.get("label")}
+                          for a in entry["actions"] if isinstance(a, dict))
+            if entry["terminal"]:
+                error = entry["error"]
+        final_url = chain.get("final_url")
+        final_view = chain.get("final_view")
+        # The chain is the byte meter for a multi-drive test; rebuild this attempt's
+        # meter from its per-drive deltas so the record's bytes/call stays the
+        # caller-ingested measurement contract (a) describes.
+        meter.calls = [{"tool": "drive", "bytes": d["bytes"]} for d in chain["drives"]]
+        meter.total_bytes = chain["bytes_total"]
 
     wall = time.perf_counter() - started
-    outcome = classify(
-        expected=test["expected"], satisfiable=test["satisfiable"],
-        stop_reason=(events[0]["result"].get("stopped_reason")
-                     if events and events[0].get("result") else None),
-        final_url=final_url, final_view=final_view, stalled=stalled, timed_out=timed_out,
-        crashed=crashed, human_judged=test.get("human_judged", False),
+    # The chain owns the verdict. Re-deriving it here from the last payload would be
+    # a second opinion on the same question, and for a chain those two disagree the
+    # moment drive 1 of 2 is where it stopped.
+    outcome = dict(chain["outcome"]) if chain else classify(
+        expected=test["expected"], satisfiable=test["satisfiable"], stop_reason=None,
+        final_url=None, final_view=None, error=error,
+        human_judged=test.get("human_judged", False),
         waste_ticks=waste_ticks(events)["waste_ticks"],
-        error=error, failure_cause=test.get("failure_cause"),
-        anomaly_tags=test.get("anomaly_tags"),
+        failure_cause=test.get("failure_cause"), anomaly_tags=test.get("anomaly_tags"),
     )
+    if chain:
+        # A declared failure cause never overrides what the chain observed.
+        outcome["failure_cause"] = outcome.get("failure_cause") or test.get("failure_cause")
 
     record = build_run_record(
         run_id=run_id, test=test, meter=meter, decision_outcome=outcome, events=events,
@@ -327,6 +336,17 @@ def _attempt(client: McpStdio, test: dict, *, log_dir, slice_dir, suite: str, at
         wall_s=wall, error=error, attempt=attempt,
     )
     record["quarantined_target"] = (quarantine or {}).get("targetId")
+    if chain:
+        record["chain"] = chain
+        record["stopped_at"] = chain["stopped_at"]
+        record["stop_detail"] = chain["stop_detail"]
+        record["partial"] = chain["outcome"].get("partial", False)
+        record["session_ids"] = chain["session_ids"]
+        record["chain_budget_s"] = chain["chain_budget_s"]
+        record["completed_drives"] = chain["completed_drives"]
+        record["drive_count"] = chain["drive_count"]
+        if chain["isolation_violation"]:
+            record["notes"] = f"chain stopped: {chain['isolation_violation']}"
 
     # v3.1 safety: a consequential element aborts the suite rather than being
     # scored, because the click may already have landed on a live site.
