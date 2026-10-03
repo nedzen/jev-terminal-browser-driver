@@ -193,11 +193,17 @@ the page up to 3 times if the action count is still low or visible text is
 still growing (`HYDRATE_*` class attributes; tests inject a zero sleep).
 A page with no sentence yet, only short labels, is not ready: reading
 continues for up to 8 rounds. A `DONE` below 0.6, or a `DONE` on that
-label-only page, is not success — unless the run has already navigated and
-`DONE` is still the strongest operation, in which case `_reject_weak_done`
-accepts it (`drive_agent.py:591`). That bypass is how a sub-0.6 `DONE` ends
-a run that reached its end state, so the threshold binds only runs that never
-moved off their start URL. A covered
+label-only page, is not success — unless the run navigated *and* reached the
+state its goal names, in which case `_reject_weak_done` accepts it
+(`drive_agent.py:692`). That bypass is how a sub-0.6 `DONE` ends a genuine
+success, so the threshold binds every other run. Navigation alone is
+deliberately not enough: it compares two URLs and says nothing about the goal.
+The bypass requires `end_state_reached` — the same bar the correct-URL BLOCKED
+rescue uses — so the destination must carry the goal's own words and the run
+must have performed one non-scroll step for each step the goal names. M7 is
+why: it DONE'd at 0.56 on a Polymarket event page with one click and no
+scroll, and a bare path difference accepted it while the order book the goal
+named was never reached. A covered
 fill target is focused and typed into. Fill freshness follows that field,
 not the rest of the page, so a changing feed does not cancel a search box.
 Once a field holds text, `Press Enter` is offered as its own action. Jev

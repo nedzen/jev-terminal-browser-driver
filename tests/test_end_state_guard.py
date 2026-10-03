@@ -385,3 +385,227 @@ def test_a_decision_that_was_not_blocked_logs_no_blocked_record(monkeypatch):
     agent = _blocked_agent()
     agent.state["decisions"] = [{"choice": "DONE", "operation": "DONE"}]
     assert _capture_blocked_log(monkeypatch, agent) == []
+
+# --------------------------------------------------------------------------
+# The same bar on the DONE path: the navigation bypass
+# --------------------------------------------------------------------------
+#
+# `_reject_weak_done` lets a DONE below `DONE_MIN` end a run when the run navigated
+# somewhere. It used to ask only whether the URL differed from where the run started,
+# which is a comparison of two strings and not a claim about the goal. M7 DONE'd at
+# 0.56 on a Polymarket event page with one click and no scroll and was accepted
+# because the path changed; the goal had named an order book the run never reached.
+# The bypass now requires `end_state_reached`, the same bar `_blocked_rescue` applies
+# to a BLOCKED. The two frozen shapes below are the pair that fixes the rule: the same
+# navigation, once with a destination the goal actually names and once without.
+
+# The goal and destination from the live S1a row, verbatim.
+S1A_GOAL = "Open the Tether currency page on CoinMarketCap; done when the Tether page is showing."
+S1A_PAGE = {
+    "url": "https://coinmarketcap.com/currencies/tether/",
+    "title": "Tether Price (USD) | CoinMarketCap",
+    "text": (
+        "Tether\nTether Price (USD)\n$0.9998\n1.00\nMarket Cap Rankings\n"
+        "Tether is a cryptocurrency whose value is pegged to the United States dollar."
+    ),
+    "actions": [],
+}
+S1A_START = "https://coinmarketcap.com/"
+
+# The goal and destination from the M7 false-done row, verbatim. The text is the real
+# event page's prose, not the three-label stub the final_view carried: a shell page
+# would be turned away by `page_is_shell` and the run would never reach the bypass
+# clause this file is about.
+M7_GOAL = "Open an event's detail page and scroll to its order book; stop when the bids and asks widget is visible."
+M7_PAGE = {
+    "url": "https://polymarket.com/event/btc-updown-5m-1791012900",
+    "title": "BTC Up or Down 5m Predictions & Odds 2026 | Polymarket",
+    "text": (
+        "This market resolves to Yes if the price of Bitcoin is higher at the end of the five "
+        "minute window. Traders are betting on whether the price will be above or below the "
+        "opening value.\nOverview\nOrder Book"
+    ),
+    "actions": [],
+}
+M7_START = "https://polymarket.com/"
+
+
+def _done_agent(*, goal, page, history, start_url, done_p=0.56, top="DONE"):
+    """A DriveAgent mid-tick on a DONE that `DONE_MIN` will not take on confidence alone."""
+    agent = DriveAgent.__new__(DriveAgent)
+    agent.state = {
+        "goal": goal,
+        "status": "predicted",
+        "page": dict(page),
+        "decision": {
+            "choice": "DONE",
+            "operation": "DONE",
+            "operation_probabilities": {"DONE": done_p, "CLICK": round(1.0 - done_p, 2)},
+        },
+        "history": [dict(entry) for entry in history],
+        "elapsed_ms": 100,
+        "started_at": 0.0,
+        "decisions": [],
+    }
+    agent._start_url = start_url
+    agent._weak_done = 0
+    agent._degenerate_streak = 0
+    agent._looked = 0
+    agent._clicked = []
+    agent.screenshots = False
+    if top != "DONE":
+        agent.state["decision"]["operation_probabilities"] = {"CLICK": 0.7, "DONE": done_p}
+    return agent
+
+
+def test_the_frozen_s1a_navigation_still_rescues_a_sub_threshold_done(monkeypatch):
+    """The regression this fix must not cause: a run that really did get to the page
+    the goal names, DONE below `DONE_MIN` but with DONE on top, still ends done."""
+    monkeypatch.setattr("jev_driver.drive_agent.write_event", lambda event: None)
+    agent = _done_agent(
+        goal=S1A_GOAL,
+        page=S1A_PAGE,
+        history=_clicks(1, "Tether"),
+        start_url=S1A_START,
+        done_p=0.56,
+    )
+
+    assert agent._reject_weak_done() is None
+    assert agent.state["decision"]["choice"] == "DONE"
+
+
+def test_the_frozen_m7_navigation_no_longer_rescues_a_sub_threshold_done(monkeypatch):
+    """M7's own numbers: one click, no scroll, DONE at 0.56 on the event page. The
+    path differs from where the run started, which is all the old bypass asked, and
+    that is not evidence the order book was reached. Two goal steps, one performed."""
+    monkeypatch.setattr("jev_driver.drive_agent.write_event", lambda event: None)
+    agent = _done_agent(
+        goal=M7_GOAL,
+        page=M7_PAGE,
+        history=_clicks(1, "BTC Up or Down 5m"),
+        start_url=M7_START,
+        done_p=0.56,
+    )
+
+    snap = agent._reject_weak_done()
+
+    assert snap is not None
+    assert agent.state["decision"] is None
+    assert snap["status"] == "ready"
+    assert agent.state.get("stop_reason") is None
+
+
+def test_a_second_frozen_m7_style_done_blocks_instead_of_rescuing(monkeypatch):
+    """Refusing one weak DONE is not enough on its own: the run keeps driving, and the
+    second one is what stops it. Without this the M7 shape would read as a shrug."""
+    monkeypatch.setattr("jev_driver.drive_agent.write_event", lambda event: None)
+    agent = _done_agent(
+        goal=M7_GOAL,
+        page=M7_PAGE,
+        history=_clicks(1, "BTC Up or Down 5m"),
+        start_url=M7_START,
+        done_p=0.56,
+    )
+    agent._reject_weak_done()
+    agent.state["decision"] = {
+        "choice": "DONE",
+        "operation": "DONE",
+        "operation_probabilities": {"DONE": 0.56, "CLICK": 0.44},
+    }
+
+    snap = agent._reject_weak_done()
+
+    assert snap["stop_reason"] == "weak_done"
+    assert snap["status"] == "blocked"
+
+
+def test_acting_on_the_wrong_page_does_not_rescue_a_sub_threshold_done(monkeypatch):
+    """Acted-but-stagnant: the run navigated and performed more steps than the goal
+    names, and none of them were the goal's. Counting actions is not progress, so the
+    count must not be enough on its own -- the destination still has to carry the
+    goal's words."""
+    monkeypatch.setattr("jev_driver.drive_agent.write_event", lambda event: None)
+    agent = _done_agent(
+        goal="Open the Solana explorer account page for wallet v1.",
+        page={
+            "url": "https://en.wikipedia.org/wiki/Husqvarna_Group",
+            "title": "Husqvarna Group",
+            "text": "Husqvarna AB is a Swedish manufacturer of outdoor power products.",
+            "actions": [],
+        },
+        history=_clicks(3, "Next section"),
+        start_url="https://en.wikipedia.org/wiki/String_trimmer",
+        done_p=0.51,
+    )
+
+    assert len(agent.state["history"]) >= len(goal_steps("Open the Solana explorer account page for wallet v1.")[0])
+    assert agent._reject_weak_done() is not None
+    assert agent.state["decision"] is None
+
+
+def test_the_goal_words_on_the_page_are_not_enough_when_fewer_steps_were_performed(monkeypatch):
+    """The performed-step clause, isolated from the words clause by holding the page
+    fixed. This M7 page really does render the order book the goal asked for, so every
+    token matches on both sides of this pair and the only difference is how many steps
+    the run performed: one click does not end the run, two clicks do. Reaching the
+    destination is half the claim and having done the work is the other half, so a
+    test that only ever saw the refused half would pass whether or not the run's own
+    history reached the guard at all."""
+    monkeypatch.setattr("jev_driver.drive_agent.write_event", lambda event: None)
+    page = {**M7_PAGE, "text": M7_PAGE["text"] + "\nBids\nAsks\nOrder book widget"}
+
+    refused = _done_agent(
+        goal=M7_GOAL,
+        page=page,
+        history=_clicks(1, "BTC Up or Down 5m"),
+        start_url=M7_START,
+        done_p=0.56,
+    )
+    assert refused._reject_weak_done() is not None
+    assert refused.state["decision"] is None
+
+    earned = _done_agent(
+        goal=M7_GOAL,
+        page=page,
+        history=_clicks(2, "Order Book"),
+        start_url=M7_START,
+        done_p=0.56,
+    )
+    assert earned._reject_weak_done() is None
+    assert earned.state["decision"]["choice"] == "DONE"
+
+
+def test_the_bypass_still_requires_the_run_to_have_actually_navigated(monkeypatch):
+    """The end state is already showing and the goal's own words are on it, but the
+    run never left its start page. `moved_on` was the one clause of the old bypass
+    that was doing real work, and folding the check into `end_state_reached` must not
+    have lost it."""
+    monkeypatch.setattr("jev_driver.drive_agent.write_event", lambda event: None)
+    agent = _done_agent(
+        goal=S1A_GOAL,
+        page=S1A_PAGE,
+        history=_clicks(1, "Tether"),
+        start_url=S1A_PAGE["url"],
+        done_p=0.56,
+    )
+
+    assert agent._moved_on(agent.state["page"]) is False
+    assert agent._reject_weak_done() is not None
+    assert agent.state["decision"] is None
+
+
+def test_the_bypass_still_needs_done_on_top_not_merely_a_done_chosen(monkeypatch):
+    """Choosing DONE is not the same as preferring it. A CLICK on top with DONE second
+    is a run that wanted to keep going, and navigation does not overrule that."""
+    monkeypatch.setattr("jev_driver.drive_agent.write_event", lambda event: None)
+    agent = _done_agent(
+        goal=S1A_GOAL,
+        page=S1A_PAGE,
+        history=_clicks(1, "Tether"),
+        start_url=S1A_START,
+        done_p=0.56,
+        top="CLICK",
+    )
+
+    assert agent._reject_weak_done() is not None
+    assert agent.state["decision"] is None

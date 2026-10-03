@@ -679,7 +679,22 @@ class DriveAgent(Agent):
         effective = None if (performed == 0 and self._time_budget_spent()) else performed
         if done_acceptable(decision, page, executed_actions=effective):
             return None
-        if self._moved_on(page) and _top_operation(decision) == "DONE" and not page_is_shell(page.get("text")):
+        # The navigation bypass: a DONE below `DONE_MIN` may still end the run when
+        # the run got itself to the right page. `moved_on` alone does not say "right".
+        # M7 DONE'd at 0.56 on the event page with one click and no scroll, and a bare
+        # path difference accepted it; `moved_on` is a comparison of two strings, not a
+        # claim about the goal, and the goal named an order book the run never scrolled to.
+        # So the bypass now asks `end_state_reached` -- the same goal-progress bar
+        # `_blocked_rescue` already applies to a BLOCKED -- which requires the
+        # destination to carry the goal's own words and the run to have performed a
+        # non-scroll step for each step the goal names. Its `moved_on` and shell clauses
+        # are the ones this condition used to spell out by hand.
+        if _top_operation(decision) == "DONE" and end_state_reached(
+            page,
+            goal=state.get("goal"),
+            history=state.get("history"),
+            moved_on=self._moved_on(page),
+        ):
             return None
         state["decision"] = None
         text = page.get("text") or ""
