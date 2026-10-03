@@ -132,16 +132,56 @@ def test_the_scrub_on_the_live_environment_leaves_no_terminal_signal():
 
 
 def test_discover_refuses_to_provision_from_inside_a_herdr_pane(monkeypatch):
+    """The refusal, on the one shape where the adapter fallback is actually reachable.
+
+    Driven from `HERDR_NON_ADDRESSABLE`, not `NESTED_CMUX`. `NESTED_CMUX` carries both
+    CMUX_SOCKET_PATH and CMUX_WORKSPACE_ID, so the cmux route intercepts and this test
+    never reached the guard at all -- it passed on `match="herdr"`, which
+    `WATCH_TERMINAL_NOTE` also satisfies because it lists herdr among the supported
+    terminals and is appended to every provisioning failure. Both routes are mocked to
+    `pytest.fail` below, so the only thing that can satisfy this test is the refusal.
+    """
     from jev_driver import discover as disc
+    from jev_driver import lifecycle as _lc
 
     monkeypatch.setattr(disc, "_terminal_browser_discovery", lambda: None)
     monkeypatch.setattr(disc, "_daemon_db_discovery", lambda: None)
     monkeypatch.setattr(
-        disc, "_provision_terminal_browser",
-        lambda url: pytest.fail("provisioning must not run from inside a herdr pane"),
+        disc, "_provision_cmux_split",
+        lambda url, env=None: pytest.fail(
+            "the cmux route must not be taken: there is no CMUX_WORKSPACE_ID to place a split in"
+        ),
     )
-    with pytest.raises(WatchUnavailable, match="herdr"):
-        disc.discover(env=NESTED_CMUX)
+    monkeypatch.setattr(
+        disc, "_provision_terminal_browser",
+        lambda url: pytest.fail("the adapter ladder must not run from inside a herdr pane"),
+    )
+    assert disc._in_cmux_context(HERDR_NON_ADDRESSABLE) is False
+
+    with pytest.raises(WatchUnavailable) as caught:
+        disc.discover(env=HERDR_NON_ADDRESSABLE)
+
+    # The guard's own wording, exactly -- not a loose substring that a neighbouring
+    # failure could also satisfy.
+    assert str(caught.value) == _lc.root_terminal_blocker(HERDR_NON_ADDRESSABLE)
+
+
+def test_the_refusal_cannot_be_mistaken_for_a_terminal_note_failure():
+    """Why the match above is an equality rather than `match="herdr"`.
+
+    `WATCH_TERMINAL_NOTE` names herdr as a supported terminal and is appended to every
+    provisioning failure, so a substring match cannot distinguish "the guard refused"
+    from "the cmux route failed" or "no terminal-browser binary". If that note ever
+    stopped naming herdr the loose test would have failed for the wrong reason; worse,
+    while it names herdr the loose test passes for the wrong reason. The refusal says
+    something the note never does.
+    """
+    from jev_driver.discover import WATCH_INSTALL, WATCH_TERMINAL_NOTE
+
+    reason = lc.root_terminal_blocker(HERDR_NON_ADDRESSABLE)
+    assert "kitty-graphics" not in reason
+    assert reason not in WATCH_TERMINAL_NOTE
+    assert reason not in WATCH_INSTALL
 
 
 def test_discover_still_attaches_to_an_existing_pane_from_inside_a_herdr_pane(monkeypatch):
@@ -465,6 +505,13 @@ def test_the_open_run_ledger_can_be_consulted_standing_alone(tmp_path, monkeypat
 # A herdr pane hosted by cmux. This is the shape the cmux route exists for: the pane
 # is nested, but cmux can still be addressed directly, so there is nothing to refuse.
 HERDR_IN_CMUX = dict(NESTED_CMUX)
+
+# A herdr pane whose cmux socket is still in the environment but whose workspace id is
+# not: the one shape in which the adapter fallback is both reachable and unsafe. cmux
+# cannot be addressed (so the cmux route is correctly skipped) and the current surface
+# belongs to herdr (so `--split` would nest). This is the fixture the refusal test must
+# use -- `HERDR_IN_CMUX` is intercepted by the cmux route before the guard is consulted.
+HERDR_NON_ADDRESSABLE = {k: v for k, v in NESTED_CMUX.items() if k != "CMUX_WORKSPACE_ID"}
 
 
 def test_a_cmux_context_is_recognised_by_socket_and_workspace():
