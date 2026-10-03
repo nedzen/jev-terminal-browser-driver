@@ -94,3 +94,7 @@ flagged for evidence re-read (landed on prior-run pages).
 Prior 51 rows SUPERSEDED for scoreboard purposes (pre-isolation-fix window:
 no isolation guarantees, pre-sev-1-gate, pre-movedon-gate, pre-scorer-fix).
 History stays above; scoreboard counts only rows below this line.
+| S1a-e7da7829b8 | S1a | coinmarketcap.com | R | mandatory | HIT | - | - | model_done | coinmarketcap.com/currencies/tether | 2 | 0 | 1294.0 | f8b13c650cc5ddf6 | ac7df8b | 5.97 |
+| S1b-59a74df485 | S1b | coinmarketcap.com | R | mandatory | HIT | - | - | model_done | coinmarketcap.com/currencies/tether | 2 | 0 | 1295.0 | f8b13c650cc5ddf6 | ac7df8b | 2.97 |
+| S1c-e60d8509c9 | S1c | github.com | R | mandatory | BLOCKED-honest | sev-2 | - | model_blocked | github.com/nedzen/jev-terminal-browser-driver | 4 | 0 | 2628.0 | f8b13c650cc5ddf6 | ac7df8b | 4.03 |
+| S1d-efdb25761e | S1d | coinmarketcap.com/currencies/tether/ | R | mandatory | HIT | - | - | model_done | coinmarketcap.com/currencies/tether | 1 | 0 | 1567.0 | f8b13c650cc5ddf6 | ac7df8b | 2.8 |
