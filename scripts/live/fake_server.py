@@ -75,6 +75,16 @@ CONSEQUENTIAL_HIT = "consequential_hit"
 # A done stop with no end state anywhere: the sev-1 integrity case.
 FALSE_DONE_SEV1 = "false_done_sev1"
 
+# Returns a result, then writes an *unfinished* run into the log directory. The
+# next drive in the chain must refuse to start, which is the S4 "no interleave"
+# rule: a foreign session appearing between calls cannot be allowed to share the
+# tab. Only the fake server can stage this -- a real driver would need another
+# process to seize the pane mid-suite.
+ISOLATION_VIOLATION = "isolation_violation"
+
+
+HIT_AT_PREFIX = "hit@"
+
 
 def scripted_result(scenario: str, *, url: str = END_STATE_URL, **kwargs) -> dict:
     """The drive result for a named scenario.
@@ -90,6 +100,12 @@ def scripted_result(scenario: str, *, url: str = END_STATE_URL, **kwargs) -> dic
     if scenario == HIT:
         return drive_result(status="done", stop_reason="model_done", final_url=url,
                             final_view=kwargs.get("final_view", "Example Domains"))
+    if scenario.startswith(HIT_AT_PREFIX):
+        # A HIT that lands on a caller-chosen URL, so a chain test can declare its
+        # own end state instead of every test having to expect the IANA fixture.
+        return drive_result(status="done", stop_reason="model_done",
+                            final_url=scenario[len(HIT_AT_PREFIX):],
+                            final_view=kwargs.get("final_view", "Release notes"))
     if scenario == FALSE_DONE:
         # Claims done while sitting somewhere else: the end state is absent, which
         # is what makes it false-done rather than merely unfinished.
@@ -168,7 +184,17 @@ def serve(scenarios, *, log_dir=None):
                     sys.stderr.write("never_returns: holding the call open\n")
                     sys.stderr.flush()
                 continue
-            result = scripted_result(scenario)
+            if scenario == ISOLATION_VIOLATION:
+                if log_dir:
+                    from pathlib import Path as _Path
+                    _dir = _Path(log_dir)
+                    _dir.mkdir(parents=True, exist_ok=True)
+                    with (_dir / "drive.jsonl").open("a", encoding="utf-8") as _fh:
+                        _fh.write(json.dumps({"event": "run", "stage": "start",
+                                              "metrics": {"run_id": "foreign-session"}}) + "\n")
+                result = scripted_result(HIT)
+            else:
+                result = scripted_result(scenario)
         elif method == "ping":
             result = {}
         else:

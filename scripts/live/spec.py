@@ -53,7 +53,10 @@ DONE_STOP_REASONS = ("model_done", "end_state_reached")
 # The fields every manifest test must declare. `expected` may be present but
 # empty only for a test whose goal is genuinely unsatisfiable, which is checked
 # in validate() rather than here, because it needs both fields together.
-REQUIRED_FIELDS = ("id", "site", "goal", "tier", "satisfiable", "expected", "hit_line", "miss_line")
+# `goal` is required *unless* `drives` is present, so it is checked separately below
+# rather than listed here: a chain test declares its goals per drive and would
+# otherwise be refused before the chain is ever read.
+REQUIRED_FIELDS = ("id", "site", "tier", "satisfiable", "expected", "hit_line", "miss_line")
 
 # v3 S6 redaction rule: presence-only for amounts on every S6x test. Recorded as
 # a per-test flag rather than inferred from the id, so a new S6 test cannot
@@ -72,6 +75,81 @@ class ManifestError(ValueError):
     Raised before any drive, so a typo in the manifest costs zero browser time
     rather than surfacing as a MISS that looks like a product failure.
     """
+
+
+def _drive_step(step: dict, *, index: int, where: str, fallback_url) -> dict:
+    """One link in a drive chain, validated.
+
+    A step's `url` is genuinely optional: S4a/M9 is exactly the case of drive 2
+    running *without* a url so the driver has to re-attach, and requiring one here
+    would make the continuity test unrepresentable. The first step inherits the
+    test-level url so a single-drive manifest reads the same either way.
+    """
+    label = f"{where}.drives[{index}]"
+    if not isinstance(step, dict):
+        raise ManifestError(f"{label}: each drive must be an object")
+    goal = step.get("goal")
+    if not isinstance(goal, str) or not goal.strip():
+        raise ManifestError(f"{label}: a drive needs a goal")
+    url = step.get("url")
+    if url is not None and not isinstance(url, str):
+        raise ManifestError(f"{label}: url must be a string when present")
+    if index == 0 and url is None:
+        url = fallback_url
+    timeout = step.get("timeout_s")
+    if timeout is not None and (not isinstance(timeout, int) or isinstance(timeout, bool) or timeout <= 0):
+        raise ManifestError(f"{label}: timeout_s must be a positive int")
+    unknown = set(step) - {"goal", "url", "max_steps", "timeout_s", "stall_s", "note"}
+    if unknown:
+        raise ManifestError(f"{label}: unknown key(s) {sorted(unknown)}")
+    out = {"goal": goal, "url": url, "note": step.get("note")}
+    for field in ("max_steps", "timeout_s", "stall_s"):
+        if step.get(field) is not None:
+            out[field] = step[field]
+    return out
+
+
+def _chain(test: dict, where: str) -> list[dict]:
+    """The drive chain for a test: an explicit `drives` list, or one implicit step.
+
+    Always returns a list, even for a single-drive test, so the runner has exactly
+    one code path. A test that declares both `goal` and `drives` is refused rather
+    than silently preferring one: which of the two the author meant is not
+    knowable here, and guessing it changes what the test measures.
+    """
+    drives = test.get("drives")
+    if drives is None:
+        return [_drive_step({"goal": test["goal"], "url": test.get("url")},
+                            index=0, where=where, fallback_url=test.get("url"))]
+    if test.get("goal"):
+        raise ManifestError(f"{where}: declare either goal or drives, not both")
+    if not isinstance(drives, list) or not drives:
+        raise ManifestError(f"{where}: drives must be a non-empty list")
+    if len(drives) == 1 and drives[0].get("url") is None:
+        raise ManifestError(
+            f"{where}: a single-drive chain needs a url, or use the test-level goal"
+        )
+    return [_drive_step(step, index=i, where=where, fallback_url=None)
+            for i, step in enumerate(drives)]
+
+
+def _chain_budget(test: dict, where: str, drives: list[dict]) -> float | None:
+    """Wall-clock budget for the whole chain, across every drive in it.
+
+    Separate from the per-call timeouts on purpose: three calls that each fit in
+    their own timeout can still overrun the suite, and only a chain-level budget
+    notices. Defaults to the sum of the per-call timeouts so it is never tighter
+    than the calls it governs.
+    """
+    declared = test.get("chain_budget_s")
+    if declared is not None:
+        if not isinstance(declared, int) or isinstance(declared, bool) or declared <= 0:
+            raise ManifestError(f"{where}: chain_budget_s must be a positive int")
+        return declared
+    total = 0
+    for step in drives:
+        total += int(step.get("timeout_s") or test.get("timeout_s") or DEFAULT_TIMEOUT_S)
+    return total
 
 
 def _require(test: dict, field: str, where: str):
@@ -94,6 +172,13 @@ def validate_test(test: dict, *, index: int | None = None) -> dict:
 
     for field in REQUIRED_FIELDS:
         _require(test, field, where)
+
+    # Presence, not truthiness: `drives: []` must reach `_chain` and be reported as
+    # an empty chain, not as a missing goal.
+    if "drives" not in test and not test.get("goal"):
+        raise ManifestError(f"{where}: missing required field 'goal' (or declare drives: [...])")
+    if test.get("goal") is not None and not isinstance(test["goal"], str):
+        raise ManifestError(f"{where}: goal must be a string")
 
     tier = test["tier"]
     if tier not in TIERS:
@@ -177,6 +262,13 @@ def validate_test(test: dict, *, index: int | None = None) -> dict:
     normalized.setdefault("stall_s", STALL_S)
     normalized.setdefault("redact", None)
     normalized["human_judged"] = human_judged
+    normalized["drives"] = _chain(test, where)
+    if not normalized.get("goal"):
+        # Give the normalized copy a goal so every downstream consumer of `goal`
+        # (the ledger row, the run record, the slice) keeps working for a chain.
+        # The manifest-facing rule stays one-or-the-other; this is derived text.
+        normalized["goal"] = " -> ".join(step["goal"] for step in normalized["drives"])
+    normalized["chain_budget_s"] = _chain_budget(test, where, normalized["drives"])
     normalized["deny_actions"] = [a.lower() for a in deny_actions]
     normalized["deny_elements"] = [e.lower() for e in deny_elements]
     normalized["matrix"] = {"cap": cap, **matrix}

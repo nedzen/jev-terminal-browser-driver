@@ -111,3 +111,10 @@ Tracked for a follow-up.
 - UPLOAD_FILE (PR #189): separate capability, scope on demand.
 - In-process MCP, Ego backend, cloud-env removal: explicitly rejected;
   our subprocess boundary + dual-backend direction stand.
+- Parallel MCP drives (owner decision 2026-10-03: PARKED for later, after
+  the live-test program; assessment delivered, no work now): Stage 0 —
+  per-drive isolation (continuity keyed per session/tab, tab leasing with
+  cross-process file locks, one pane/tab per drive, no tab-stealing);
+  Stage 1 — parallel mcp.py loop (reader thread + worker pool + stdout
+  mutex + cancellation routing); Stage 2 — resource/visibility limits.
+  Test suite stays sequential regardless.
