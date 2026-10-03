@@ -80,3 +80,5 @@ flagged for evidence re-read (landed on prior-run pages).
 | M6-67bb4a667a | M6 | kalshi.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | kalshi.com/ | 2 | 0 | 1809.0 | feca83330992f854 | 9cf85ac | 3.68 |
 | M7-7dd0bfa1e7 | M7 | polymarket.com | R | mandatory | FALSE-DONE | sev-1 | false-done | model_done | polymarket.com/event/btc-updown-5m-1791012900 | 3 | 0 | 2982.0 | feca83330992f854 | 3a9beae | 3.84 |
 | M8-ad106edd4e | M8 | github.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | github.com/search | 4 | 0 | 872.0 | feca83330992f854 | 3a9beae | 19.55 |
+| M9-3072a8ca2d | M9 | github.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | github.com/nedzen/jev-terminal-browser-driver | 5 | 0 | 2831.5 | feca83330992f854 | fa1e157 | 7.47 |
+| M11-0d81fab727 | M11 | wolframalpha.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | www.wolframalpha.com/ | 5 | 0 | 1859.0 | feca83330992f854 | fa1e157 | 10.27 |
