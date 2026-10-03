@@ -45,12 +45,18 @@ def _load_file(path: Path) -> dict:
 
 
 def _resolve(args: list[str]) -> list[Path]:
-    """Ids, paths, or (default) every *.json under manifests/."""
+    """Ids, paths, or (default) every *.json under manifests/.
+
+    When both ``S4a.json`` and ``S4a-chain.json`` exist, the default suite prefers
+    the chain: a single no-url drive after quarantine is a setup error (no_page),
+    not the continuity case the id names.
+    """
     if not args:
         paths = sorted(MANIFEST_DIR.glob("*.json"))
         if not paths:
             raise ManifestError(f"no manifests in {MANIFEST_DIR}")
-        return paths
+        chained = {p.name[: -len("-chain.json")] for p in paths if p.name.endswith("-chain.json")}
+        return [p for p in paths if p.stem not in chained]
     out: list[Path] = []
     for arg in args:
         path = Path(arg)

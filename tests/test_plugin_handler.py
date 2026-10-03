@@ -300,6 +300,13 @@ def test_result_carries_verification_and_stop_taxonomy(home):
     blocked = handler.compact_result([{"status": "blocked", "url": "x"}], 1)
     assert blocked["stopped_reason"] == "model_blocked"
 
+    # Quarantine cleared the tab and no url was passed — not a model BLOCKED.
+    no_page = handler.compact_result(
+        [{"status": "blocked", "error": "no remembered tab", "reason": "no_page"}], 1
+    )
+    assert no_page["stopped_reason"] == "no_page"
+    assert no_page["reason"] == "no_page"
+
 
 def test_page_text_capped(home):
     out = handler.compact_result([{"status": "done", "url": "x", "page_text": "y" * 5000}], 0)

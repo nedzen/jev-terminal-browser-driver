@@ -9,11 +9,13 @@ from .metrics import Metrics, instrument_browser
 from .model import action_space, field_context, field_text
 from .readiness import (
     REASON_WHY,
+    Evidence,
     degenerate,
-    done_acceptable,
     done_probability,
     end_state_reached,
+    model_action_count,
     page_is_shell,
+    verdict,
 )
 from .runlog import write_event
 
@@ -627,25 +629,43 @@ class DriveAgent(Agent):
 
     LOW_CONFIDENCE_STRIKES = 2
 
+    def _evidence(self) -> Evidence:
+        """Snapshot the facts verdict() needs for this act-tick."""
+        state = self.state
+        decision = state.get("decision") or {}
+        page = state.get("page") or {}
+        text = page.get("text") or ""
+        scroll = next((item for item in (page.get("actions") or []) if item.get("id") == "scroll_down"), None)
+        history = state.get("history") or []
+        moved = self._moved_on(page)
+        return Evidence(
+            choice=decision.get("choice"),
+            top_op=_top_operation(decision),
+            done_p=done_probability(decision),
+            shell=page_is_shell(text),
+            moved_on=moved,
+            time_budget_spent=self._time_budget_spent(),
+            weak_done=getattr(self, "_weak_done", 0),
+            degenerate_streak=getattr(self, "_degenerate_streak", 0),
+            looked=getattr(self, "_looked", 0),
+            look_budget=self.LOOK_SCROLLS,
+            has_scroll_down=scroll is not None and state.get("browser") is not None,
+            short_page=len(text.strip()) < 160,
+            model_history=model_action_count(history),
+            end_state=end_state_reached(
+                page, goal=state.get("goal"), history=history, moved_on=moved
+            ),
+        )
+
     def _stop_low_confidence(self):
-        """Stop on the second consecutive degenerate tick. The decision is discarded, never executed.
-
-        A degenerate operation spread is the model reporting that it sees no reason to prefer
-        anything: the top operation is low and the gap to the runner-up is narrow, so whichever
-        one it returns is close to a coin flip. One such tick is ordinary uncertainty and the
-        next observation may settle it, so a single one never stops. Two in a row means the run
-        is choosing what to click and type on the user's own profile by chance, and the cheapest
-        honest end is to stop before the second one lands.
-
-        The streak counts consecutive ticks, not decisions in total: a tick with a real preference
-        resets it. It is read here, ahead of every other rejection path, so nothing below can
-        execute a decision on its way out and no path can settle the run on a coin flip instead.
-        """
+        """Stop on the second consecutive degenerate tick. Decision discarded, never executed."""
         if not degenerate(self.state.get("decision")):
             self._degenerate_streak = 0
             return None
         self._degenerate_streak = getattr(self, "_degenerate_streak", 0) + 1
-        if self._degenerate_streak < self.LOW_CONFIDENCE_STRIKES:
+        if verdict(self._evidence()).kind != "stop":
+            return None
+        if getattr(self, "_degenerate_streak", 0) < self.LOW_CONFIDENCE_STRIKES:
             return None
         state = self.state
         state["decision"] = None
@@ -668,36 +688,11 @@ class DriveAgent(Agent):
         page = state.get("page") or {}
         if not decision or decision.get("choice") != "DONE":
             return None
-        # `history` is the run's performed-action log: `_remember_click` appends
-        # only when an action actually went out, so its length is the count of
-        # actions executed, not the count of decisions made.
-        performed = len(state.get("history") or [])
-        # A run whose clock is already spent cannot click or type anything else, so
-        # refusing its zero-action DONE can only convert a finish into a failure.
-        # Exempt that case (DONE_MIN still applies); the certainty requirement is
-        # aimed at runs that still had options and spent none of them.
-        effective = None if (performed == 0 and self._time_budget_spent()) else performed
-        if done_acceptable(decision, page, executed_actions=effective):
+        judgment = verdict(self._evidence())
+        if judgment.kind == "allow":
             return None
-        # The navigation bypass: a DONE below `DONE_MIN` may still end the run when
-        # the run got itself to the right page. `moved_on` alone does not say "right".
-        # M7 DONE'd at 0.56 on the event page with one click and no scroll, and a bare
-        # path difference accepted it; `moved_on` is a comparison of two strings, not a
-        # claim about the goal, and the goal named an order book the run never scrolled to.
-        # So the bypass now asks `end_state_reached` -- the same goal-progress bar
-        # `_blocked_rescue` already applies to a BLOCKED -- which requires the
-        # destination to carry the goal's own words and the run to have performed a
-        # non-scroll step for each step the goal names. Its `moved_on` and shell clauses
-        # are the ones this condition used to spell out by hand.
-        if _top_operation(decision) == "DONE" and end_state_reached(
-            page,
-            goal=state.get("goal"),
-            history=state.get("history"),
-            moved_on=self._moved_on(page),
-        ):
-            return None
+        # reject_done or stop (weak_done)
         state["decision"] = None
-        text = page.get("text") or ""
         probability = done_probability(decision)
         write_event(
             {
@@ -707,6 +702,7 @@ class DriveAgent(Agent):
                 "url": page.get("url"),
             }
         )
+        text = page.get("text") or ""
         if page_is_shell(text):
             browser = state.get("browser")
             for _ in range(6):
@@ -721,7 +717,7 @@ class DriveAgent(Agent):
             state["stop_reason"] = "shell"
             return self.snapshot()
         self._weak_done = getattr(self, "_weak_done", 0) + 1
-        if self._weak_done >= 2:
+        if judgment.kind == "stop" or self._weak_done >= 2:
             state["status"] = "blocked"
             state["stop_reason"] = "weak_done"
             return self.snapshot()
@@ -741,6 +737,8 @@ class DriveAgent(Agent):
                     "kind": "scroll",
                     "operation": "SCROLL_DOWN",
                     "page_changed": True,
+                    # Driver corrective scroll — must not count as a model action (#23).
+                    "auto": True,
                 }
             )
         elif browser is not None:
@@ -758,30 +756,29 @@ class DriveAgent(Agent):
         return bool(start and url) and start.split("#")[0] != url.split("#")[0]
 
     def _blocked_rescue(self, page: dict):
-        """Last chance for a BLOCKED that this run had already earned its way out of.
-
-        Called only where `_look_further` has stopped helping — the scroll budget
-        is spent, or the page offers nothing to scroll. That ordering is the
-        conservatism: scrolling is tried first, on every BLOCKED, so this cannot
-        pre-empt a rescue that a scroll would have found anyway.
-
-        A BLOCKED the model is right about (the target is still below the fold,
-        the page is a shell) fails `end_state_reached` and the run stops blocked
-        exactly as before. Only a BLOCKED on a page this run navigated to, that
-        visibly carries the goal's own words, and that this run acted to reach,
-        is converted — and it converts to `done` with its own stop_reason, never
-        to a silent success.
-        """
+        """Last chance for a BLOCKED that this run had already earned its way out of."""
         state = self.state
         decision = state.get("decision") or {}
         if decision.get("choice") != "BLOCKED":
             return None
-        if not end_state_reached(
-            page,
-            goal=state.get("goal"),
-            history=state.get("history"),
-            moved_on=self._moved_on(page),
-        ):
+        # Force the look budget spent so verdict() takes the rescue branch.
+        ev = self._evidence()
+        judgment = verdict(
+            Evidence(
+                **{
+                    **ev.__dict__,
+                    "looked": max(ev.looked, ev.look_budget),
+                    "has_scroll_down": False,
+                    "end_state": end_state_reached(
+                        page,
+                        goal=state.get("goal"),
+                        history=state.get("history"),
+                        moved_on=self._moved_on(page),
+                    ),
+                }
+            )
+        )
+        if judgment.kind != "rescue_done":
             return None
         state["decision"] = None
         state["status"] = "done"
@@ -807,14 +804,15 @@ class DriveAgent(Agent):
         decision = state.get("decision") or {}
         if decision.get("choice") != "BLOCKED":
             return None
-        looked = getattr(self, "_looked", 0)
         page = state.get("page") or {}
         browser = state.get("browser")
-        if looked >= self.LOOK_SCROLLS or browser is None:
+        judgment = verdict(self._evidence())
+        if judgment.kind == "rescue_done":
             return self._blocked_rescue(page)
-        text = page.get("text") or ""
-        if page_is_shell(text) or len(text.strip()) < 160:
-            self._looked = looked + 1
+        if judgment.kind == "noop":
+            return self._blocked_rescue(page)
+        if judgment.kind == "look_wait":
+            self._looked = getattr(self, "_looked", 0) + 1
             state["decision"] = None
             for _ in range(8):
                 browser.sleep(getattr(browser, "HYDRATE_SLEEP_S", 0) or 0)
@@ -831,10 +829,12 @@ class DriveAgent(Agent):
                 }
             )
             return self.snapshot()
-        scroll = next((item for item in page.get("actions") or [] if item.get("id") == "scroll_down"), None)
-        if scroll is None:
+        if judgment.kind != "look_scroll":
             return self._blocked_rescue(page)
-        self._looked = looked + 1
+        scroll = next((item for item in page.get("actions") or [] if item.get("id") == "scroll_down"), None)
+        if scroll is None or browser is None:
+            return self._blocked_rescue(page)
+        self._looked = getattr(self, "_looked", 0) + 1
         state["decision"] = None
         try:
             browser.act(scroll, page)
@@ -850,6 +850,7 @@ class DriveAgent(Agent):
                 "operation": "SCROLL_DOWN",
                 "page_changed": state["page"].get("fingerprint") != page.get("fingerprint"),
                 "usage": decision.get("usage") or {},
+                "auto": True,
             }
         )
         state["status"] = "ready"

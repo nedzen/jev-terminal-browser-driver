@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 DONE_MIN = 0.6
 
@@ -259,9 +261,30 @@ def goal_steps(goal: str | None) -> tuple[list[set[str]], set[str]]:
     return steps, qualifier
 
 
+def _url_path_evidence(url: str | None) -> str:
+    """Path (+ query) only — the host is never goal evidence.
+
+    Live S2a: goal token ``coin`` matched ``coinmarketcap.com`` in the URL host
+    and a 0.47 DONE on the wrong page cleared the nav bypass.
+    """
+    if not url:
+        return ""
+    parts = urlsplit(str(url))
+    path = parts.path or ""
+    query = f"?{parts.query}" if parts.query else ""
+    return f"{path}{query}".lower()
+
+
 def _visible_text(page: dict | None) -> str:
-    """Everything the page itself shows: its title, its text, and its URL."""
-    return " ".join(str((page or {}).get(key) or "") for key in ("title", "text", "url")).lower()
+    """Title, body text, and URL path/query — never the host."""
+    page = page or {}
+    return " ".join(
+        (
+            str(page.get("title") or "").lower(),
+            str(page.get("text") or "").lower(),
+            _url_path_evidence(page.get("url")),
+        )
+    )
 
 
 def _history_text(history: list | None) -> str:
@@ -280,6 +303,41 @@ def _history_text(history: list | None) -> str:
     return " ".join(bits).lower()
 
 
+def _token_in_evidence(token: str, evidence: str) -> bool:
+    """Whole-word match: ``coin`` must not hit ``coinmarketcap``."""
+    if not token or not evidence:
+        return False
+    return re.search(rf"(?<![a-z0-9]){re.escape(token)}(?![a-z0-9])", evidence) is not None
+
+
+def model_action_count(history: list | None) -> int:
+    """Actions the *model* performed — driver auto-scrolls after a rejected DONE/BLOCKED
+    do not count (live S7c: auto-scroll laundered a zero-action DONE onto DONE_MIN).
+    """
+    return sum(1 for entry in (history or []) if isinstance(entry, dict) and not entry.get("auto"))
+
+
+def progressed_action_count(history: list | None) -> int:
+    """Non-scroll, non-wait, non-auto actions — the end-state step counter."""
+    return sum(
+        1
+        for entry in (history or [])
+        if isinstance(entry, dict)
+        and not entry.get("auto")
+        and str(entry.get("kind") or "") not in {"scroll", "wait"}
+    )
+
+
+def goal_evidenced(page: dict | None, *, goal: str | None, history: list | None) -> bool:
+    """Every goal step (and qualifier) has at least one whole-word token in evidence."""
+    steps, qualifier = goal_steps(goal)
+    if not steps:
+        return False
+    evidence = _visible_text(page) + " " + _history_text(history)
+    required = [*steps, qualifier] if qualifier else steps
+    return all(any(_token_in_evidence(token, evidence) for token in step) for step in required)
+
+
 def end_state_reached(page: dict | None, *, goal: str | None, history: list | None, moved_on: bool) -> bool:
     """True when this run performed every step of the goal and reached its end state.
 
@@ -287,42 +345,99 @@ def end_state_reached(page: dict | None, *, goal: str | None, history: list | No
     than an honest ``blocked``, because the caller stops asking and the result
     never says the goal was missed.
 
-    1. ``moved_on`` — the run navigated away from where it started. A run that
-       never left its start page has not arrived anywhere.
-    2. the page is not a shell. Chrome-only text carries no evidence, and a shell
-       is precisely the condition BLOCKED is usually right about.
-    3. **every step** the goal names is accounted for, in the page's own visible
-       text or in this run's own action history. All-of rather than any-of is the
-       multi-step hedge: "open the article, then share it" cannot be satisfied by
-       a page that only shows the article.
-    4. every step is *performed*: the run's own non-scroll actions number at
-       least as many as the goal's steps. This is the reviewer #14 hedge — a
-       single-action-completed goal has one step and one click behind it, while a
-       multi-step goal still has steps outstanding and stays blocked.
+    1. ``moved_on`` — the run navigated away from where it started.
+    2. the page is not a shell.
+    3. **every step** is whole-word evidenced in title/text/URL-path or history
+       (host excluded — see ``_url_path_evidence``).
+    4. progressed (non-scroll) actions ≥ step count.
 
-    Returns False whenever any clause fails. No exceptions and no thresholds to tune.
+    Returns False whenever any clause fails.
     """
-    steps, qualifier = goal_steps(goal)
+    steps, _qualifier = goal_steps(goal)
     if not steps:
-        # A goal with no content words cannot be shown satisfied by any page.
         return False
     if not moved_on:
         return False
     if page_is_shell((page or {}).get("text")):
         return False
-    acted = [
-        entry
-        for entry in (history or [])
-        if isinstance(entry, dict) and str(entry.get("kind") or "") not in {"scroll", "wait"}
-    ]
-    evidence = _visible_text(page) + " " + _history_text(history)
-    required = [*steps, qualifier] if qualifier else steps
-    if not all(any(token in evidence for token in step) for step in required):
+    if not goal_evidenced(page, goal=goal, history=history):
         return False
-    # Scrolling and waiting do not count as having acted. This also covers the
-    # run that only looked: with no performed step it cannot clear `len(steps)`,
-    # which is at least one, so it never reaches a done.
-    return len(acted) >= len(steps)
+    return progressed_action_count(history) >= len(steps)
+
+
+# ---------------------------------------------------------------------------
+# Single stop/finish verdict. DriveAgent owns browser I/O; this owns the decision.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Evidence:
+    """Facts one act-tick's finish/stop gates need — no browser handles."""
+
+    choice: str | None
+    top_op: str | None
+    done_p: float
+    shell: bool
+    moved_on: bool
+    time_budget_spent: bool
+    weak_done: int
+    degenerate_streak: int
+    looked: int
+    look_budget: int
+    has_scroll_down: bool
+    short_page: bool
+    model_history: int
+    end_state: bool
+
+
+@dataclass(frozen=True)
+class Verdict:
+    """What DriveAgent should do next. Side effects stay in the agent."""
+
+    kind: str  # allow | stop | reject_done | look_scroll | look_wait | rescue_done | noop
+    status: str | None = None
+    stop_reason: str | None = None
+
+
+def verdict(ev: Evidence) -> Verdict:
+    """One ordered decision for the finish/stop pile.
+
+    Order matches DriveAgent.command("act"): low-confidence → weak DONE →
+    BLOCKED look-further/rescue. Bug fixes live here: ``model_history`` ignores
+    auto scrolls (#23); ``end_state`` uses whole-word/host-excluded evidence (#26).
+    """
+    if ev.degenerate_streak >= 2:
+        return Verdict("stop", "blocked", "low_confidence")
+
+    if ev.choice == "DONE":
+        executed = None if (ev.model_history == 0 and ev.time_budget_spent) else ev.model_history
+        fake = {
+            "choice": "DONE",
+            "operation_probabilities": {"DONE": ev.done_p},
+            "confidence": ev.done_p,
+        }
+        page = {"text": "" if ev.shell else "A real paragraph of visible text that is not only short labels."}
+        if done_acceptable(fake, page, executed_actions=executed):
+            return Verdict("allow")
+        if ev.top_op == "DONE" and ev.end_state:
+            return Verdict("allow")
+        # Shell: agent still tries hydrate before stopping — kind alone drives that.
+        if ev.shell:
+            return Verdict("reject_done")
+        if ev.weak_done + 1 >= 2:
+            return Verdict("stop", "blocked", "weak_done")
+        return Verdict("reject_done")
+
+    if ev.choice == "BLOCKED":
+        if ev.looked >= ev.look_budget or not ev.has_scroll_down:
+            if ev.end_state:
+                return Verdict("rescue_done", "done", "end_state_reached")
+            return Verdict("noop")
+        if ev.shell or ev.short_page:
+            return Verdict("look_wait")
+        return Verdict("look_scroll")
+
+    return Verdict("noop")
 
 
 def unsupported_goal(goal: str | None) -> str | None:

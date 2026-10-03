@@ -125,6 +125,28 @@ def test_a_goal_whose_words_are_nowhere_on_the_page_stays_blocked():
     assert _reached("Open the Husqvarna article, then bookmark it", history=history) is False
 
 
+def test_a_goal_token_inside_a_host_name_is_not_evidence():
+    """Live S2a: goal word ``coin`` matched ``coinmarketcap.com`` via substring+URL,
+    and a weak DONE on the wrong page cleared the nav bypass. Whole-word match and
+    host exclusion must both refuse that.
+
+    History labels deliberately avoid the word ``coin`` so only page/URL evidence
+    is under test — the false positive was the host substring, not the click log.
+    """
+    page = {
+        "url": "https://coinmarketcap.com/exchanges/picol",
+        "title": "Top Cryptocurrency Exchanges | CoinMarketCap",
+        "text": (
+            "Rank Exchange Volume\n"
+            "A number of exchanges such as this one are listed for comparison. "
+            "Trading volume and liquidity metrics appear below the fold."
+        ),
+    }
+    goal = "Click the coin-row link past row 50; done when that coin page is showing."
+    history = _clicks(7, "Row 51")
+    assert end_state_reached(page, goal=goal, history=history, moved_on=True) is False
+
+
 def test_a_run_that_never_navigated_stays_blocked():
     """It is still on the start page, so it has not arrived anywhere. This is the
     guard's answer to a model that blocks on a page it is already looking at."""

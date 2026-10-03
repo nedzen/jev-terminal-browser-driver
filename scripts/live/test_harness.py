@@ -155,6 +155,15 @@ def test_a_block_on_a_satisfiable_goal_is_not_scored_as_a_miss():
     assert out["failure_cause"] == "unjustified-block"
 
 
+def test_no_page_is_a_harness_error_not_a_model_block():
+    """S4a single-drive after quarantine: driver returns no_page; that must not
+    score as BLOCKED-unjustified (the model never chose)."""
+    out = classify(expected={}, satisfiable=True, stop_reason="no_page",
+                   final_url=None, final_view=None, human_judged=True)
+    assert out["outcome_class"] == taxonomy.CRASH
+    assert out["failure_cause"] == "harness-error"
+
+
 def test_an_unjustified_block_carries_its_cause_for_the_scoreboard():
     """v3.1 wants an unjustified-block rate, so the closed-list cause has to survive."""
     out = classify(expected={"url_host_path": "x"}, satisfiable=True,

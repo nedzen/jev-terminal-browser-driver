@@ -158,6 +158,28 @@ def test_a_zero_action_done_does_not_end_the_run(browser, run):
     assert snap["decision"] is None  # discarded, not left pending
 
 
+def test_the_drivers_own_scroll_does_not_turn_a_zero_action_done_into_an_acted_one(browser, run, monkeypatch):
+    """Rejected zero-action DONE scrolls once by itself. That scroll is the driver's,
+    not the run's: the same 0.81 DONE on the next tick must still face the 0.95 bar
+    instead of DONE_MIN, or the gate is a one-tick delay (live S7c)."""
+    scroll = {"id": "scroll_down", "kind": "scroll", "label": "Scroll down"}
+    page = FakeBrowser._page
+
+    def with_scroll(self):
+        out = page(self)
+        out["actions"] = [*out["actions"], dict(scroll)]
+        return out
+
+    monkeypatch.setattr(FakeBrowser, "_page", with_scroll)
+    agent, _calls = run(S7B_ZERO_ACTION_DONE, S7B_ZERO_ACTION_DONE)
+
+    agent.command("tick")
+    snap = agent.command("tick")
+
+    assert [row["id"] for row in browser.acts] == ["scroll_down"]  # only the driver's scroll
+    assert snap["status"] != "done"
+
+
 def test_an_already_satisfied_goal_still_finishes_on_its_first_tick(browser, run):
     """S1d's shape, end to end: no action, DONE at 1.0, run done."""
     agent, _calls = run(S1D_ALREADY_SATISFIED)

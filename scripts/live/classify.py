@@ -218,6 +218,11 @@ def classify(*, expected: dict, satisfiable: bool, stop_reason: str | None, fina
         return finish(STALL, "stall", "stall: no tick progress within the stall window")
     if error:
         return finish(CRASH, "harness-error", f"harness error: {error}")
+    # no_page: the driver never attached (quarantine cleared the tab, no url).
+    # That is a harness/setup error, not a model BLOCKED — S4a single-drive was
+    # mislabelled BLOCKED-unjustified when the runner cleared last-page.json.
+    if reason == "no_page":
+        return finish(CRASH, "harness-error", "no_page: no remembered tab to attach (pass a url or use a chain)")
 
     # 2. A blocked stop is honest or unjustified; neither is a completed run.
     if reason in BLOCKED_STOP_REASONS:

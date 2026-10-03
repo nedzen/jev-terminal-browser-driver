@@ -107,6 +107,7 @@ def stopped_reason(status: str, reason, error) -> str:
     """Uniform stop taxonomy (upstream browser-use/jev-ultrafast#3).
 
     done -> model_done; budget exhaustion -> action_budget/time_budget;
+    no attachable tab -> no_page (not model_blocked: the model never ran);
     anything else blocked -> model_blocked; hard failures -> error.
     The legacy `reason` field keeps the granular detail.
     """
@@ -118,6 +119,8 @@ def stopped_reason(status: str, reason, error) -> str:
         return "model_done"
     if reason == "max_steps":
         return "action_budget"
+    if reason == "no_page":
+        return "no_page"
     if status == "error":
         return "error"
     return "model_blocked"
