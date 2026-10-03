@@ -84,3 +84,5 @@ flagged for evidence re-read (landed on prior-run pages).
 | M11-0d81fab727 | M11 | wolframalpha.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | www.wolframalpha.com/ | 5 | 0 | 1859.0 | feca83330992f854 | fa1e157 | 10.27 |
 | M12-4ddd1476f6 | M12 | flights.google.com | R | mandatory | MISS | sev-2 | wrong-end-state | action_budget | www.google.com/travel/flights | 13 | 0 | 1827.0 | feca83330992f854 | 3762a4e | 18.64 |
 | M13-508657a185 | M13 | amazon.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | www.amazon.com/s | 5 | 0 | 2236.0 | feca83330992f854 | 3762a4e | 10.25 |
+| M14-450398291c | M14 | arxiv.org | R | mandatory | FALSE-DONE | sev-1 | false-done | model_done | arxiv.org/list/cs.AI/new | 4 | 0 | 2883.0 | feca83330992f854 | 84599b0 | 3.69 |
+| M15-2a3d60a83e | M15 | sec.gov | R | mandatory | FALSE-DONE | sev-1 | false-done | model_done | www.sec.gov/cgi-bin/browse-edgar | 1 | 0 | 3044.0 | feca83330992f854 | 84599b0 | 6.02 |
