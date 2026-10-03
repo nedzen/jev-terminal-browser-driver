@@ -60,12 +60,12 @@ plugin, Tier 1–4, hardening A–C, debloat, rename. Reinstall sweep done.
   clean, task 3 re-verified). No re-runs now; token epic carries a
   clean-context re-run as its baseline measurement gate.
 
-## Next release (1.1.0)
+## Next release (1.1.0) — SHIPPED 2026-10-03
 
-Arch merged (PR #13) → reinstall verified → abridged release gate
-(fresh-install parity, wire contract, one live read-only IANA/example.com
-drive, suite+ruff) → tag v1.1.0 → release notes. Owner actions:
-GitHub repo rename click (still pending).
+- [x] Arch merged (PR #13) → reinstall verified → abridged release gate →
+  tag v1.1.0 (`3a8121b`, pushed) → release notes published.
+- Owner actions still pending: GitHub repo rename click; founder/intern
+  profile re-link + settings re-entry.
 
 ## Release gate 1.1.0 (2026-10-03, CLOSED as-is per owner decision — owner out, authority CEO)
 
@@ -97,10 +97,46 @@ GitHub repo rename click (still pending).
   as-is on reinstall + wire-contract + suite 657 + ruff green, with this
   gap recorded honestly. No descope-by-default; this is an explicit
   owner override of the live-drive gate item only.
-- Post-1.1.0 work (each needs its own cycle + reviewer sign-off, NOT
-  started): (a) stop-protocol mislabel investigation (backend/model config,
-  runs 2–3 evidence); (b) `#jev=` marker observe/act staleness
-  (run 1 evidence, intermittent — did NOT reproduce on run 3).
+- Post-1.1.0 work (each needs its own cycle + reviewer sign-off):
+  (a) stop-protocol mislabel investigation — V2 FROZEN PROBE DONE (main-ops,
+  16/16 posts, no browser): variant A (failing wording) 0 DONE / 8 BLOCKED,
+  DONE mean 0.1938 (0.17–0.22); variant B (good wording) 8 DONE / 0 BLOCKED,
+  DONE mean 0.6475 (0.62–0.67). Non-overlapping (gap 0.40); 6-token input
+  control (689 vs 683) proves only the goal string moved. H1 CONFIRMED —
+  goal framing alone crosses DONE_MIN 0.6. H4 EXONERATED — model id
+  jev-1.13.0 + spec hash + endpoint fixed across the probe, gap persists.
+  H2 structural (no BLOCKED-side guard: `_reject_weak_done` exits for any
+  non-DONE choice, `_look_further` needs targets — correct URL, no path to
+  done). H3 geometry flake orthogonal + still open. `_moved_on` :591 hatch:
+  the 21:30 gate-green run passed at DONE 0.59 < 0.6 via the escape, not the
+  threshold. Incidental: reported confidence INVERTS vs chosen-option
+  probability (blocked runs 0.56–0.67 vs done runs 0.24–0.35 — calibration
+  trap); `model_version` null in responses (no server-side drift detection
+  from response shape). V2 raw JSON PERSISTED at `/tmp/v2-frozen-probe.json`
+  (16 samples, re-emitted verbatim, parsed + verified: 8×A_failing BLOCKED,
+  8×B_good DONE; model jev-1.13.0, spec c81014bb333236aa, model_version null
+  all 16). Caveat: request bodies + full frozen text not captured (only
+  frozen_text_len 200) — re-emittable on request.
+- V3 DONE_MIN-bypass map (arch, refs verified on disk): THREE paths to done
+  below (or without) DONE_MIN — B1 `:591` `_moved_on` (any DONE argmax after
+  any URL change; test pins acceptance at 0.36, no lower bound, URL-unchanged
+  rejection unpinned); B2 confidence fallback (`readiness.py:78-81`: DONE
+  absent from head + choice DONE → scored on `confidence` vs the same 0.6);
+  `:463` `_would_undo` already-followed (no model DONE, no probability —
+  deliberate, tested). Guard interaction: `_stop_low_confidence` first;
+  `degenerate` (top<0.6, gap<0.1) stops diffuse DONE but not peaked
+  confidently-mediocre DONE. Doc impact: `architecture.md:180` false as
+  written (true only for never-navigated runs); release-test-plan §2 never
+  records DONE p so Path-B greens pass unnoticed; battery rows 1–2 likely
+  Path-B, rows 6/8/9 leave the threshold untested for non-navigating goals.
+- PROPOSED post-1.1.0 fix backlog, priority order, PENDING ceo final ruling
+  (each: own cycle + reviewer sign-off): P1 DONE stop-framing
+  (`questions.py:14` observable end-state criterion); P2 H2 BLOCKED-side
+  guard (correct-URL rescue); P3 `architecture.md:180` doc correction;
+  P4 H3 geometry (quantify `not_actionable`, then fix); P5 `model_version`
+  + confidence instrumentation (drift detection, calibration).
+  (b) `#jev=` marker observe/act staleness (run 1 evidence, intermittent —
+  did NOT reproduce on run 3) — filed, NOT started.
 - Owner-only pending, untouched: GitHub repo rename click; `founder` /
   `intern` profile re-link + settings re-entry.
 
