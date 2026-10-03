@@ -106,3 +106,6 @@ History stays above; scoreboard counts only rows below this line.
 | S4a-abc943ff9a | S4a | github.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | - | 1 | 0 | 396.0 | f8b13c650cc5ddf6 | 5982578 | 0.36 |
 | S6a-ec6720d378 | S6a | github.com | R | mandatory | HIT | - | - | model_done | github.com/notifications | 1 | 0 | 1382.0 | f8b13c650cc5ddf6 | 5982578 | 2.33 |
 | S4a-19ca810b41 | S4a | github.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | - | 1 | 0 | 396.0 | f8b13c650cc5ddf6 | 5982578 | 0.31 |
+| S5a-0f45676695 | S5a | github.com | R | mandatory | BLOCKED-unjustified | sev-2 | unjustified-block | model_blocked | github.com/trending | 3 | 0 | 2272.0 | f8b13c650cc5ddf6 | cc92cdd | 4.02 |
+| S5b-a8361e4b33 | S5b | en.wikipedia.org | R | mandatory | HIT | - | - | model_done | en.wikipedia.org/wiki/String_trimmer | 6 | 0 | 2971.0 | f8b13c650cc5ddf6 | cc92cdd | 4.19 |
+| S5c-90002fb24c | S5c | x.com | R | mandatory | MISS | sev-2 | wrong-end-state | action_budget | x.com/home | 13 | 0 | 1362.0 | f8b13c650cc5ddf6 | cc92cdd | 8.59 |
