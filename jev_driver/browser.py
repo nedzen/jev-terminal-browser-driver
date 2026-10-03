@@ -22,6 +22,11 @@ MARKER = f"(() => {{ const state={READ_STATE}; return state?.marker ?? null; }})
 BLOCKED_SCHEMES = ("chrome:", "chrome-untrusted:", "devtools:", "chrome-extension:")
 DENYLIST_HOSTS = ("hindsight.vectorize.io",)
 
+# The one fragment parameter the driver authors itself, via `_unique_url`. Anchored
+# and fullmatch: `jev=<digits>` must be the whole parameter, so a site fragment like
+# `#jev=something-else` in a hash route, or `#notjev=1`, is not silently dropped.
+_JEV_MARKER_RE = re.compile(r"jev=\d+")
+
 # Settle windows before a target counts as stale. A framework that re-parents a row, or a
 # menu that re-renders, hands back the same node a frame later; re-reading one target is
 # cheap, re-snapshotting the page is not (it rebuilds the action list this decision came from).
@@ -561,7 +566,7 @@ class Browser:
             current = self.evaluate("(() => [performance.timeOrigin, location.href])()")
             self._fresh_reason = "ok" if _same_document(page, current) else "target_changed"
             return self._fresh_reason == "ok"
-        self._fresh_reason = "ok" if self.evaluate(MARKER) == page["marker"] else "target_changed"
+        self._fresh_reason = "ok" if _same_marker(page["marker"], self.evaluate(MARKER)) else "target_changed"
         return self._fresh_reason == "ok"
 
     def _probe_target(self, kind, page, node, *, reprobe=True) -> str:
@@ -725,13 +730,56 @@ def without_counts(value):
     return _COUNTS.sub("#", value) if isinstance(value, str) else value
 
 
+def _same_marker(stored, current) -> bool:
+    """Two `MARKER` readings are the same page, ignoring the driver's own nonce.
+
+    `marker[1]` is `location.href` (snapshot.js), so the whole marker is compared
+    with that one slot normalized. Every other slot is compared as the driver
+    recorded it: timeOrigin, scroll, viewport, title, text, the action list's
+    semantics, and the form-field page key. A nonce-only difference is the
+    driver's own bookkeeping and says nothing about the page having changed.
+    """
+    if not isinstance(stored, list) or not isinstance(current, list):
+        return stored == current
+    if len(stored) != len(current) or len(stored) < 2:
+        return stored == current
+    return _same_href(stored[1], current[1]) and stored[:1] == current[:1] and stored[2:] == current[2:]
+
+
+def _strip_jev_marker(href):
+    """A URL with the driver's own `#jev=<nonce>` fragment parameter removed.
+
+    The driver mints that nonce in `_unique_url` so a re-opened tab is a distinct
+    URL in CDP's target list. It is not site state and it is not stable: two calls
+    to `_unique_url` for the same page return different nonces. Since `marker[1]`
+    and `page_key[1]` are both `location.href`, comparing them verbatim asks "did
+    my own bookkeeping change?" and answers yes.
+
+    Only a `jev` name=value parameter inside the fragment is dropped. A site
+    fragment such as `#section`, `#/route/2` or a bare `#` is untouched and still
+    counts as navigation, because that is the site changing where it is.
+    """
+    if not isinstance(href, str):
+        return href
+    base, sep, fragment = href.partition("#")
+    if not sep or not fragment:
+        return href
+    kept = [part for part in fragment.split("&") if not _JEV_MARKER_RE.fullmatch(part)]
+    return f"{base}#{'&'.join(kept)}" if kept else base
+
+
+def _same_href(stored, current) -> bool:
+    """Two hrefs are the same place, ignoring the driver's own nonce fragment."""
+    return _strip_jev_marker(stored) == _strip_jev_marker(current)
+
+
 def _same_document(page: dict, current) -> bool:
     stored = page.get("page_key")
     if not isinstance(current, list) or len(current) < 2:
         return False
     if not isinstance(stored, list) or len(stored) < 2:
-        return current[1] == page.get("url")
-    return current[0] == stored[0] and current[1] == stored[1]
+        return _same_href(current[1], page.get("url"))
+    return current[0] == stored[0] and _same_href(current[1], stored[1])
 
 
 def _same_target(page: dict, node: int, current) -> bool:
