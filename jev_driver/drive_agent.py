@@ -7,7 +7,14 @@ from .agent import Agent
 from .browser import StalePage, without_counts
 from .metrics import Metrics, instrument_browser
 from .model import action_space, field_context, field_text
-from .readiness import REASON_WHY, degenerate, done_acceptable, done_probability, page_is_shell
+from .readiness import (
+    REASON_WHY,
+    degenerate,
+    done_acceptable,
+    done_probability,
+    end_state_reached,
+    page_is_shell,
+)
 from .runlog import write_event
 
 TIME_BUDGET_WHY = (
@@ -651,6 +658,50 @@ class DriveAgent(Agent):
         url = (page or {}).get("url")
         return bool(start and url) and start.split("#")[0] != url.split("#")[0]
 
+    def _blocked_rescue(self, page: dict):
+        """Last chance for a BLOCKED that this run had already earned its way out of.
+
+        Called only where `_look_further` has stopped helping — the scroll budget
+        is spent, or the page offers nothing to scroll. That ordering is the
+        conservatism: scrolling is tried first, on every BLOCKED, so this cannot
+        pre-empt a rescue that a scroll would have found anyway.
+
+        A BLOCKED the model is right about (the target is still below the fold,
+        the page is a shell) fails `end_state_reached` and the run stops blocked
+        exactly as before. Only a BLOCKED on a page this run navigated to, that
+        visibly carries the goal's own words, and that this run acted to reach,
+        is converted — and it converts to `done` with its own stop_reason, never
+        to a silent success.
+        """
+        state = self.state
+        decision = state.get("decision") or {}
+        if decision.get("choice") != "BLOCKED":
+            return None
+        if not end_state_reached(
+            page,
+            goal=state.get("goal"),
+            history=state.get("history"),
+            moved_on=self._moved_on(page),
+        ):
+            return None
+        state["decision"] = None
+        state["status"] = "done"
+        state["stop_reason"] = "end_state_reached"
+        if state.get("elapsed_ms") is None:
+            state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
+        write_event(
+            {
+                "event": "done",
+                "goal": state.get("goal"),
+                "status": "done",
+                "reason": "end_state_reached",
+                "kind": "BLOCKED",
+                "url": (page or {}).get("url"),
+                "why": REASON_WHY["end_state_reached"],
+            }
+        )
+        return self.snapshot()
+
     def _look_further(self):
         """BLOCKED usually means the target is below the viewport. Scroll and ask again, a few times."""
         state = self.state
@@ -661,7 +712,7 @@ class DriveAgent(Agent):
         page = state.get("page") or {}
         browser = state.get("browser")
         if looked >= self.LOOK_SCROLLS or browser is None:
-            return None
+            return self._blocked_rescue(page)
         text = page.get("text") or ""
         if page_is_shell(text) or len(text.strip()) < 160:
             self._looked = looked + 1
@@ -683,7 +734,7 @@ class DriveAgent(Agent):
             return self.snapshot()
         scroll = next((item for item in page.get("actions") or [] if item.get("id") == "scroll_down"), None)
         if scroll is None:
-            return None
+            return self._blocked_rescue(page)
         self._looked = looked + 1
         state["decision"] = None
         try:
