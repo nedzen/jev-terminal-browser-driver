@@ -140,7 +140,7 @@ def confidence_inversion(*, ticks: int, confidences, outcomes) -> dict:
         # than compare the wrong series.
         return {"verdict": INVERSION_INSUFFICIENT, "ticks": ticks, "inverted_ticks": None}
     inverted = sum(
-        1 for confidence, outcome in pairs if confidence > 0 and not outcome
+        1 for confidence, outcome in pairs if (confidence or 0) > 0 and not outcome
     )
     return {"verdict": "measured", "ticks": ticks, "inverted_ticks": inverted}
 

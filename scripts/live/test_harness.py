@@ -1266,3 +1266,13 @@ def test_run_suite_accepts_a_goal_style_manifest(tmp_path):
         client.close()
     assert out["classified"] == 1
     assert out["by_class"].get("HIT") == 1
+
+
+def test_null_confidence_does_not_break_inversion():
+    """Live responses can carry null confidence. It counts as no signal,
+    never as an inverted tick, and never as a crash."""
+    from scripts.live.classify import confidence_inversion
+    out = confidence_inversion(ticks=4, confidences=[0.9, None, 0.2, None],
+                               outcomes=[True, True, False, True])
+    assert out["verdict"] == "measured"
+    assert out["inverted_ticks"] == 1
