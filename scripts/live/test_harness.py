@@ -364,11 +364,16 @@ def _isolated_driver_state(root):
     model an isolated environment -- and it is what `tests/conftest.py` already
     does for the same reason. Using `pytest.MonkeyPatch.context` keeps it scoped to
     the call rather than leaking into other tests.
+
+    Patches `jev_driver.lease`, not `jev_driver.browser`: `LAST_PAGE_PATH` is
+    reassigned, not mutated in place, and `remember_page`/`find_continuable_page`
+    read it from their own module's globals (`lease.py`), so a patch bound to the
+    `browser` re-export would not reach them.
     """
-    from jev_driver import browser as browser_mod
+    from jev_driver import lease as lease_mod
 
     patcher = pytest.MonkeyPatch()
-    patcher.setattr(browser_mod, "LAST_PAGE_PATH", Path(root) / "last-page.json")
+    patcher.setattr(lease_mod, "LAST_PAGE_PATH", Path(root) / "last-page.json")
     return patcher
 
 
@@ -1272,12 +1277,12 @@ def test_the_runner_refuses_on_the_directory_alone_not_only_via_quarantine(tmp_p
     first run), so the only thing that can refuse is the runner's own assertion.
     Removing that call makes this run proceed instead.
     """
-    from jev_driver import browser as browser_mod
+    from jev_driver import lease as lease_mod
 
     elsewhere = tmp_path / "driver-elsewhere"
     elsewhere.mkdir()
     patcher = pytest.MonkeyPatch()
-    patcher.setattr(browser_mod, "LAST_PAGE_PATH", elsewhere / "last-page.json")
+    patcher.setattr(lease_mod, "LAST_PAGE_PATH", elsewhere / "last-page.json")
     client = _client([HIT], log_dir=tmp_path)
     try:
         record = runner.run_test(client, _test(), log_dir=tmp_path,

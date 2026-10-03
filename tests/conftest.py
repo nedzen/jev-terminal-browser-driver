@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from jev_driver import browser, runlog
+from jev_driver import lease, runlog
 from jev_driver.browser import StalePage, fingerprint
 from plugin.core import env as core_env
 
@@ -51,8 +51,8 @@ def isolated_state(monkeypatch, tmp_path):
     monkeypatch.setattr(runlog, "LOG_DIR", log_dir)
     monkeypatch.setattr(runlog, "JSONL_PATH", log_dir / "drive.jsonl")
     monkeypatch.setattr(runlog, "TEXT_PATH", log_dir / "drive.log")
-    monkeypatch.setattr(browser, "LAST_PAGE_PATH", log_dir / "last-page.json")
-    monkeypatch.setattr(browser, "HUD_STATE_PATH", log_dir / "hud.json")
+    monkeypatch.setattr(lease, "LAST_PAGE_PATH", log_dir / "last-page.json")
+    monkeypatch.setattr(lease, "HUD_STATE_PATH", log_dir / "hud.json")
     monkeypatch.setattr(core_env, "LOG_DIR", log_dir)
 
 

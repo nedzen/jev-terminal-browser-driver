@@ -74,7 +74,7 @@ def assert_log_dir_matches(log_dir, driver_state_dir) -> None:
 
     This is the check whose absence voided S4a and S4b. The harness takes
     `log_dir` as a parameter while the driver *hardcodes* its state directory
-    (`browser.LAST_PAGE_PATH`), so pointing `log_dir` anywhere else does not fail
+    (`lease.LAST_PAGE_PATH`), so pointing `log_dir` anywhere else does not fail
     loudly -- `quarantine_last_page` finds no file to rename, `assert_pane_idle`
     reads no events, and both report success while isolating nothing. The driver
     meanwhile keeps re-attaching to whatever tab the previous run left, and a

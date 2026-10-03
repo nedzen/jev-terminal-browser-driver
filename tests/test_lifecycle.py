@@ -211,9 +211,10 @@ def _remember(monkeypatch, tmp_path, *, spawned):
 
     from jev_driver import browser as br
     from jev_driver import discover as disc
+    from jev_driver import lease
 
     path = tmp_path / "last-page.json"
-    monkeypatch.setattr(br, "LAST_PAGE_PATH", path)
+    monkeypatch.setattr(lease, "LAST_PAGE_PATH", path)
     monkeypatch.setattr(
         disc, "LAST",
         disc.Discovery("ws://127.0.0.1:5000/a", "http://127.0.0.1:5000", "terminal-browser", auto_launched=spawned),
@@ -248,13 +249,14 @@ def test_a_record_written_before_the_flag_still_loads(tmp_path, monkeypatch):
     import json
 
     from jev_driver import browser as br
+    from jev_driver import lease
 
     path = tmp_path / "last-page.json"
     path.write_text(json.dumps({
         "targetId": "T1", "url": "https://example.test/", "source": "terminal-browser",
         "browser_id": "127.0.0.1:5000", "ts": 1.0,
     }))
-    monkeypatch.setattr(br, "LAST_PAGE_PATH", path)
+    monkeypatch.setattr(lease, "LAST_PAGE_PATH", path)
     assert br._load_last_page()["targetId"] == "T1"
 
 
@@ -263,6 +265,7 @@ def test_a_pre_flag_record_has_no_provenance_key(tmp_path, monkeypatch):
     import json
 
     from jev_driver import browser as br
+    from jev_driver import lease
     from jev_driver.browser import PROVENANCE_KEY
 
     path = tmp_path / "last-page.json"
@@ -270,7 +273,7 @@ def test_a_pre_flag_record_has_no_provenance_key(tmp_path, monkeypatch):
         "targetId": "T1", "url": "https://example.test/", "source": "terminal-browser",
         "browser_id": "127.0.0.1:5000", "ts": 1.0,
     }))
-    monkeypatch.setattr(br, "LAST_PAGE_PATH", path)
+    monkeypatch.setattr(lease, "LAST_PAGE_PATH", path)
     assert PROVENANCE_KEY not in br._load_last_page()
 
 

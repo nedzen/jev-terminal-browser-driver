@@ -54,10 +54,10 @@ def test_cdp_error_raises_runtime_error(monkeypatch):
 
 
 def test_select_interrupt_is_runtime_error_not_stale(monkeypatch):
-    import jev_driver.browser as browser
+    import jev_driver.ops as ops
 
     monkeypatch.setattr(
-        browser,
+        ops,
         "cdp",
         Mock(return_value={"exceptionDetails": {"text": "Execution context destroyed"}}),
     )

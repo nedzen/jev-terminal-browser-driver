@@ -18,7 +18,10 @@ jev_driver/
   drive_agent.py        finish/stop gates, HUD, retries
   agent.py              upstream-verbatim act/predict loop (do not merge)
   readiness.py          DONE thresholds, end_state_reached, Evidence+verdict()
-  browser.py            CDP attach, snapshot, act, last-page memory
+  browser.py            Browser class; re-exports lease/probe/ops for callers
+  lease.py              tab lease, last-page memory, tab-open helpers
+  probe.py              fingerprinting, read-only freshness probe
+  ops.py                CDP read/act executor (browser_operation)
   discover.py           provision pane (cmux-first, else terminal-browser --split)
   instances.py          process evidence, spawn notes, herdr/root-terminal rules
   model.py              Jev choose() + typing helper

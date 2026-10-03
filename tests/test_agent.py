@@ -264,11 +264,11 @@ def test_stale_observation_preserves_executed_action(runner):
 
 
 def test_observation_is_one_atomic_browser_read(monkeypatch):
-    import jev_driver.browser as browser
+    import jev_driver.ops as ops
 
     p = page()
     cdp = Mock(return_value={"result": {"value": p}})
-    monkeypatch.setattr(browser, "cdp", cdp)
+    monkeypatch.setattr(ops, "cdp", cdp)
     actual = browser_operation({"operation": "observe", "session": "test", "screenshot": False})
     assert actual["actions"] == p["actions"]
     assert cdp.call_count == 1
@@ -289,12 +289,12 @@ def test_executor_rejects_a_stale_page_before_browser_input(monkeypatch):
 
 @pytest.mark.parametrize("response", [{"exceptionDetails": {}}, {"result": {}}])
 def test_interrupted_dropdown_mutation_cannot_be_retried_as_stale(monkeypatch, response):
-    import jev_driver.browser as browser
+    import jev_driver.ops as ops
 
     if "exceptionDetails" in response:
         response["exceptionDetails"] = {"text": "Execution context destroyed"}
     cdp = Mock(return_value=response)
-    monkeypatch.setattr(browser, "cdp", cdp)
+    monkeypatch.setattr(ops, "cdp", cdp)
     with pytest.raises(RuntimeError, match="Dropdown execution"):
         browser_operation(
             {
