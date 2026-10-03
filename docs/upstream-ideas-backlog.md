@@ -99,6 +99,16 @@ answers must agree, but they are read differently (a PATH probe for the binary
 vs. a file check), so folding them together would hide which one answered.
 Tracked for a follow-up.
 
+## Accepted direction (owner decision 2026-10-03; build after suite green)
+- Plugin consumes the MCP server: one implementation (`scripts/mcp.py` over
+  stdio) as the single source of truth for schemas/behavior; the Hermes
+  plugin becomes a thin adapter (packaging, settings UI, availability gate)
+  instead of mirroring schemas. Standalone MCP keeps working untouched.
+  Eyes-open costs: plugin owns the server subprocess lifecycle (spawn,
+  health, version skew, cross-boundary errors). Consistent with the
+  subprocess-boundary direction below — this is adapter-over-subprocess,
+  not in-process.
+
 ## Deliberately deferred
 
 - Full step-session API (start/step/observe/close, PR #3): needs session
