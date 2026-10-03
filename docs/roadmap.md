@@ -137,7 +137,9 @@ plugin, Tier 1–4, hardening A–C, debloat, rename. Reinstall sweep done.
   0.65→0.95 — partial mitigation, P2 still needed). Reviewer suggestions
   carried as follow-up: test file trailing newline; DONE-clause hedge for
   multi-step goals (P2 input). P2 H2 BLOCKED-side guard (correct-URL
-  rescue) — IN FLIGHT (arch, branch `feat/blocked-guard-p2`); P3 bundled with P1 (see above);
+  rescue) — MERGED (PR #15, 1dcbcf3; reviewer approved with marker; 691
+  green + ruff clean re-verified on merged main; all-of guard,
+  exhaustion-only hook, metrics vocab +1, no schema change); P3 bundled with P1 (see above);
   P4 H3 geometry (quantify `not_actionable`, then fix) — FILED;
   P5 `model_version` + confidence instrumentation — FILED. No tags/releases
   for these (accumulate toward future 1.1.1/1.2.0, CEO's call).
