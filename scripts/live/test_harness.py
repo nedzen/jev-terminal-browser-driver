@@ -409,16 +409,21 @@ def _client(scenarios):
 
 def _run_one(scenarios, test=None, tmp_path=None, **kwargs):
     client = _client(scenarios)
-    kwargs.setdefault("baseline_dir", (tmp_path or Path(".")) / "baseline")
-    # Every ledger write is redirected into tmp_path. The runner's own default is
-    # the repo's docs/live-learnings.md, and a self-test that lands there ships
-    # fabricated rows into a committed artifact.
-    kwargs.setdefault("ledger", (tmp_path or Path(".")) / "ledger.md")
+    root = tmp_path or Path(".")
+    kwargs.setdefault("baseline_dir", root / "baseline")
+    # Every write is redirected into tmp_path, explicitly and by name: the ledger,
+    # the baseline, the log dir the isolation/quarantine steps touch, and the slice
+    # dir. The slice dir was the one that leaked -- run_test used to default it to
+    # the production /tmp/wwwdrive-runs and no self-test passed one, so a full
+    # self-test run littered 1352 files there.
+    kwargs.setdefault("ledger", root / "ledger.md")
+    kwargs.setdefault("log_dir", root)
+    kwargs.setdefault("slice_dir", root / "slices")
     try:
         return runner.run_test(
             client,
             test or _test(goal="Go to example.com and click Learn more."),
-            log_dir=tmp_path, **kwargs,
+            **kwargs,
         )
     finally:
         client.close()
@@ -521,26 +526,137 @@ def test_a_saved_baseline_is_found_by_the_name_the_loader_looks_for(tmp_path):
     assert runner.load_baseline("live", record["test_id"], baseline_dir=baseline_dir) is not None
 
 
+def _shipped_ledger() -> str:
+    return (Path(__file__).resolve().parents[2] / "docs" / "live-learnings.md").read_text(
+        encoding="utf-8")
+
+
+def _ledger_header_block(text: str) -> list[str]:
+    """The header and its separator, which is what must match the writer.
+
+    Not the whole file: the ledger is *meant* to accumulate one row per run, so
+    comparing it whole would fail the moment a real run landed -- which is exactly
+    what happened, and it made this test report a false problem.
+
+    The separator is found by its own shape (only pipes and dashes) rather than a
+    spelling, because it is written as `|---|` and a `" | --- "` prefix test missed
+    it.
+    """
+    lines = text.splitlines()
+    separator = next(
+        i for i, line in enumerate(lines)
+        if line.startswith("|-") and set(line) <= set("|-")
+    )
+    return lines[: separator + 1]
+
+
+# --------------------------------------------------------------------------
+# Regression: self-tests must never write outside tmp_path
+# --------------------------------------------------------------------------
+
+
+def test_run_test_refuses_to_guess_where_slices_go():
+    """`slice_dir` has no default, so forgetting it is a TypeError, not a slice
+    written into the production directory. This is the whole fix."""
+    with pytest.raises(TypeError, match="slice_dir"):
+        runner.run_test(object(), _test(), log_dir="/tmp")
+
+
+def test_run_test_refuses_to_guess_which_log_dir_to_quarantine():
+    """`log_dir` is required for the same reason: quarantine *renames* a file in
+    whatever directory it is handed, so guessing means renaming the real one."""
+    with pytest.raises(TypeError, match="log_dir"):
+        runner.run_test(object(), _test(), slice_dir="/tmp")
+
+
+def test_write_slice_writes_only_where_it_is_told(tmp_path):
+    """The required form lands exactly where it is told."""
+    target = tmp_path / "elsewhere"
+    written = runner.write_slice("r1", [], slice_dir=target)
+    assert written == target / "r1.jsonl"
+    assert written.is_file()
+
+
+def test_the_slice_directory_is_resolved_at_call_time(tmp_path, monkeypatch):
+    """Before the fix this default was bound at import, so redirecting
+    `runner.SLICE_DIR` was silently ignored and the slice still went to prod."""
+    target = tmp_path / "redirected"
+    monkeypatch.setattr(runner, "SLICE_DIR", target)
+    assert Path(runner.SLICE_DIR) == target
+    # The isolation/baseline resolvers read the module constant now, not a
+    # default captured at import time.
+    assert isolation._dir(None) == Path(isolation.LOG_DIR)
+    assert isolation._dir(tmp_path) == tmp_path
+
+
+def test_a_full_self_test_run_creates_nothing_in_the_production_slice_dir(tmp_path):
+    """The reported defect: a self-test run left 1352 files in /tmp/wwwdrive-runs.
+
+    Asserted on a directory that really exists, using a marker prefix no real run
+    uses, so this fails if any path leaks again without depending on the
+    directory being empty beforehand (a real S1a slice lives there).
+    """
+    prod = Path(runner.SLICE_DIR)
+    marker = "ZZ-LEAKCANARY"
+
+    def prod_files():
+        return {p.name for p in prod.glob(f"{marker}-*.jsonl")} if prod.is_dir() else set()
+
+    before = prod_files()
+    record = _run_one([HIT], test=_test(id=marker), tmp_path=tmp_path)
+    after = prod_files()
+
+    assert before == after, f"self-test leaked into {prod}: {after - before}"
+    assert after == set()
+    # And the slice really was written, just not there.
+    assert Path(record["slice"]).is_file()
+    assert str(record["slice"]).startswith(str(tmp_path))
+
+
+def test_the_isolation_quarantine_never_touches_the_real_log_dir(tmp_path):
+    """`quarantine_last_page` renames a file, so a self-test that reached the real
+    `~/.cache/wwwdrive` would disturb live browser bookkeeping.
+
+    Asserted as "unchanged by this run" rather than "does not exist": the real
+    directory legitimately holds a `last-page.json`, and demanding its absence
+    would fail for reasons that have nothing to do with the harness. This test
+    exists because a mutation of the fix once renamed that file and nothing
+    recreated it, losing the pane's re-attach target.
+    """
+    real_dir = Path(isolation.LOG_DIR)
+    before = sorted(p.name for p in real_dir.iterdir()) if real_dir.is_dir() else []
+    client = _client([HIT])
+    try:
+        runner.run_test(client, _test(), log_dir=tmp_path, slice_dir=tmp_path / "slices",
+                        baseline_dir=tmp_path / "baseline", ledger=tmp_path / "ledger.md")
+    finally:
+        client.close()
+    after = sorted(p.name for p in real_dir.iterdir()) if real_dir.is_dir() else []
+    assert before == after, f"the self-test disturbed {real_dir}: {set(after) ^ set(before)}"
+
+
 def test_the_shipped_ledger_header_is_the_one_the_runner_appends_under():
     """Header and writer are two literals in two files; they drift silently and a
     row under the wrong header is unreadable."""
-    shipped = (Path(__file__).resolve().parents[2] / "docs" / "live-learnings.md").read_text(
-        encoding="utf-8")
-    assert shipped == runner.LEDGER_HEADER
+    assert _ledger_header_block(_shipped_ledger()) == _ledger_header_block(runner.LEDGER_HEADER)
 
 
-def test_the_shipped_ledger_starts_with_no_rows():
-    """v3's artifact is created empty: a row only appears when a run produced one."""
-    body = (Path(__file__).resolve().parents[2] / "docs" / "live-learnings.md").read_text(
-        encoding="utf-8")
-    assert not [line for line in body.splitlines() if line.startswith("| ") and "---" not in line][1:]
+def test_every_shipped_ledger_row_has_one_cell_per_column():
+    """The real invariant on a ledger that accumulates: no row may be short or long,
+    or a column silently shifts and every later reading is off by one."""
+    lines = _shipped_ledger().splitlines()
+    columns = len(_ledger_header_block(runner.LEDGER_HEADER)[-2].split("|"))
+    rows = [line for line in lines if line.startswith("| ") and "---" not in line][1:]
+    for row in rows:
+        assert len(row.split("|")) == columns, f"row has the wrong cell count: {row[:80]}"
 
 
-def test_a_written_row_has_one_cell_per_ledger_column(tmp_path, monkeypatch):
-    """Thirteen columns declared, thirteen written; a short row reads as empty."""
+def test_a_written_row_has_one_cell_per_ledger_column(tmp_path):
+    """One column per cell in the header; a short row reads as empty."""
     client = _client([HIT])
     try:
         record = runner.run_test(client, _test(), log_dir=tmp_path,
+                                 slice_dir=tmp_path / "slices",
                                  baseline_dir=tmp_path / "baseline",
                                  ledger=tmp_path / "ledger.md")
     finally:

@@ -56,7 +56,19 @@ def _events(log_dir: Path):
     return events
 
 
-def open_run_ids(log_dir: Path = LOG_DIR) -> list[str]:
+def _dir(log_dir) -> Path:
+    """Resolve a log directory at call time.
+
+    Every entry point here takes `log_dir=None` and reads LOG_DIR *now*, rather
+    than defaulting to `log_dir: Path = LOG_DIR`. A default argument is bound once
+    at import, so it ignores a caller (or a test) that redirects the module
+    constant -- and `quarantine_last_page` renames a file, which makes that a
+    mutation of the real browser bookkeeping rather than a read.
+    """
+    return Path(log_dir) if log_dir is not None else Path(LOG_DIR)
+
+
+def open_run_ids(log_dir=None) -> list[str]:
     """Runs that started and never finished: a drive still in flight, or one that died.
 
     Keyed on the run event's own id so a crashed process still shows up -- the
@@ -78,14 +90,14 @@ def open_run_ids(log_dir: Path = LOG_DIR) -> list[str]:
     return list(started)
 
 
-def assert_pane_idle(log_dir: Path = LOG_DIR, *, quiet_s: float = IDLE_QUIET_S) -> None:
+def assert_pane_idle(log_dir=None, *, quiet_s: float = IDLE_QUIET_S) -> None:
     """Refuse to start while any run is open, or while the log is still moving.
 
     The movement check catches the case `open_run_ids` cannot: a drive that has not
     written its start line yet, which is the window where two runners both believe
     they went first.
     """
-    log_dir = Path(log_dir)
+    log_dir = _dir(log_dir)
     open_runs = open_run_ids(log_dir)
     if open_runs:
         raise IsolationError(f"pane is not idle: {len(open_runs)} run(s) never finished: {open_runs}")
@@ -102,15 +114,15 @@ def assert_pane_idle(log_dir: Path = LOG_DIR, *, quiet_s: float = IDLE_QUIET_S) 
             )
 
 
-def read_last_page(log_dir: Path = LOG_DIR) -> dict | None:
-    path = Path(log_dir) / LAST_PAGE
+def read_last_page(log_dir=None) -> dict | None:
+    path = _dir(log_dir) / LAST_PAGE
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
 
 
-def quarantine_last_page(log_dir: Path = LOG_DIR) -> dict | None:
+def quarantine_last_page(log_dir=None) -> dict | None:
     """Clear the remembered tab and return what it was.
 
     Renamed rather than deleted: if a run then re-attaches to nothing and fails,
@@ -118,7 +130,7 @@ def quarantine_last_page(log_dir: Path = LOG_DIR) -> dict | None:
     rename is the isolation -- a driver that reads LAST_PAGE finds nothing -- and
     the retained file is the forensics.
     """
-    log_dir = Path(log_dir)
+    log_dir = _dir(log_dir)
     path = log_dir / LAST_PAGE
     if not path.is_file():
         return None
@@ -132,7 +144,7 @@ def quarantine_last_page(log_dir: Path = LOG_DIR) -> dict | None:
     return previous
 
 
-def isolation_report(log_dir: Path = LOG_DIR) -> dict:
+def isolation_report(log_dir=None) -> dict:
     """What the checklist saw, for the run record.
 
     Records the previous target rather than just asserting on it, so a run that
