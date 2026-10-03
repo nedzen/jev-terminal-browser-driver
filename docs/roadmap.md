@@ -173,6 +173,10 @@ plugin, Tier 1–4, hardening A–C, debloat, rename. Reinstall sweep done.
 - Stale branch feat/drop-opencode-plugin DOCUMENT-DROPPED (reviewer PR #4-era
   guide fix using pre-rename jev-driver names; merging would regress the
   guide; branch deleted).
+- Movedon-bypass MERGED (PR #26, 641eea7; reviewer approved with marker;
+  937 green + ruff clean re-verified on merged main): bypass requires
+  end_state_reached (M7 shape refused, S1a shape rescues); M4 (0.68 accepted
+  outright) explicitly out of scope — needs confidence-gate tightening cycle.
 - Owner-only pending, untouched: GitHub repo rename click (owner, very end);
   `founder` / `intern` profile re-link + settings re-entry.
 - Follow-up queue (non-blocking polish, worked only when the suite waits):
