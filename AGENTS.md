@@ -22,6 +22,13 @@ doesn't fit on one page it won't be followed.
 
 ## Tests
 
+Two commands are the gate, both green:
+
+```
+uv run pytest               # product suite (default; fast, offline)
+uv run pytest scripts/live  # harness self-tests (run when touching scripts/live)
+```
+
 Tests are mandatory for new behavior — agent-written code has repeatedly
 shipped bugs only tests caught. But tests must earn their lines:
 

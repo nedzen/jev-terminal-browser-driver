@@ -48,7 +48,8 @@ preview = true
 select = ["E", "F", "I", "W29"]
 
 [tool.pytest.ini_options]
-# scripts/live carries its self-tests beside the runner, so they are on the path
-# too: a harness whose tests only run when someone remembers the flag is a
-# harness nobody runs the tests of.
-testpaths = ["tests", "scripts/live"]
+# `tests/` is the product suite and the default gate. The live harness carries
+# its own self-tests beside the runner under scripts/live; they are a separate,
+# optional command (`uv run pytest scripts/live`) so the product gate stays fast
+# and its failures stay readable. AGENTS.md names both commands.
+testpaths = ["tests"]

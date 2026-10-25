@@ -511,8 +511,19 @@ def test_a_call_that_never_returns_times_out_as_stall(tmp_path):
     assert "timeout_s" in (record["error"] or "")
 
 
-def test_a_refused_pane_produces_a_record_and_no_drive(tmp_path):
-    """A run that leaves no trace is how a suite looks green over a test that never ran."""
+def test_a_refused_pane_produces_a_record_and_no_drive(tmp_path, monkeypatch):
+    """A run that leaves no trace is how a suite looks green over a test that never ran.
+
+    The refusal is injected instead of waited for: the real path polls
+    `wait_pane_idle` for 30 s (twice, on retry), which made this one test 60 s of
+    the suite's runtime. `wait_pane_idle`'s own timeout is clock-injected and
+    pinned beside it; this test owns the record, not the wait.
+    """
+
+    def busy(*args, **kwargs):
+        raise isolation.IsolationError("pane log moved 0.05s ago (<2.0s): another driver is active")
+
+    monkeypatch.setattr(isolation, "wait_pane_idle", busy)
     (tmp_path / "drive.jsonl").write_text(
         json.dumps({"event": "run", "stage": "start", "metrics": {"run_id": "x"}}) + "\n",
         encoding="utf-8")

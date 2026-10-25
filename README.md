@@ -111,7 +111,8 @@ live. Pre-1.0 `~/.cache/jev-driver/` is orphaned.
 | [AGENTS.md](AGENTS.md) | Contributor agreement |
 
 ```bash
-uv run pytest
+uv run pytest              # product suite (default, offline)
+uv run pytest scripts/live # live-harness self-tests (only when touching the harness)
 uv run ruff check .
 ```
 
