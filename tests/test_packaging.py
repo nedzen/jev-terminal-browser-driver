@@ -67,14 +67,15 @@ def test_no_hard_coded_version_outside_the_manifests():
     cannot leave one screen reporting an older product than another.
     """
     offenders = []
-    for path in ROOT.rglob("*.py"):
-        if "tests" in path.parts or ".venv" in path.parts:
-            continue
-        # scripts/live names past releases as test targets; it is lab, not product.
-        if path.relative_to(ROOT).parts[:2] == ("scripts", "live"):
-            continue
-        if "1.1.0" in path.read_text(errors="ignore"):
-            offenders.append(str(path.relative_to(ROOT)))
+    # Walk product trees only: a recursive scan of the checkout also reads uv's
+    # cache and any vendored dependency, which are not our release surface.
+    for base in ("jev_driver", "plugin", "scripts"):
+        for path in (ROOT / base).rglob("*.py"):
+            # scripts/live names past releases as test targets; it is lab, not product.
+            if path.relative_to(ROOT).parts[:2] == ("scripts", "live"):
+                continue
+            if "1.1.0" in path.read_text(errors="ignore"):
+                offenders.append(str(path.relative_to(ROOT)))
     assert offenders == [], offenders
 
 
