@@ -4,6 +4,30 @@ All notable user-facing changes, newest first. Version numbers follow
 [semver](https://semver.org); the project was published as `jev-driver` at
 0.1.0 and is published as `wwwdrive` from 1.0.0.
 
+## 1.2.0 — unreleased
+
+### Added
+
+- **`wwwdrive-mcp` console script.** The MCP server now ships in the wheel, so
+  `pipx`/`uv tool install` is enough: `{"command": "wwwdrive-mcp"}`. No
+  checkout, no `uv run --directory`.
+- **`wwwdrive-read`** for the read CLI; `wwwdrive` stays the drive CLI.
+
+### Changed
+
+- Adapters run `python -m jev_driver.cli` / `jev_driver.read_cli`. The repo's
+  `scripts/drive.py`, `scripts/read.py`, and `scripts/mcp.py` are shims, so
+  client configs registered against them keep working.
+- `status` reports `package` (installed wheel or an explicit checkout) in place
+  of the checkout-only `driver_home` and `python_env` checks.
+- The server version comes from distribution metadata instead of a hard-coded
+  string.
+
+### Fixed
+
+- A wheel built from a working tree no longer packages `plugin/.crush` agent
+  state, `.cursor`, tests, docs, or the live harness.
+
 ## 1.1.0
 
 ### Changed

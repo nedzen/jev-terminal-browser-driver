@@ -25,7 +25,11 @@ from .runlog import JSONL_PATH, write_event
 from .takeover import TAKEOVER_REASON, WatchAgent
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_FIXTURE = (ROOT / "fixtures" / "click.html").resolve()
+# A checkout ships the click fixture; an installed wheel does not. The fallback
+# keeps "no url and no remembered tab" a real page instead of a missing file://.
+_FIXTURE = (ROOT / "fixtures" / "click.html").resolve()
+DEFAULT_FIXTURE = _FIXTURE if _FIXTURE.is_file() else None
+DEFAULT_LAUNCH = DEFAULT_FIXTURE.as_uri() if DEFAULT_FIXTURE else "about:blank"
 TIME_BUDGET_CAP = 900  # same ceiling as the outer timeout_s kill
 
 
@@ -476,7 +480,7 @@ def _tick_loop(args, agent) -> int:
 def _drive(args) -> int:
     """Discover a browser, lease a tab, run ticks."""
     url = args.url
-    launch = url or DEFAULT_FIXTURE.as_uri()
+    launch = url or DEFAULT_LAUNCH
     proc_mod.reset_spawns()
     found = _discover_browser(args, launch)
     if isinstance(found, int):

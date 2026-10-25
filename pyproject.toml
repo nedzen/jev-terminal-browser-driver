@@ -7,10 +7,29 @@ dependencies = ["httpx[http2]>=0.28,<1", "websocket-client>=1.8,<2"]
 
 [project.scripts]
 wwwdrive = "jev_driver.cli:main"
+wwwdrive-mcp = "jev_driver.mcp:main"
+wwwdrive-read = "jev_driver.read_cli:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build]
+# Agent state and lab material must never ship: a wheel built from a working
+# tree picked up plugin/.crush/crush.db and its logs before this list existed.
+exclude = [
+  "plugin/.crush",
+  "plugin/.cursor",
+  "**/__pycache__",
+  "**/*.pyc",
+  ".venv",
+  ".pytest_cache",
+  ".ruff_cache",
+  "tests",
+  "fixtures",
+  "docs",
+  "scripts/live",
+]
 
 [tool.hatch.build.targets.wheel]
 # plugin ships too: jev_driver.cli imports plugin.core.result to build tick rows,

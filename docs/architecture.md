@@ -8,12 +8,14 @@ with [Jev](https://docs.typesafe.ai/introduction) decisions. Agents speak MCP
 
 ```
 plugin/                 Hermes + MCP schemas; stdlib-only core/
-  handler.py            spawns scripts/drive.py / read.py; folds JSON ticks
+  handler.py            spawns `python -m jev_driver.cli` / `.read_cli`; folds JSON ticks
   core/                 env, budgets, result, trace — imported by both sides
-scripts/mcp.py          stdio MCP server
-scripts/drive.py        → jev_driver.cli
-scripts/live/           S-batch harness + manifests/
+scripts/mcp.py          checkout shim → jev_driver.mcp
+scripts/drive.py        checkout shim → jev_driver.cli
+scripts/live/           S-batch harness + manifests/ (lab; not packaged)
 jev_driver/
+  mcp.py                stdio MCP server (entry point: wwwdrive-mcp)
+  read_cli.py           read CLI (entry point: wwwdrive-read)
   cli.py                argparse; discover / lease / open / tick helpers
   drive_agent.py        observe→decide→act loop, finish/stop gates, HUD
   agent.py              compatibility alias: Agent = DriveAgent

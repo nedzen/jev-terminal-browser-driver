@@ -49,8 +49,8 @@ def clean_env(monkeypatch, tmp_path):
 
 def test_shape_is_fixed_and_json_serializable():
     out = pf.preflight()
-    assert set(out) == {"decision_key", "terminal_browser", "driver_home", "python_env", "ready", "missing", "fixes"}
-    assert set(pf.CHECKS) == {"decision_key", "terminal_browser", "driver_home", "python_env"}
+    assert set(out) == {"decision_key", "terminal_browser", "package", "ready", "missing", "fixes"}
+    assert set(pf.CHECKS) == {"decision_key", "terminal_browser", "package"}
     json.loads(json.dumps(out))  # must survive the MCP content encoding
 
 
@@ -161,17 +161,27 @@ def test_terminal_browser_override_must_be_executable(monkeypatch, tmp_path):
     assert pf.preflight()["terminal_browser"] == "ok"
 
 
-def test_driver_home_missing_without_the_entrypoint(monkeypatch, tmp_path):
+def test_package_missing_without_a_module_or_checkout(monkeypatch, tmp_path):
+    """No importable driver and an override that holds no scripts/drive.py."""
     monkeypatch.setenv("WWWDRIVE_HOME", str(tmp_path / "empty"))
-    assert pf.preflight()["driver_home"] == "missing"
+    monkeypatch.setattr(pf, "_spec", lambda name: False)
+    assert pf.preflight()["package"] == "missing"
 
 
-def test_driver_home_override_must_hold_drive_py(monkeypatch, tmp_path):
+def test_package_ok_from_an_installed_wheel(monkeypatch):
+    """The release shape: nothing on disk but the installed distribution."""
+    monkeypatch.delenv("WWWDRIVE_HOME", raising=False)
+    monkeypatch.delenv("JEV_DRIVER_HOME", raising=False)
+    monkeypatch.setattr(pf, "_spec", lambda name: True)
+    assert pf.preflight()["package"] == "ok"
+
+
+def test_package_override_must_hold_drive_py(monkeypatch, tmp_path):
     fake = tmp_path / "elsewhere"
     (fake / "scripts").mkdir(parents=True)
     (fake / "scripts" / "drive.py").write_text("# drive\n")
     monkeypatch.setenv("WWWDRIVE_HOME", str(fake))
-    assert pf.preflight()["driver_home"] == "ok"
+    assert pf.preflight()["package"] == "ok"
 
 
 def test_legacy_driver_home_var_still_resolves(monkeypatch, tmp_path):
@@ -181,7 +191,7 @@ def test_legacy_driver_home_var_still_resolves(monkeypatch, tmp_path):
     (fake / "scripts" / "drive.py").write_text("# drive\n")
     monkeypatch.setenv("JEV_DRIVER_HOME", str(fake))
     assert pf.driver_home() == fake
-    assert pf.preflight()["driver_home"] == "ok"
+    assert pf.preflight()["package"] == "ok"
 
 
 def test_wwwdrive_home_wins_over_the_legacy_var(monkeypatch, tmp_path):
@@ -194,35 +204,22 @@ def test_wwwdrive_home_wins_over_the_legacy_var(monkeypatch, tmp_path):
     assert pf.driver_home() == new
 
 
-def test_python_env_ok_without_uv_when_venv_exists(monkeypatch, tmp_path):
-    home = tmp_path / "repo"
-    (home / "scripts").mkdir(parents=True)
-    (home / "scripts" / "drive.py").write_text("# drive\n")
-    (home / ".venv").mkdir()
-    monkeypatch.setenv("WWWDRIVE_HOME", str(home))
+def test_installed_package_does_not_need_uv_on_path(monkeypatch):
+    """A wheel runs under its own interpreter; uv was only a checkout requirement."""
+    monkeypatch.delenv("WWWDRIVE_HOME", raising=False)
+    monkeypatch.delenv("JEV_DRIVER_HOME", raising=False)
+    monkeypatch.setattr(pf, "_spec", lambda name: True)
     monkeypatch.setenv("PATH", str(Path("/nonexistent")))
-    assert pf.preflight()["python_env"] == "ok"
-
-
-def test_python_env_missing_without_uv_or_venv(monkeypatch, tmp_path):
-    home = tmp_path / "repo"
-    (home / "scripts").mkdir(parents=True)
-    (home / "scripts" / "drive.py").write_text("# drive\n")
-    monkeypatch.setenv("WWWDRIVE_HOME", str(home))
-    monkeypatch.setenv("PATH", str(Path("/nonexistent")))
-    assert pf.preflight()["python_env"] == "missing"
+    assert pf.preflight()["package"] == "ok"
 
 
 def test_missing_everything_is_not_ready(monkeypatch, tmp_path):
-    """Bare fixture plus a checkout with no .venv: every check misses."""
-    empty_home = tmp_path / "bare"
-    (empty_home / "scripts").mkdir(parents=True)
-    (empty_home / "scripts" / "drive.py").write_text("# drive\n")
-    monkeypatch.setenv("WWWDRIVE_HOME", str(empty_home))
+    monkeypatch.setenv("WWWDRIVE_HOME", str(tmp_path / "bare"))
+    monkeypatch.setattr(pf, "_spec", lambda name: False)
     out = pf.preflight()
     assert out["ready"] is False
-    assert out["missing"] == ["decision_key", "terminal_browser", "python_env"]
-    assert out["driver_home"] == "ok"  # the entrypoint is there, just nothing to run it with
+    assert out["missing"] == ["decision_key", "terminal_browser", "package"]
+    assert out["package"] == "missing"
 
 
 # --- cli --check -----------------------------------------------------------
@@ -252,7 +249,7 @@ def test_check_prints_preflight_json_and_exits_zero(capsys, monkeypatch):
     out = capsys.readouterr().out
     body = json.loads(out)
     assert body["decision_key"] == "ok"
-    assert set(body) == {"decision_key", "terminal_browser", "driver_home", "python_env", "ready", "missing", "fixes"}
+    assert set(body) == {"decision_key", "terminal_browser", "package", "ready", "missing", "fixes"}
     assert "sk-check" not in out
 
 
@@ -278,7 +275,7 @@ def test_check_subprocess_is_zero_without_a_goal():
     lines = [line for line in proc.stdout.splitlines() if line.strip()]
     assert len(lines) == 1
     body = json.loads(lines[0])
-    assert body["driver_home"] == "ok"
+    assert body["package"] == "ok"
     assert body["ready"] is (not body["missing"])
 
 
@@ -439,11 +436,11 @@ def test_preflight_does_not_import_the_plugin():
 
 
 def test_mcp_module_does_not_import_the_browser_loop():
-    """mcp.py may reach jev_driver only through the stdlib-only preflight leaf:
-    nothing that opens a browser, a socket, or a subprocess may be imported."""
+    """The MCP server may reach jev_driver only through the stdlib-only preflight
+    leaf: nothing that opens a browser, a socket, or a subprocess may be imported."""
     import ast
 
-    source = (ROOT / "scripts" / "mcp.py").read_text()
+    source = (ROOT / "jev_driver" / "mcp.py").read_text()
     assert "from jev_driver.preflight import preflight" in source
 
     modules: set[str] = set()

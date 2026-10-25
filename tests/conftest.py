@@ -22,15 +22,15 @@ DEFAULT_FAKE_ACTION = {
 
 @pytest.fixture()
 def load_mcp():
-    """Execute scripts/mcp.py under a module name the caller picks.
+    """Execute the packaged `jev_driver/mcp.py` under a module name the caller picks.
 
-    The name is the caller's because `spec.loader.exec_module` is what binds
-    the module, and a shared name would hand the next test the one that ran
-    first instead of a fresh server.
+    The server moved out of scripts/ so an installed wheel can serve it; the
+    shim at scripts/mcp.py only delegates. Loading the package file keeps each
+    test's server module fresh, which a plain import would not.
     """
 
     def _load(name):
-        spec = importlib.util.spec_from_file_location(name, ROOT / "scripts" / "mcp.py")
+        spec = importlib.util.spec_from_file_location(name, ROOT / "jev_driver" / "mcp.py")
         assert spec and spec.loader
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)

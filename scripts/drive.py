@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Hermes entry: uv run python scripts/drive.py --goal '...' """
+"""Checkout shim: the drive CLI lives in jev_driver.cli."""
 
 import sys
 from pathlib import Path

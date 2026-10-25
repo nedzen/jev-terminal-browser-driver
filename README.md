@@ -27,10 +27,34 @@ Schemas: [`plugin/__init__.py`](plugin/__init__.py).
 
 ## Install
 
-Needs: macOS/Linux, Python 3.12+, [uv](https://astral.sh/uv/),
+Needs: macOS/Linux, Python 3.12+, [uv](https://astral.sh/uv/) (or pipx),
 `terminal-browser` on PATH, a kitty-graphics terminal (kitty, ghostty, wezterm,
 tmux, cmux; not iTerm2/Terminal.app), `TYPESAFE_API_KEY`. OpenRouter key
 optional (typing only).
+
+Install the package — no checkout, no `--directory`:
+
+```bash
+uv tool install git+https://github.com/nedzen/jev-terminal-browser-driver
+# or: pipx install git+https://github.com/nedzen/jev-terminal-browser-driver
+```
+
+Then point any MCP client at the console script:
+
+```json
+{"command": "wwwdrive-mcp"}
+```
+
+Set `TYPESAFE_API_KEY` in the host environment. `WWWDRIVE_DEBUG=0` turns the
+overlay off. `wwwdrive` is the drive CLI; `wwwdrive-read` is the read CLI.
+
+Hermes:
+
+```bash
+hermes mcp add wwwdrive --command wwwdrive-mcp
+```
+
+### From a checkout (development)
 
 ```bash
 git clone https://github.com/nedzen/jev-terminal-browser-driver
@@ -38,14 +62,9 @@ cd jev-terminal-browser-driver
 uv sync
 ```
 
-Hermes:
-
-```bash
-hermes mcp add wwwdrive --command uv --args run --directory <repo> python scripts/mcp.py
-```
-
-Other hosts — same command/args in MCP config. Set `TYPESAFE_API_KEY` in the
-host environment. `WWWDRIVE_DEBUG=0` turns the overlay off.
+The checkout keeps the old registration working:
+`uv run --directory <repo> python scripts/mcp.py` (that file is now a shim over
+`jev_driver.mcp`).
 
 Optional Hermes native plugin:
 
@@ -61,11 +80,15 @@ debug overlay (default on).
 
 ```bash
 export TYPESAFE_API_KEY=...
-uv run python scripts/drive.py --json --debug \
+wwwdrive --json --debug \
   --url 'https://en.wikipedia.org/wiki/Main_Page' \
   --goal "Search for 'string trimmer' and open that article. Done when it is showing."
 
-uv run python scripts/read.py --json --script "document.title"
+wwwdrive-read --json --script "document.title"
+```
+
+From a checkout, `uv run python scripts/drive.py …` and `scripts/read.py …`
+still work (both are shims).
 ```
 
 Model DONE is a claim — check `final_url` / `page_text`.

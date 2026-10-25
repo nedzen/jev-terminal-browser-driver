@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import shutil
@@ -68,11 +69,24 @@ def terminal_browser_installed() -> bool:
     return bool(shutil.which("terminal-browser")) or Path(TB).is_file()
 
 
-def check_drive() -> bool:
-    home = driver_home()
-    if not (home / "scripts" / "drive.py").is_file():
+def package_available() -> bool:
+    """True when this interpreter can import the driver, or an explicit checkout has it.
+
+    Same rule as `jev_driver.preflight.package_available`: an explicit
+    WWWDRIVE_HOME/JEV_DRIVER_HOME wins, otherwise an installed wheel counts.
+    `find_spec` does not execute the package, so this stays a probe.
+    """
+    explicit = os.environ.get("WWWDRIVE_HOME", "").strip() or os.environ.get("JEV_DRIVER_HOME", "").strip()
+    if explicit:
+        return (driver_home() / "scripts" / "drive.py").is_file()
+    try:
+        return importlib.util.find_spec("jev_driver") is not None
+    except (ImportError, ModuleNotFoundError, ValueError):
         return False
-    if not shutil.which("uv") and not (home / ".venv").exists():
+
+
+def check_drive() -> bool:
+    if not package_available():
         return False
     if not has_decision_key():
         return False

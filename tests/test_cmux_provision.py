@@ -551,7 +551,7 @@ def test_the_mcp_entry_path_provisions_through_cmux(monkeypatch, tmp_path):
         def __init__(self, argv, **kwargs):
             from jev_driver import cli
 
-            assert str(argv[1]) == "run" and str(argv[3]).endswith("scripts/drive.py"), argv
+            assert argv[1] == "-m" and argv[2] == "jev_driver.cli", argv
             self.kwargs = kwargs
             goal = str(argv[argv.index("--goal") + 1])
             url = str(argv[argv.index("--url") + 1])
@@ -580,8 +580,8 @@ def test_the_mcp_entry_path_provisions_through_cmux(monkeypatch, tmp_path):
 
 
 def test_the_read_entry_path_provisions_through_cmux(monkeypatch, tmp_path):
-    """scripts/read.py -> discover(). The third caller, same module."""
-    import scripts.read as read_entry  # noqa: PLC0415
+    """jev_driver.read_cli -> discover(). The third caller, same module."""
+    from jev_driver import read_cli as read_entry  # noqa: PLC0415
 
     _socket(monkeypatch, tmp_path)
     _fake_terminal_browser(monkeypatch, tmp_path)
@@ -600,8 +600,8 @@ def test_every_caller_goes_through_the_one_discover_module():
     function body, so they are checked by reading the module source: that is the
     only place the binding exists.
     """
-    import scripts.read as read_entry  # noqa: PLC0415
     from jev_driver import cdp, cli
+    from jev_driver import read_cli as read_entry  # noqa: PLC0415
 
     assert cli.discover is disc.discover
     assert read_entry.discover is disc.discover
@@ -940,8 +940,8 @@ def test_live_mcp_entry_path_puts_the_pane_outside_herdr(monkeypatch, tmp_path, 
 
 @live_only
 def test_live_read_entry_path_puts_the_pane_outside_herdr(monkeypatch, real_cmux_session):
-    """scripts/read.py: read.main()'s own discover() call."""
-    import scripts.read as read_entry  # noqa: PLC0415
+    """jev_driver.read_cli: read.main()'s own discover() call."""
+    from jev_driver import read_cli as read_entry  # noqa: PLC0415
 
     route = _assert_cmux_route_was_taken(monkeypatch)
     _stop_after_pane_exists(monkeypatch)

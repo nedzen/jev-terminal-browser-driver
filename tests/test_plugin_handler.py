@@ -93,13 +93,15 @@ def test_happy_path_aggregates_ticks(home):
 
 
 def test_missing_drive_does_not_spawn(monkeypatch, tmp_path):
+    """No importable driver and no checkout: refuse before a browser or a spawn."""
     empty = tmp_path / "empty"
     empty.mkdir()
     monkeypatch.setenv("WWWDRIVE_HOME", str(empty))
+    monkeypatch.setattr(handler, "_module_available", lambda name: False)
     popen = Mock(side_effect=AssertionError("must not spawn"))
     result = handler.run_drive({"goal": "x"}, popen=popen)
     assert result["success"] is False
-    assert "drive.py missing" in result["error"]
+    assert "driver not installed" in result["error"]
     popen.assert_not_called()
 
 

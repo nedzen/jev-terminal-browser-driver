@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import signal
 import subprocess
+import sys
 import time
 
 from .core.budgets import (
@@ -74,6 +76,41 @@ def _kill_group(proc: subprocess.Popen) -> None:
                 pass
 
 
+def _module_available(name: str) -> bool:
+    """True when `name` is importable in this interpreter, without importing it."""
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ModuleNotFoundError, ValueError):
+        return False
+
+
+def driver_argv() -> list[str]:
+    """The command that runs the drive CLI: installed module first, checkout last.
+
+    The wheel is the product: when `jev_driver.cli` is importable, this
+    interpreter can run it, so a `pipx install` needs no repo at all. The
+    `uv run scripts/drive.py` branch exists only for a checkout whose package
+    is not installed into this interpreter (the Hermes plugin case), and it
+    requires scripts/drive.py to be present.
+    """
+    if _module_available("jev_driver.cli"):
+        return [sys.executable, "-m", "jev_driver.cli"]
+    home = driver_home()
+    if (home / "scripts" / "drive.py").is_file():
+        return ["uv", "run", "python", "scripts/drive.py"]
+    return []
+
+
+def read_argv() -> list[str]:
+    """Same resolution for the read CLI (jev_driver.read_cli in the wheel)."""
+    if _module_available("jev_driver.read_cli"):
+        return [sys.executable, "-m", "jev_driver.read_cli"]
+    home = driver_home()
+    if (home / "scripts" / "read.py").is_file():
+        return ["uv", "run", "python", "scripts/read.py"]
+    return []
+
+
 def build_argv(args: dict) -> list[str]:
     max_steps = args.get("max_steps", DEFAULT_MAX_STEPS)
     try:
@@ -82,10 +119,7 @@ def build_argv(args: dict) -> list[str]:
         max_steps = DEFAULT_MAX_STEPS
     max_steps = max(1, min(max_steps, MAX_STEPS_CAP))
     argv = [
-        "uv",
-        "run",
-        "python",
-        "scripts/drive.py",
+        *driver_argv(),
         "--json",
         "--goal",
         str(args["goal"]),
@@ -122,8 +156,8 @@ def run_drive(args: dict, *, popen=subprocess.Popen, kill_group=_kill_group) -> 
     home = driver_home()
     if not args.get("goal") or not str(args.get("goal")).strip():
         return compact_result([], 1, error="goal is required")
-    if not (home / "scripts" / "drive.py").is_file():
-        return compact_result([], 1, error=f"drive.py missing under {home}")
+    if not driver_argv():
+        return compact_result([], 1, error=f"driver not installed and no checkout at {home}")
     try:
         validated = {
             **args,
@@ -189,7 +223,7 @@ def build_read_argv(args: dict) -> list[str]:
     except (TypeError, ValueError):
         scrolls = 0
     scrolls = max(0, min(scrolls, 15))
-    argv = ["uv", "run", "python", "scripts/read.py", "--json"]
+    argv = [*read_argv(), "--json"]
     if args.get("url"):
         argv.extend(["--url", str(args["url"])])
     if args.get("script"):
@@ -209,8 +243,8 @@ def build_read_argv(args: dict) -> list[str]:
 
 def run_read(args: dict, *, popen=subprocess.Popen, kill_group=_kill_group) -> dict:
     home = driver_home()
-    if not (home / "scripts" / "read.py").is_file():
-        return {"success": False, "error": f"read.py missing under {home}"}
+    if not read_argv():
+        return {"success": False, "error": f"driver not installed and no checkout at {home}"}
     try:
         validated = {
             **args,
